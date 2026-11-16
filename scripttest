@@ -3,7 +3,7 @@
 	Rayfield Client Menu (Full Single-File LocalScript)
 	Đặt trong: StarterPlayer -> StarterPlayerScripts
 	- Mặc định khi chạy: TẤT CẢ chức năng & nút gạt đều OFF (false).
-	- Đã fix: Multi-touch drag Mobile, non-blocking Stash sync, giữ ScreenGui Enabled, skip minigame ResearchLab/AssemblyBench, hiển thị lỗi chi tiết.
+	- Chỉ cần bật "Bật Auto Research nhanh" là tự động chọn và chạy các Research hợp lệ kế tiếp.
 ]]
 
 local HttpService = game:GetService("HttpService")
@@ -178,9 +178,7 @@ local Rayfield = (function()
 
 		local function updateResponsiveScale()
 			local cam = workspace.CurrentCamera
-			if not cam then
-				return
-			end
+			if not cam then return end
 			local vp = cam.ViewportSize
 			local scaleX = (vp.X - 24) / WINDOW_W
 			local scaleY = (vp.Y - 24) / WINDOW_H
@@ -267,12 +265,8 @@ local Rayfield = (function()
 			makeCorner(btn, 6)
 			makeStroke(btn, THEME.Stroke, 1, 0.4)
 
-			track(btn.MouseEnter:Connect(function()
-				tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardHover, TextColor3 = THEME.Text })
-			end))
-			track(btn.MouseLeave:Connect(function()
-				tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardBg, TextColor3 = THEME.SubText })
-			end))
+			track(btn.MouseEnter:Connect(function() tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardHover, TextColor3 = THEME.Text }) end))
+			track(btn.MouseLeave:Connect(function() tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardBg, TextColor3 = THEME.SubText }) end))
 			return btn
 		end
 
@@ -339,7 +333,6 @@ local Rayfield = (function()
 		pagesHolder.BackgroundTransparency = 1
 		pagesHolder.Parent = bodyFrame
 
-		-- Kéo thả MainWindow (an toàn cho đa điểm Mobile + kẹp trong màn hình)
 		do
 			local dragInput: InputObject? = nil
 			local dragStart: Vector3
@@ -347,9 +340,7 @@ local Rayfield = (function()
 
 			local function clampWindowPos(offsetX: number, offsetY: number): (number, number)
 				local cam = workspace.CurrentCamera
-				if not cam then
-					return offsetX, offsetY
-				end
+				if not cam then return offsetX, offsetY end
 				local vp = cam.ViewportSize
 				local s = uiScale.Scale
 				local halfW = (WINDOW_W * s) * 0.5
@@ -370,30 +361,23 @@ local Rayfield = (function()
 			end))
 
 			track(UserInputService.InputChanged:Connect(function(input: InputObject)
-				if not dragInput then
-					return
-				end
+				if not dragInput then return end
 				local isMatch = (dragInput.UserInputType == Enum.UserInputType.Touch and input == dragInput)
 					or (dragInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseMovement)
-				if not isMatch then
-					return
-				end
+				if not isMatch then return end
 				local delta = input.Position - dragStart
 				local nx, ny = clampWindowPos(startPos.X.Offset + delta.X, startPos.Y.Offset + delta.Y)
 				mainFrame.Position = UDim2.new(startPos.X.Scale, nx, startPos.Y.Scale, ny)
 			end))
 
 			track(UserInputService.InputEnded:Connect(function(input: InputObject)
-				if not dragInput then
-					return
-				end
+				if not dragInput then return end
 				if input == dragInput or (dragInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseButton1) then
 					dragInput = nil
 				end
 			end))
 		end
 
-		-- Kéo thả / bấm nút RF Menu
 		do
 			local pillInput: InputObject? = nil
 			local pillDragMoved = false
@@ -410,18 +394,12 @@ local Rayfield = (function()
 			end))
 
 			track(UserInputService.InputChanged:Connect(function(input: InputObject)
-				if not pillInput then
-					return
-				end
+				if not pillInput then return end
 				local isMatch = (pillInput.UserInputType == Enum.UserInputType.Touch and input == pillInput)
 					or (pillInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseMovement)
-				if not isMatch then
-					return
-				end
+				if not isMatch then return end
 				local delta = input.Position - pillDragStart
-				if delta.Magnitude > 6 then
-					pillDragMoved = true
-				end
+				if delta.Magnitude > 6 then pillDragMoved = true end
 				if pillDragMoved then
 					togglePill.Position = UDim2.new(
 						pillStartPos.X.Scale,
@@ -433,18 +411,14 @@ local Rayfield = (function()
 			end))
 
 			track(UserInputService.InputEnded:Connect(function(input: InputObject)
-				if not pillInput then
-					return
-				end
+				if not pillInput then return end
 				if input == pillInput or (pillInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseButton1) then
 					pillInput = nil
 				end
 			end))
 
 			track(togglePill.Activated:Connect(function()
-				if pillDragMoved then
-					return
-				end
+				if pillDragMoved then return end
 				mainFrame.Visible = true
 				togglePill.Visible = false
 			end))
@@ -548,7 +522,6 @@ local Rayfield = (function()
 		end
 
 		track(minimizeBtn.Activated:Connect(function() Window:SetMinimized(not isMinimized) end))
-
 		track(closeBtn.Activated:Connect(function()
 			Window:SetVisible(false)
 			Window:Notify({
@@ -557,7 +530,6 @@ local Rayfield = (function()
 				Duration = 3,
 			})
 		end))
-
 		track(UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessedEvent: boolean)
 			if gameProcessedEvent then return end
 			if input.KeyCode == toggleKey then Window:SetVisible(not isVisible) end
@@ -1837,7 +1809,7 @@ local Automation = (function()
 
 	local researchConfig = {
 		AutoEnabled = false,
-		AutoPickNext = false,
+		OnlySelected = false,
 		CheckItems = false,
 		SelectedId = "",
 		Interval = 1.2,
@@ -2150,7 +2122,7 @@ local Automation = (function()
 		task.spawn(function()
 			local lastNotifiedErr = ""
 			while researchConfig.AutoEnabled and myToken == researchLoopToken and not destroyed do
-				local targetId = if researchConfig.AutoPickNext then nil else researchConfig.SelectedId
+				local targetId = if researchConfig.OnlySelected and researchConfig.SelectedId ~= "" then researchConfig.SelectedId else nil
 				local ok, msg = self:RunResearchOnce(targetId)
 				if ok then
 					lastNotifiedErr = ""
@@ -2158,8 +2130,8 @@ local Automation = (function()
 				elseif msg ~= "Đang có nghiên cứu khác chạy" and msg ~= lastNotifiedErr then
 					lastNotifiedErr = msg
 					local displayMsg = msg
-					if msg == "Đã nghiên cứu xong" and not researchConfig.AutoPickNext then
-						displayMsg = "Mục đã chọn đã xong — bật 'Tự chọn Research hợp lệ tiếp theo' hoặc chọn mục khác."
+					if msg == "Đã nghiên cứu xong" and researchConfig.OnlySelected then
+						displayMsg = "Mục đã chọn đã xong — tắt 'Chỉ chạy đúng Research đã chọn' hoặc chọn mục khác."
 					end
 					sendNotice("Auto Research", displayMsg, Color3.fromRGB(251, 191, 36))
 				end
@@ -2168,7 +2140,7 @@ local Automation = (function()
 		end)
 	end
 
-	function AutomationModule:SetResearchAutoPick(enabled: boolean) researchConfig.AutoPickNext = enabled end
+	function AutomationModule:SetResearchOnlySelected(enabled: boolean) researchConfig.OnlySelected = enabled end
 	function AutomationModule:SetResearchCheckItems(enabled: boolean) researchConfig.CheckItems = enabled end
 	function AutomationModule:SetSelectedResearch(researchId: string) researchConfig.SelectedId = researchId end
 	function AutomationModule:SetResearchConfirmDelay(sec: number) researchConfig.ConfirmDelay = math.clamp(sec, 0, 10) end
@@ -2667,11 +2639,11 @@ local tglAutoResearch = ResearchTab:CreateToggle({
 	end,
 })
 
-local tglResearchAutoPick = ResearchTab:CreateToggle({
-	Name = "Tự chọn Research hợp lệ tiếp theo",
-	Description = "Tự quét từ Lv/IQ thấp lên cao; tắt nếu chỉ muốn chạy mục đã chọn",
+local tglResearchOnlySelected = ResearchTab:CreateToggle({
+	Name = "Chỉ chạy đúng Research đã chọn",
+	Description = "Tắt = tự động nghiên cứu lần lượt; Bật = chỉ chạy mục ở Dropdown",
 	CurrentValue = false,
-	Callback = function(enabled: boolean) Automation:SetResearchAutoPick(enabled) end,
+	Callback = function(enabled: boolean) Automation:SetResearchOnlySelected(enabled) end,
 })
 
 local tglResearchCheckItems = ResearchTab:CreateToggle({
@@ -2707,9 +2679,9 @@ ResearchTab:CreateSlider({
 
 ResearchTab:CreateButton({
 	Name = "Research Nhanh Ngay (1 lần)",
-	Description = "Chạy ngay Research hợp lệ (theo AutoPick hoặc mục đang chọn)",
+	Description = "Chạy ngay Research hợp lệ tiếp theo (hoặc mục đã chọn nếu bật lọc)",
 	Callback = function()
-		local targetId = if tglResearchAutoPick:Get() or selectedResearchId == "" then nil else selectedResearchId
+		local targetId = if tglResearchOnlySelected:Get() and selectedResearchId ~= "" then selectedResearchId else nil
 		local ok, msg = Automation:RunResearchOnce(targetId)
 		Window:Notify({
 			Title = "Research Nhanh",
@@ -2862,10 +2834,10 @@ SettingsTab:CreateButton({
 		tglEspTeamColor:Set(false, true)
 
 		Automation:SetAutoResearch(false)
-		Automation:SetResearchAutoPick(false)
+		Automation:SetResearchOnlySelected(false)
 		Automation:SetResearchCheckItems(false)
 		tglAutoResearch:Set(false, true)
-		tglResearchAutoPick:Set(false, true)
+		tglResearchOnlySelected:Set(false, true)
 		tglResearchCheckItems:Set(false, true)
 		Automation:SetAutoCraft(false)
 		Automation:SetFastAssemble(false)
