@@ -1,15 +1,19 @@
 --!strict
 --[[
-	Rayfield Client Menu (Single-File LocalScript)
+	Rayfield Client Menu (Full Single-File LocalScript)
 	Đặt trong: StarterPlayer -> StarterPlayerScripts
 	Tính năng:
-	  - Giao diện phong cách Rayfield (kéo thả, thu gọn, thông báo, tương thích PC & Mobile)
-	  - Fix Lag: Tắt Shadows/Post-FX, Particles/Trails, SmoothPlastic/Ẩn Texture, Giảm hiệu ứng nước (có hoàn tác)
-	  - ESP: Highlight nhìn xuyên tường + BillboardGui (Tên, khoảng cách, thanh máu HP, Team Check, giới hạn 24 Highlight)
+	  1. Rayfield UI (hỗ trợ kéo thả, thu gọn, tìm kiếm trong Dropdown, RightShift & nút RF Menu)
+	  2. Fix Lag (tắt Shadows/Post-FX, Particles/Trails, SmoothPlastic/Ẩn Texture, Giảm nước - có hoàn tác)
+	  3. ESP (Highlight + BillboardGui tên, khoảng cách, thanh máu HP, Team Check, giới hạn 24 Highlight)
+	  4. Auto Research nhanh (ProgressAction: "labstart" -> "research", bỏ qua minigame ResearchLab)
+	  5. Craft Item nhanh (Fast Assemble: CraftItem "assemble" -> CraftFinish "done", hoặc Auto Craft)
 ]]
 
-local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
 local Lighting = game:GetService("Lighting")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Stats = game:GetService("Stats")
 local TweenService = game:GetService("TweenService")
@@ -327,7 +331,6 @@ local Rayfield = (function()
 		pagesHolder.BackgroundTransparency = 1
 		pagesHolder.Parent = bodyFrame
 
-		-- Kéo thả cửa sổ chính
 		do
 			local dragging = false
 			local dragStart: Vector3
@@ -363,7 +366,6 @@ local Rayfield = (function()
 			end))
 		end
 
-		-- Kéo thả / bấm nút RF Menu
 		do
 			local pillDragging = false
 			local pillDragMoved = false
@@ -1096,10 +1098,48 @@ local Rayfield = (function()
 				optionsFrame.Parent = wrapper
 				makePadding(optionsFrame, 2, 8, 8, 8)
 
+				local optContainerLayout = Instance.new("UIListLayout")
+				optContainerLayout.SortOrder = Enum.SortOrder.LayoutOrder
+				optContainerLayout.Padding = UDim.new(0, 4)
+				optContainerLayout.Parent = optionsFrame
+
+				local searchBox: TextBox? = nil
+				if #options > 8 then
+					local sb = Instance.new("TextBox")
+					sb.LayoutOrder = 1
+					sb.Size = UDim2.new(1, 0, 0, 28)
+					sb.BackgroundColor3 = THEME.SidebarBg
+					sb.BorderSizePixel = 0
+					sb.ClearTextOnFocus = false
+					sb.Font = Enum.Font.Gotham
+					sb.PlaceholderText = "Tìm kiếm..."
+					sb.PlaceholderColor3 = THEME.SubText
+					sb.Text = ""
+					sb.TextColor3 = THEME.Text
+					sb.TextSize = 12
+					sb.TextXAlignment = Enum.TextXAlignment.Left
+					sb.Parent = optionsFrame
+					makeCorner(sb, 6)
+					makeStroke(sb, THEME.Stroke, 1, 0.3)
+					makePadding(sb, 0, 0, 8, 8)
+					searchBox = sb
+				end
+
+				local optScroll = Instance.new("ScrollingFrame")
+				optScroll.LayoutOrder = 2
+				optScroll.Size = UDim2.new(1, 0, 0, math.min(math.max(#options, 1) * 32, 160))
+				optScroll.BackgroundTransparency = 1
+				optScroll.BorderSizePixel = 0
+				optScroll.ScrollBarThickness = 4
+				optScroll.ScrollBarImageColor3 = THEME.Stroke
+				optScroll.CanvasSize = UDim2.new()
+				optScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+				optScroll.Parent = optionsFrame
+
 				local optLayout = Instance.new("UIListLayout")
 				optLayout.SortOrder = Enum.SortOrder.LayoutOrder
 				optLayout.Padding = UDim.new(0, 4)
-				optLayout.Parent = optionsFrame
+				optLayout.Parent = optScroll
 
 				local optButtons: { [string]: TextButton } = {}
 
@@ -1131,15 +1171,16 @@ local Rayfield = (function()
 				for i, optName in ipairs(options) do
 					local optBtn = Instance.new("TextButton")
 					optBtn.LayoutOrder = i
-					optBtn.Size = UDim2.new(1, 0, 0, 28)
+					optBtn.Size = UDim2.new(1, -6, 0, 28)
 					optBtn.BackgroundColor3 = THEME.ControlBg
 					optBtn.BorderSizePixel = 0
 					optBtn.Font = Enum.Font.GothamMedium
 					optBtn.Text = optName
 					optBtn.TextSize = 12
 					optBtn.TextColor3 = THEME.Text
+					optBtn.TextTruncate = Enum.TextTruncate.AtEnd
 					optBtn.AutoButtonColor = false
-					optBtn.Parent = optionsFrame
+					optBtn.Parent = optScroll
 					makeCorner(optBtn, 6)
 
 					optButtons[optName] = optBtn
@@ -1149,6 +1190,15 @@ local Rayfield = (function()
 						open = false
 						optionsFrame.Visible = false
 						arrowLbl.Text = "▼"
+					end))
+				end
+
+				if searchBox then
+					track(searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+						local q = string.lower(searchBox.Text)
+						for optName, optBtn in pairs(optButtons) do
+							optBtn.Visible = (q == "" or string.find(string.lower(optName), q, 1, true) ~= nil)
+						end
 					end))
 				end
 
@@ -1493,31 +1543,21 @@ local FixLag = (function()
 		config.ShadowsAndPostFX = enabled
 		applyLightingAndPostFX()
 		refreshListeners()
-		if enabled then
-			self:RescanWorkspaceAsync()
-		end
+		if enabled then self:RescanWorkspaceAsync() end
 	end
 
 	function FixLagModule:SetParticlesAndTrails(enabled: boolean)
 		config.ParticlesAndTrails = enabled
-		if not enabled then
-			restoreParticles()
-		end
+		if not enabled then restoreParticles() end
 		refreshListeners()
-		if enabled then
-			self:RescanWorkspaceAsync()
-		end
+		if enabled then self:RescanWorkspaceAsync() end
 	end
 
 	function FixLagModule:SetMaterialsAndTextures(enabled: boolean)
 		config.MaterialsAndTextures = enabled
-		if not enabled then
-			restoreMaterialsAndTextures()
-		end
+		if not enabled then restoreMaterialsAndTextures() end
 		refreshListeners()
-		if enabled then
-			self:RescanWorkspaceAsync()
-		end
+		if enabled then self:RescanWorkspaceAsync() end
 	end
 
 	function FixLagModule:SetLowTerrain(enabled: boolean)
@@ -1530,12 +1570,8 @@ local FixLag = (function()
 			return
 		end
 		config.SkipCharacters = enabled
-		if config.ParticlesAndTrails then
-			restoreParticles()
-		end
-		if config.MaterialsAndTextures then
-			restoreMaterialsAndTextures()
-		end
+		if config.ParticlesAndTrails then restoreParticles() end
+		if config.MaterialsAndTextures then restoreMaterialsAndTextures() end
 		self:RescanWorkspaceAsync()
 	end
 
@@ -1553,9 +1589,7 @@ local FixLag = (function()
 			restoreMaterialsAndTextures()
 		end
 		refreshListeners()
-		if enabled then
-			self:RescanWorkspaceAsync()
-		end
+		if enabled then self:RescanWorkspaceAsync() end
 	end
 
 	function FixLagModule:GetActiveCount(): number
@@ -2011,11 +2045,7 @@ local Esp = (function()
 			return
 		end
 		config.Enabled = enabled
-		if enabled then
-			startLoop()
-		else
-			stopLoop()
-		end
+		if enabled then startLoop() else stopLoop() end
 	end
 
 	function EspModule:SetShowHighlight(enabled: boolean)
@@ -2079,7 +2109,643 @@ local Esp = (function()
 end)()
 
 --====================================================
--- 4. KHỞI TẠO MENU & LIÊN KẾT CHỨC NĂNG
+-- 4. AUTO RESEARCH & FAST CRAFT MODULE
+--====================================================
+local Automation = (function()
+	local AutomationModule = {}
+
+	local cachedGameData: any = nil
+	local gameDataChecked = false
+
+	local inventory: { [string]: number } = {}
+	local stash: { [string]: number } = {}
+	local lastStashRefresh = 0
+	local inventoryConn: RBXScriptConnection? = nil
+	local destroyed = false
+
+	local researchBusy = false
+	local craftBusy = false
+
+	local researchConfig = {
+		AutoEnabled = false,
+		AutoPickNext = true,
+		CheckItems = true,
+		SelectedId = "",
+		Interval = 1.2,
+	}
+
+	local craftConfig = {
+		AutoEnabled = false,
+		SelectedId = "",
+		Quantity = 1,
+		FastAssemble = true,
+		AutoClampMax = true,
+		Interval = 0.5,
+	}
+
+	local researchLoopToken = 0
+	local craftLoopToken = 0
+	local notifyCallback: ((string, string, Color3?) -> ())? = nil
+
+	local function getGameData(): any
+		if not gameDataChecked then
+			gameDataChecked = true
+			local mod = ReplicatedStorage:FindFirstChild("GameData") or ReplicatedStorage:WaitForChild("GameData", 3)
+			if mod and mod:IsA("ModuleScript") then
+				local ok, data = pcall(require, mod)
+				if ok and type(data) == "table" then
+					cachedGameData = data
+				end
+			end
+		end
+		return cachedGameData
+	end
+
+	local function decodeAttrTable(attrName: string): { [string]: any }
+		local raw = LocalPlayer:GetAttribute(attrName)
+		if type(raw) ~= "string" or raw == "" then
+			return {}
+		end
+		local ok, decoded = pcall(function()
+			return HttpService:JSONDecode(raw)
+		end)
+		if ok and type(decoded) == "table" then
+			return decoded
+		end
+		return {}
+	end
+
+	local function initInventorySync()
+		if inventoryConn or destroyed then
+			return
+		end
+		local invSync = ReplicatedStorage:FindFirstChild("InventorySync")
+		if invSync and invSync:IsA("RemoteEvent") then
+			inventoryConn = invSync.OnClientEvent:Connect(function(payload: any)
+				if type(payload) == "table" then
+					inventory = payload
+				end
+			end)
+			pcall(function()
+				invSync:FireServer()
+			end)
+		end
+	end
+
+	initInventorySync()
+
+	local function refreshStash(force: boolean?)
+		if not force and (os.clock() - lastStashRefresh < 2.5) then
+			return
+		end
+		lastStashRefresh = os.clock()
+		local stashAction = ReplicatedStorage:FindFirstChild("StashAction")
+		if stashAction and stashAction:IsA("RemoteFunction") then
+			local ok, success, res = pcall(function()
+				return stashAction:InvokeServer("list")
+			end)
+			if ok and success and type(res) == "table" and type(res.stash) == "table" then
+				stash = res.stash
+			end
+		end
+	end
+
+	local function totalOwned(itemId: string): number
+		return (inventory[itemId] or 0) + (stash[itemId] or 0)
+	end
+
+	local function sendNotice(title: string, msg: string, color: Color3?)
+		if notifyCallback then
+			notifyCallback(title, msg, color)
+		end
+	end
+
+	function AutomationModule:SetNotifyCallback(cb: (string, string, Color3?) -> ())
+		notifyCallback = cb
+	end
+
+	local function isResearchEligible(
+		entry: any,
+		known: { [string]: any },
+		built: { [string]: any },
+		researching: { [string]: any },
+		researchingMore: { [string]: any },
+		geniusLevel: number,
+		geniusCap: number,
+		qi: number,
+		parallelLab: boolean
+	): (boolean, string)
+		if type(entry) ~= "table" or not entry.id then
+			return false, "Dữ liệu không hợp lệ"
+		end
+		if known[entry.id] then
+			return false, "Đã nghiên cứu xong"
+		end
+		if researching.id == entry.id or researchingMore[entry.id] ~= nil then
+			return false, "Đang trong quá trình nghiên cứu"
+		end
+		if not parallelLab and researching.id ~= nil then
+			return false, "Đang có nghiên cứu khác chạy"
+		end
+		if not built.Workbench then
+			return false, "Chưa xây Workbench"
+		end
+
+		local reqLevel = entry.level or 1
+		if reqLevel > geniusCap then
+			return false, "Cần hạ Boss để mở giới hạn Level"
+		end
+		if reqLevel > geniusLevel then
+			return false, ("Cần Genius Level %d (hiện tại %d)"):format(reqLevel, geniusLevel)
+		end
+
+		for _, reqId in ipairs(entry.requires or {}) do
+			if not known[reqId] then
+				return false, ("Thiếu research tiên quyết: %s"):format(tostring(reqId))
+			end
+		end
+
+		local reqQi = entry.qi or 0
+		if qi < reqQi then
+			return false, ("Thiếu IQ (%d/%d)"):format(qi, reqQi)
+		end
+
+		if researchConfig.CheckItems and type(entry.items) == "table" then
+			for _, cost in ipairs(entry.items) do
+				local have = totalOwned(cost.item)
+				if have < cost.count then
+					return false, ("Thiếu %s (%d/%d)"):format(tostring(cost.item), have, cost.count)
+				end
+			end
+		end
+
+		return true, "Sẵn sàng"
+	end
+
+	local function pickEligibleResearch(): any?
+		local gd = getGameData()
+		if not gd or type(gd.Research) ~= "table" then
+			return nil
+		end
+
+		refreshStash(false)
+
+		local known = decodeAttrTable("Research")
+		local built = decodeAttrTable("Built")
+		local researching = decodeAttrTable("Researching")
+		local researchingMore = decodeAttrTable("ResearchingMore")
+		local parallelLab = LocalPlayer:GetAttribute("ParallelLab") == true
+		local qi = tonumber(LocalPlayer:GetAttribute("QI")) or 0
+		local totalQi = tonumber(LocalPlayer:GetAttribute("TotalQI")) or 0
+		local geniusCap = tonumber(LocalPlayer:GetAttribute("GeniusCap")) or 45
+		local geniusLevel = if gd.GeniusLevel then gd.GeniusLevel(totalQi) else 1
+
+		local candidates: { any } = {}
+		for _, entry in ipairs(gd.Research) do
+			local ok = isResearchEligible(
+				entry,
+				known,
+				built,
+				researching,
+				researchingMore,
+				geniusLevel,
+				geniusCap,
+				qi,
+				parallelLab
+			)
+			if ok then
+				table.insert(candidates, entry)
+			end
+		end
+
+		if #candidates == 0 then
+			return nil
+		end
+
+		table.sort(candidates, function(a: any, b: any)
+			local la = a.level or 1
+			local lb = b.level or 1
+			if la ~= lb then
+				return la < lb
+			end
+			return (a.qi or 0) < (b.qi or 0)
+		end)
+
+		return candidates[1]
+	end
+
+	function AutomationModule:RunResearchOnce(targetId: string?): (boolean, string)
+		if researchBusy then
+			return false, "Đang xử lý yêu cầu Research..."
+		end
+
+		local gd = getGameData()
+		if not gd or type(gd.Research) ~= "table" then
+			return false, "Không tìm thấy GameData.Research"
+		end
+
+		local progressAction = ReplicatedStorage:FindFirstChild("ProgressAction")
+		if not progressAction or not progressAction:IsA("RemoteFunction") then
+			return false, "Không tìm thấy RemoteFunction ProgressAction"
+		end
+
+		initInventorySync()
+		refreshStash(true)
+
+		local chosenEntry: any = nil
+		if targetId and targetId ~= "" then
+			chosenEntry = gd.ResearchById and gd.ResearchById[targetId]
+			if not chosenEntry then
+				for _, r in ipairs(gd.Research) do
+					if r.id == targetId then
+						chosenEntry = r
+						break
+					end
+				end
+			end
+			if not chosenEntry then
+				return false, "Không tìm thấy Research: " .. tostring(targetId)
+			end
+
+			local known = decodeAttrTable("Research")
+			local built = decodeAttrTable("Built")
+			local researching = decodeAttrTable("Researching")
+			local researchingMore = decodeAttrTable("ResearchingMore")
+			local parallelLab = LocalPlayer:GetAttribute("ParallelLab") == true
+			local qi = tonumber(LocalPlayer:GetAttribute("QI")) or 0
+			local totalQi = tonumber(LocalPlayer:GetAttribute("TotalQI")) or 0
+			local geniusCap = tonumber(LocalPlayer:GetAttribute("GeniusCap")) or 45
+			local geniusLevel = if gd.GeniusLevel then gd.GeniusLevel(totalQi) else 1
+
+			local eligible, reason = isResearchEligible(
+				chosenEntry,
+				known,
+				built,
+				researching,
+				researchingMore,
+				geniusLevel,
+				geniusCap,
+				qi,
+				parallelLab
+			)
+			if not eligible then
+				return false, reason
+			end
+		else
+			chosenEntry = pickEligibleResearch()
+			if not chosenEntry then
+				return false, "Không có Research nào đủ điều kiện hoặc slot đang bận"
+			end
+		end
+
+		researchBusy = true
+		local okStart, started, tokenOrErr = pcall(function()
+			return progressAction:InvokeServer("labstart", chosenEntry.id)
+		end)
+
+		if not okStart or not started then
+			researchBusy = false
+			return false, tostring(tokenOrErr or "labstart thất bại")
+		end
+
+		local okFinish, doneOk, msg = pcall(function()
+			return progressAction:InvokeServer("research", chosenEntry.id, tokenOrErr)
+		end)
+		researchBusy = false
+
+		if not okFinish then
+			return false, "Lỗi gọi ProgressAction(research): " .. tostring(doneOk)
+		end
+		if not doneOk then
+			return false, tostring(msg or "Server từ chối bắt đầu research")
+		end
+
+		return true, ("Đã bắt đầu nhanh: %s"):format(tostring(chosenEntry.name or chosenEntry.id))
+	end
+
+	function AutomationModule:CancelResearch(): (boolean, string)
+		local progressAction = ReplicatedStorage:FindFirstChild("ProgressAction")
+		if not progressAction or not progressAction:IsA("RemoteFunction") then
+			return false, "Không tìm thấy ProgressAction"
+		end
+		local ok, res, msg = pcall(function()
+			return progressAction:InvokeServer("cancelresearch")
+		end)
+		if not ok then
+			return false, tostring(res)
+		end
+		return res == true, tostring(msg or (if res then "Đã hủy research" else "Không thể hủy"))
+	end
+
+	function AutomationModule:SetAutoResearch(enabled: boolean)
+		researchConfig.AutoEnabled = enabled
+		researchLoopToken += 1
+		local myToken = researchLoopToken
+		if not enabled then
+			return
+		end
+
+		task.spawn(function()
+			while researchConfig.AutoEnabled and myToken == researchLoopToken and not destroyed do
+				local targetId = if researchConfig.AutoPickNext then nil else researchConfig.SelectedId
+				local ok, msg = self:RunResearchOnce(targetId)
+				if ok then
+					sendNotice("Auto Research", msg, Color3.fromRGB(52, 211, 153))
+				end
+				task.wait(researchConfig.Interval)
+			end
+		end)
+	end
+
+	function AutomationModule:SetResearchAutoPick(enabled: boolean)
+		researchConfig.AutoPickNext = enabled
+	end
+
+	function AutomationModule:SetResearchCheckItems(enabled: boolean)
+		researchConfig.CheckItems = enabled
+	end
+
+	function AutomationModule:SetSelectedResearch(researchId: string)
+		researchConfig.SelectedId = researchId
+	end
+
+	function AutomationModule:GetResearchOptions(): ({ string }, { [string]: string })
+		local gd = getGameData()
+		local options: { string } = {}
+		local labelToId: { [string]: string } = {}
+		if not gd or type(gd.Research) ~= "table" then
+			options[1] = "Không có dữ liệu Research"
+			return options, labelToId
+		end
+		for _, r in ipairs(gd.Research) do
+			local label = ("%s [%s] (Lv.%d, %d IQ)"):format(tostring(r.name or r.id), tostring(r.id), r.level or 1, r.qi or 0)
+			table.insert(options, label)
+			labelToId[label] = r.id
+		end
+		if #options > 0 and researchConfig.SelectedId == "" then
+			researchConfig.SelectedId = labelToId[options[1]] or ""
+		end
+		return options, labelToId
+	end
+
+	function AutomationModule:GetResearchStatusText(): string
+		local gd = getGameData()
+		if not gd or type(gd.Research) ~= "table" then
+			return "Chưa tải được GameData.Research"
+		end
+
+		local known = decodeAttrTable("Research")
+		local researching = decodeAttrTable("Researching")
+		local qi = tonumber(LocalPlayer:GetAttribute("QI")) or 0
+		local totalQi = tonumber(LocalPlayer:GetAttribute("TotalQI")) or 0
+		local lv = if gd.GeniusLevel then gd.GeniusLevel(totalQi) else 1
+
+		local doneCount = 0
+		local totalCount = #gd.Research
+		for _, r in ipairs(gd.Research) do
+			if known[r.id] then
+				doneCount += 1
+			end
+		end
+
+		local activeStr = "Không có"
+		if researching.id then
+			local entry = gd.ResearchById and gd.ResearchById[researching.id]
+			local rName = if entry then entry.name else tostring(researching.id)
+			local ends = tonumber(researching.ends) or 0
+			local remain = math.max(0, math.floor(ends - workspace:GetServerTimeNow()))
+			activeStr = ("%s (còn %ds)"):format(tostring(rName), remain)
+		end
+
+		return ("Đã xong: %d/%d | Lv.%d | IQ: %d\nĐang chạy: %s"):format(doneCount, totalCount, lv, qi, activeStr)
+	end
+
+	local function findRecipeById(recipeId: string): any?
+		local gd = getGameData()
+		if not gd or type(gd.Recipes) ~= "table" then
+			return nil
+		end
+		for _, rec in ipairs(gd.Recipes) do
+			if rec.id == recipeId or rec.result == recipeId then
+				return rec
+			end
+		end
+		return nil
+	end
+
+	local function knowsRecipe(gd: any, recipe: any): boolean
+		local reqResearch = gd.RecipeResearch and gd.RecipeResearch[recipe.id]
+		if not reqResearch then
+			return true
+		end
+		local known = decodeAttrTable("Research")
+		return known[reqResearch] == true
+	end
+
+	local function getAffordCount(recipe: any): number
+		if type(recipe.ingredients) ~= "table" or #recipe.ingredients == 0 then
+			return 50
+		end
+		local maxMake = 50
+		for _, ing in ipairs(recipe.ingredients) do
+			local need = ing.count or 1
+			if need > 0 then
+				local have = totalOwned(ing.item)
+				maxMake = math.min(maxMake, math.floor(have / need))
+			end
+		end
+		return math.max(0, maxMake)
+	end
+
+	function AutomationModule:CraftOnce(targetRecipeId: string?): (boolean, string)
+		if craftBusy then
+			return false, "Đang xử lý craft..."
+		end
+
+		local gd = getGameData()
+		if not gd or type(gd.Recipes) ~= "table" then
+			return false, "Không tìm thấy GameData.Recipes"
+		end
+
+		local craftItem = ReplicatedStorage:FindFirstChild("CraftItem")
+		if not craftItem or not craftItem:IsA("RemoteFunction") then
+			return false, "Không tìm thấy RemoteFunction CraftItem"
+		end
+
+		initInventorySync()
+		refreshStash(false)
+
+		local recId = if targetRecipeId and targetRecipeId ~= "" then targetRecipeId else craftConfig.SelectedId
+		local recipe = findRecipeById(recId)
+		if not recipe then
+			return false, "Chưa chọn công thức hợp lệ"
+		end
+
+		if not knowsRecipe(gd, recipe) then
+			local reqId = gd.RecipeResearch[recipe.id]
+			local rName = if gd.ResearchById and gd.ResearchById[reqId] then gd.ResearchById[reqId].name else tostring(reqId)
+			return false, ("Chưa mở Research: %s"):format(tostring(rName))
+		end
+
+		local afford = getAffordCount(recipe)
+		if afford <= 0 then
+			return false, "Không đủ nguyên liệu để craft"
+		end
+
+		local finalQty = math.clamp(math.round(craftConfig.Quantity), 1, 50)
+		if craftConfig.AutoClampMax then
+			finalQty = math.clamp(math.min(finalQty, afford), 1, 50)
+		elseif finalQty > afford then
+			return false, ("Chỉ đủ nguyên liệu làm tối đa x%d"):format(afford)
+		end
+
+		craftBusy = true
+		local itemMeta = gd.Items and gd.Items[recipe.result]
+		local itemName = if itemMeta and itemMeta.name then itemMeta.name else tostring(recipe.result or recipe.id)
+
+		local craftFinish = ReplicatedStorage:FindFirstChild("CraftFinish")
+		if craftConfig.FastAssemble and craftFinish and craftFinish:IsA("RemoteFunction") then
+			local okInv, okStart, tokenOrErr = pcall(function()
+				return craftItem:InvokeServer(recipe.id, finalQty, "assemble")
+			end)
+			if not okInv or not okStart then
+				craftBusy = false
+				return false, tostring(tokenOrErr or "CraftItem(assemble) thất bại")
+			end
+
+			local okFin, finOk, finErr = pcall(function()
+				return craftFinish:InvokeServer(tokenOrErr, "done")
+			end)
+			craftBusy = false
+
+			if not okFin then
+				return false, "Lỗi CraftFinish: " .. tostring(finOk)
+			end
+			if not finOk then
+				return false, tostring(finErr or "CraftFinish thất bại")
+			end
+			return true, ("Fast Assemble x%d %s"):format(finalQty, itemName)
+		else
+			local okInv, craftOk, craftErr = pcall(function()
+				return craftItem:InvokeServer(recipe.id, finalQty)
+			end)
+			craftBusy = false
+
+			if not okInv then
+				return false, "Lỗi CraftItem: " .. tostring(craftOk)
+			end
+			if not craftOk then
+				return false, tostring(craftErr or "CraftItem thất bại")
+			end
+			return true, ("Đã craft x%d %s"):format(finalQty, itemName)
+		end
+	end
+
+	function AutomationModule:SetAutoCraft(enabled: boolean)
+		craftConfig.AutoEnabled = enabled
+		craftLoopToken += 1
+		local myToken = craftLoopToken
+		if not enabled then
+			return
+		end
+
+		task.spawn(function()
+			local warnedOut = false
+			while craftConfig.AutoEnabled and myToken == craftLoopToken and not destroyed do
+				local ok, msg = self:CraftOnce(craftConfig.SelectedId)
+				if ok then
+					warnedOut = false
+				elseif not warnedOut then
+					warnedOut = true
+					sendNotice("Auto Craft", msg, Color3.fromRGB(251, 191, 36))
+				end
+				task.wait(craftConfig.Interval)
+			end
+		end)
+	end
+
+	function AutomationModule:SetSelectedRecipe(recipeId: string)
+		craftConfig.SelectedId = recipeId
+	end
+
+	function AutomationModule:SetCraftQuantity(qty: number)
+		craftConfig.Quantity = math.clamp(math.round(qty), 1, 50)
+	end
+
+	function AutomationModule:SetFastAssemble(enabled: boolean)
+		craftConfig.FastAssemble = enabled
+	end
+
+	function AutomationModule:SetAutoClampMax(enabled: boolean)
+		craftConfig.AutoClampMax = enabled
+	end
+
+	function AutomationModule:SetCraftInterval(sec: number)
+		craftConfig.Interval = math.clamp(sec, 0.25, 5)
+	end
+
+	function AutomationModule:GetRecipeOptions(): ({ string }, { [string]: string })
+		local gd = getGameData()
+		local options: { string } = {}
+		local labelToId: { [string]: string } = {}
+		if not gd or type(gd.Recipes) ~= "table" then
+			options[1] = "Không có dữ liệu Recipes"
+			return options, labelToId
+		end
+		for _, rec in ipairs(gd.Recipes) do
+			local itemMeta = gd.Items and gd.Items[rec.result]
+			local display = if itemMeta and itemMeta.name then itemMeta.name else tostring(rec.result or rec.id)
+			local label = ("%s [%s]"):format(display, tostring(rec.id))
+			table.insert(options, label)
+			labelToId[label] = rec.id
+		end
+		if #options > 0 and craftConfig.SelectedId == "" then
+			craftConfig.SelectedId = labelToId[options[1]] or ""
+		end
+		return options, labelToId
+	end
+
+	function AutomationModule:GetCraftStatusText(): string
+		local gd = getGameData()
+		if not gd or type(gd.Recipes) ~= "table" then
+			return "Chưa tải được GameData.Recipes"
+		end
+		local recipe = findRecipeById(craftConfig.SelectedId)
+		if not recipe then
+			return "Chưa chọn công thức"
+		end
+
+		local itemMeta = gd.Items and gd.Items[recipe.result]
+		local display = if itemMeta and itemMeta.name then itemMeta.name else tostring(recipe.result or recipe.id)
+		local unlocked = knowsRecipe(gd, recipe)
+		local afford = getAffordCount(recipe)
+		local owned = inventory[recipe.result] or 0
+
+		return ("Item: %s (đang có: %d)\nMở khóa: %s | Đủ nguyên liệu: tối đa %d lần"):format(
+			display,
+			owned,
+			if unlocked then "Rồi" else "Chưa",
+			afford
+		)
+	end
+
+	function AutomationModule:Destroy()
+		destroyed = true
+		researchConfig.AutoEnabled = false
+		craftConfig.AutoEnabled = false
+		researchLoopToken += 1
+		craftLoopToken += 1
+		if inventoryConn then
+			inventoryConn:Disconnect()
+			inventoryConn = nil
+		end
+	end
+
+	return AutomationModule
+end)()
+
+--====================================================
+-- 5. KHỞI TẠO MENU & LIÊN KẾT CHỨC NĂNG
 --====================================================
 local ESP_COLORS: { [string]: Color3 } = {
 	Cyan = Color3.fromRGB(56, 189, 248),
@@ -2092,12 +2758,21 @@ local ESP_COLORS: { [string]: Color3 } = {
 
 local Window = Rayfield:CreateWindow({
 	Name = "Rayfield Client Menu",
-	Subtitle = "StarterPlayerScripts • Fix Lag & ESP",
+	Subtitle = "StarterPlayerScripts • Fix Lag, ESP, Research & Craft",
 	ToggleKey = Enum.KeyCode.RightShift,
 	DisplayOrder = 500,
 })
 
--- TAB: FIX LAG
+Automation:SetNotifyCallback(function(title: string, content: string, color: Color3?)
+	Window:Notify({
+		Title = title,
+		Content = content,
+		Duration = 2.5,
+		Color = color,
+	})
+end)
+
+-- TAB 1: FIX LAG
 local FixLagTab = Window:CreateTab("Fix Lag")
 
 FixLagTab:CreateSection("Giám sát hiệu năng")
@@ -2211,7 +2886,7 @@ FixLagTab:CreateToggle({
 	end,
 })
 
--- TAB: ESP
+-- TAB 2: ESP
 local EspTab = Window:CreateTab("ESP")
 
 EspTab:CreateSection("Điều khiển chính")
@@ -2314,7 +2989,190 @@ EspTab:CreateSlider({
 	end,
 })
 
--- TAB: CÀI ĐẶT
+-- TAB 3: AUTO RESEARCH NHANH
+local ResearchTab = Window:CreateTab("Research")
+
+ResearchTab:CreateSection("Trạng thái Research")
+local researchStatus = ResearchTab:CreateParagraph({
+	Title = "Tiến độ Lab",
+	Content = Automation:GetResearchStatusText(),
+})
+
+ResearchTab:CreateSection("Auto Research (Bỏ qua minigame)")
+
+local tglAutoResearch = ResearchTab:CreateToggle({
+	Name = "Bật Auto Research nhanh",
+	Description = "Tự động labstart -> research ngay khi còn slot và đủ IQ",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Automation:SetAutoResearch(enabled)
+		Window:Notify({
+			Title = "Auto Research",
+			Content = if enabled then "Đã BẬT Auto Research nhanh." else "Đã TẮT Auto Research.",
+			Duration = 2.5,
+			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
+		})
+	end,
+})
+
+ResearchTab:CreateToggle({
+	Name = "Tự chọn Research hợp lệ tiếp theo",
+	Description = "Tự quét từ Lv/IQ thấp lên cao; tắt nếu chỉ muốn chạy mục đã chọn",
+	CurrentValue = true,
+	Callback = function(enabled: boolean)
+		Automation:SetResearchAutoPick(enabled)
+	end,
+})
+
+ResearchTab:CreateToggle({
+	Name = "Kiểm tra đủ vật phẩm yêu cầu",
+	Description = "Kiểm tra Inventory + Stash nếu Research có tốn nguyên liệu",
+	CurrentValue = true,
+	Callback = function(enabled: boolean)
+		Automation:SetResearchCheckItems(enabled)
+	end,
+})
+
+local researchOpts, researchMap = Automation:GetResearchOptions()
+local selectedResearchId = researchMap[researchOpts[1]] or ""
+
+ResearchTab:CreateDropdown({
+	Name = "Chọn Research ưu tiên",
+	Options = researchOpts,
+	CurrentOption = researchOpts[1],
+	Callback = function(option: string)
+		selectedResearchId = researchMap[option] or ""
+		Automation:SetSelectedResearch(selectedResearchId)
+	end,
+})
+
+ResearchTab:CreateButton({
+	Name = "Research Nhanh Ngay (1 lần)",
+	Description = "Chạy ngay Research đang chọn (hoặc mục hợp lệ tiếp theo)",
+	Callback = function()
+		local ok, msg = Automation:RunResearchOnce(if selectedResearchId ~= "" then selectedResearchId else nil)
+		Window:Notify({
+			Title = "Research Nhanh",
+			Content = msg,
+			Duration = 3,
+			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
+		})
+	end,
+})
+
+ResearchTab:CreateButton({
+	Name = "Hủy Research đang chạy",
+	Description = "Gửi ProgressAction('cancelresearch') lên server",
+	Callback = function()
+		local ok, msg = Automation:CancelResearch()
+		Window:Notify({
+			Title = "Research",
+			Content = msg,
+			Duration = 2.5,
+			Color = if ok then Color3.fromRGB(56, 189, 248) else Color3.fromRGB(248, 113, 113),
+		})
+	end,
+})
+
+-- TAB 4: CRAFT ITEM NHANH
+local CraftTab = Window:CreateTab("Craft")
+
+CraftTab:CreateSection("Trạng thái công thức")
+local craftStatus = CraftTab:CreateParagraph({
+	Title = "Thông tin Craft",
+	Content = Automation:GetCraftStatusText(),
+})
+
+CraftTab:CreateSection("Chọn Item & Cấu hình")
+
+local recipeOpts, recipeMap = Automation:GetRecipeOptions()
+if recipeOpts[1] and recipeMap[recipeOpts[1]] then
+	Automation:SetSelectedRecipe(recipeMap[recipeOpts[1]])
+end
+
+CraftTab:CreateDropdown({
+	Name = "Chọn Item / Công thức",
+	Options = recipeOpts,
+	CurrentOption = recipeOpts[1],
+	Callback = function(option: string)
+		local rId = recipeMap[option] or ""
+		Automation:SetSelectedRecipe(rId)
+		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
+	end,
+})
+
+CraftTab:CreateSlider({
+	Name = "Số lượng mỗi lần Craft",
+	Range = { 1, 50 },
+	Increment = 1,
+	Suffix = "x",
+	CurrentValue = 1,
+	Callback = function(value: number)
+		Automation:SetCraftQuantity(value)
+	end,
+})
+
+CraftTab:CreateToggle({
+	Name = "Fast Assemble (Instant CraftFinish)",
+	Description = "Dùng assemble + CraftFinish('done') ngay lập tức, bỏ qua minigame",
+	CurrentValue = true,
+	Callback = function(enabled: boolean)
+		Automation:SetFastAssemble(enabled)
+	end,
+})
+
+CraftTab:CreateToggle({
+	Name = "Tự kẹp số lượng theo nguyên liệu",
+	Description = "Tự giảm số lượng xuống mức tối đa đủ nguyên liệu nếu đặt cao hơn",
+	CurrentValue = true,
+	Callback = function(enabled: boolean)
+		Automation:SetAutoClampMax(enabled)
+	end,
+})
+
+CraftTab:CreateSlider({
+	Name = "Chu kỳ Auto Craft",
+	Range = { 0.25, 5 },
+	Increment = 0.25,
+	Suffix = "s",
+	CurrentValue = 0.5,
+	Callback = function(value: number)
+		Automation:SetCraftInterval(value)
+	end,
+})
+
+CraftTab:CreateSection("Thực thi")
+
+local tglAutoCraft = CraftTab:CreateToggle({
+	Name = "Bật Auto Craft liên tục",
+	Description = "Tự động craft item đã chọn liên tục khi đủ nguyên liệu",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Automation:SetAutoCraft(enabled)
+		Window:Notify({
+			Title = "Auto Craft",
+			Content = if enabled then "Đã BẬT Auto Craft." else "Đã TẮT Auto Craft.",
+			Duration = 2.5,
+			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
+		})
+	end,
+})
+
+CraftTab:CreateButton({
+	Name = "Craft Nhanh Ngay (1 lần)",
+	Description = "Chế tạo ngay công thức đang chọn với cấu hình phía trên",
+	Callback = function()
+		local ok, msg = Automation:CraftOnce(nil)
+		Window:Notify({
+			Title = "Craft Nhanh",
+			Content = msg,
+			Duration = 2.5,
+			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
+		})
+	end,
+})
+
+-- TAB 5: CÀI ĐẶT
 local SettingsTab = Window:CreateTab("Cài đặt")
 
 SettingsTab:CreateSection("Hướng dẫn nhanh")
@@ -2327,7 +3185,7 @@ SettingsTab:CreateSection("Khôi phục & Dọn dẹp")
 
 SettingsTab:CreateButton({
 	Name = "Tắt tất cả & Khôi phục mặc định",
-	Description = "Tắt Fix Lag + ESP và trả lại toàn bộ cài đặt gốc",
+	Description = "Tắt Fix Lag, ESP, Auto Research, Auto Craft",
 	Callback = function()
 		FixLag:SetAll(false)
 		tglMasterFixLag:Set(false, true)
@@ -2339,9 +3197,14 @@ SettingsTab:CreateButton({
 		Esp:SetEnabled(false)
 		tglEspMaster:Set(false, true)
 
+		Automation:SetAutoResearch(false)
+		tglAutoResearch:Set(false, true)
+		Automation:SetAutoCraft(false)
+		tglAutoCraft:Set(false, true)
+
 		Window:Notify({
 			Title = "Khôi phục",
-			Content = "Đã tắt toàn bộ Fix Lag & ESP.",
+			Content = "Đã tắt toàn bộ Fix Lag, ESP, Auto Research & Auto Craft.",
 			Duration = 2.5,
 		})
 	end,
@@ -2351,7 +3214,7 @@ local monitorConn: RBXScriptConnection? = nil
 
 SettingsTab:CreateButton({
 	Name = "Đóng hoàn toàn Menu",
-	Description = "Dọn dẹp toàn bộ UI, Fix Lag và ESP trong phiên chơi này",
+	Description = "Dọn dẹp toàn bộ UI, Fix Lag, ESP và Automation trong phiên chơi này",
 	Callback = function()
 		if monitorConn then
 			monitorConn:Disconnect()
@@ -2359,6 +3222,7 @@ SettingsTab:CreateButton({
 		end
 		FixLag:Destroy()
 		Esp:Destroy()
+		Automation:Destroy()
 		Window:Destroy()
 	end,
 })
@@ -2381,6 +3245,12 @@ monitorConn = RunService.RenderStepped:Connect(function(dt: number)
 
 	perfStatus:Set({
 		Content = ("FPS: %d | RAM: %d MB | Fix Lag: %d/4 | ESP: %s"):format(fps, memMb, activeCount, espState),
+	})
+	researchStatus:Set({
+		Content = Automation:GetResearchStatusText(),
+	})
+	craftStatus:Set({
+		Content = Automation:GetCraftStatusText(),
 	})
 end)
 
