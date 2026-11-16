@@ -1,3084 +1,371 @@
--- Research & Mission Hub (Mobile & PC - DeltaX & Roblox Studio Compatible)
--- Features:
---   1. All features start in OFF state by default
---   2. Auto Fast Research (Skips & Auto-Solves Scan, Circuit, Gyro, Mix stages)
---   3. Auto Queue Research (Automatically starts the next unlocked research)
---   4. Fast Craft (Auto-Snaps Pieces, Instant Screws, and Auto Power in Assembly Bench)
---   5. Auto Collect Material + Planet/Dimension Material Selector (Fixed Earth Biomes & Orbit bug)
---   6. Updated Auto Mission (Fixed Workbench Crafting, Safe Streaming Teleport & Anti-Void Rescue)
---   7. Clean, easy-to-read rectangular English UI (Draggable on Touch & Mouse)
-
-if _G.ResearchHubCleanup then
-	pcall(_G.ResearchHubCleanup)
-end
-if _G.FixLagCleanup then
-	pcall(_G.FixLagCleanup)
-end
+--!strict
+-- Bảng Điều Khiển Tối Giản (Nút BẬT/TẮT Đơn Giản)
+-- Vị trí: StarterPlayer.StarterPlayerScripts
 
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local CollectionService = game:GetService("CollectionService")
-local HttpService = game:GetService("HttpService")
-local CoreGui = game:GetService("CoreGui")
-local VirtualInputManager = pcall(function()
-	return game:GetService("VirtualInputManager")
-end) and game:GetService("VirtualInputManager") or nil
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
-local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
-local IsMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui", 10) or LocalPlayer:FindFirstChildOfClass("PlayerGui")
 
-local function getGuiParent()
-	local ok, hui = pcall(function()
-		return gethui and gethui()
-	end)
-	if ok and hui then
-		return hui
-	end
-	local okCore, test = pcall(function()
-		return CoreGui.Name
-	end)
-	if okCore and test then
-		return CoreGui
-	end
-	return LocalPlayer:WaitForChild("PlayerGui")
+local function GetSafeGuiParent(): Instance
+    local gethui = (rawget(getfenv(), "gethui") :: any)
+    if typeof(gethui) == "function" then
+        local ok, hui = pcall(gethui)
+        if ok and hui then return hui end
+    end
+    return PlayerGui or LocalPlayer:WaitForChild("PlayerGui")
 end
 
--- All features default to OFF (false) when executed
-local Config = {
-	AutoFastResearch = false,
-	AutoQueueResearch = false,
-	FastCraft = false,
-	AutoCollectMaterial = false,
-	AutoMission = false,
-	SelectedMaterialIndex = 1, -- 1 = ALL (Current World)
-	ResearchDelay = 0.2,
+---------------------------------------------------------------------
+-- 1. TẠO GIAO DIỆN & KHÓA CHỐNG ẨN
+---------------------------------------------------------------------
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "SimpleControlUI"
+screenGui.ResetOnSpawn = false
+screenGui.DisplayOrder = 999999
+screenGui.IgnoreGuiInset = true
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = GetSafeGuiParent()
+
+-- Chống game tự động ẩn menu khi vào minigame
+screenGui:GetPropertyChangedSignal("Enabled"):Connect(function()
+    if not screenGui.Enabled then
+        task.defer(function() screenGui.Enabled = true end)
+    end
+end)
+RunService.Heartbeat:Connect(function()
+    if not screenGui.Enabled then screenGui.Enabled = true end
+end)
+
+-- Khung bảng chữ nhật ngang đơn giản
+local card = Instance.new("Frame")
+card.Size = UDim2.new(0, 430, 0, 215)
+card.AnchorPoint = Vector2.new(0.5, 0.5)
+card.Position = UDim2.new(0.5, 0, 0.5, 0)
+card.BackgroundColor3 = Color3.fromRGB(24, 25, 30)
+card.BorderSizePixel = 1
+card.BorderColor3 = Color3.fromRGB(60, 64, 75)
+card.Parent = screenGui
+
+-- Header đơn giản
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, 32)
+header.BackgroundColor3 = Color3.fromRGB(32, 34, 42)
+header.BorderSizePixel = 0
+header.Parent = card
+
+local title = Instance.new("TextLabel")
+title.Text = "MENU ĐIỀU KHIỂN"
+title.Font = Enum.Font.SourceSansBold
+title.TextSize = 14
+title.TextColor3 = Color3.fromRGB(240, 240, 240)
+title.Position = UDim2.new(0, 10, 0, 0)
+title.Size = UDim2.new(0.5, 0, 1, 0)
+title.BackgroundTransparency = 1
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = header
+
+local fpsLabel = Instance.new("TextLabel")
+fpsLabel.Text = "FPS: 60"
+fpsLabel.Font = Enum.Font.SourceSans
+fpsLabel.TextSize = 13
+fpsLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+fpsLabel.Position = UDim2.new(0.5, 0, 0, 0)
+fpsLabel.Size = UDim2.new(0.35, 0, 1, 0)
+fpsLabel.BackgroundTransparency = 1
+fpsLabel.TextXAlignment = Enum.TextXAlignment.Left
+fpsLabel.Parent = header
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 32, 0, 32)
+closeBtn.Position = UDim2.new(1, -32, 0, 0)
+closeBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 58)
+closeBtn.Text = "X"
+closeBtn.TextColor3 = Color3.fromRGB(240, 240, 240)
+closeBtn.Font = Enum.Font.SourceSansBold
+closeBtn.TextSize = 14
+closeBtn.BorderSizePixel = 0
+closeBtn.Parent = header
+
+-- Khung danh sách chứa các nút
+local content = Instance.new("Frame")
+content.Size = UDim2.new(1, -12, 1, -40)
+content.Position = UDim2.new(0, 6, 0, 36)
+content.BackgroundTransparency = 1
+content.Parent = card
+
+local grid = Instance.new("UIGridLayout")
+grid.CellSize = UDim2.new(0.485, 0, 0, 48)
+grid.CellPadding = UDim2.new(0.03, 0, 0, 6)
+grid.Parent = content
+
+-- Nút mở lại khi đóng menu
+local openMiniBtn = Instance.new("TextButton")
+openMiniBtn.Size = UDim2.new(0, 60, 0, 28)
+openMiniBtn.Position = UDim2.new(0, 10, 0.5, -14)
+openMiniBtn.BackgroundColor3 = Color3.fromRGB(35, 38, 48)
+openMiniBtn.Text = "MENU"
+openMiniBtn.TextColor3 = Color3.fromRGB(220, 220, 220)
+openMiniBtn.Font = Enum.Font.SourceSansBold
+openMiniBtn.TextSize = 13
+openMiniBtn.BorderSizePixel = 1
+openMiniBtn.BorderColor3 = Color3.fromRGB(70, 75, 90)
+openMiniBtn.Visible = false
+openMiniBtn.Parent = screenGui
+
+---------------------------------------------------------------------
+-- 2. HỆ THỐNG XỬ LÝ CHỨC NĂNG
+---------------------------------------------------------------------
+local States = {
+    AutoSolve = false,
+    AutoHome = false,
+    Smooth = false,
+    NoVFX = false,
+    NoShadow = false,
 }
 
---------------------------------------------------------------------------------
--- COMPLETE CATALOG OF MATERIALS BY PLANET & DIMENSION
---------------------------------------------------------------------------------
-local MaterialCatalog = {
-	{ id = "ALL", name = "ALL Materials (Current World)", group = "All", locType = "any" },
-
-	-- 1. Earth (Home Dimension C137 - Town)
-	{ id = "Scrap", name = "Scrap Metal", group = "Earth (Town)", locType = "home" },
-	{ id = "Electronics", name = "Electronic Parts", group = "Earth (Town)", locType = "home" },
-	{ id = "BottledWater", name = "Premium Bottled Water", group = "Earth (Town)", locType = "home" },
-
-	-- 2. Earth Wild Biomes (Home Dimension C137 - 5km Wilds)
-	{ id = "MagmaShard", name = "Magma Shard", group = "Earth (Volcanic Lands)", locType = "biome", biome = "volcano", suit = "HeatSuit" },
-	{ id = "FrostGem", name = "Frost Gem", group = "Earth (Snow Mountains)", locType = "biome", biome = "snow", suit = "ThermalSuit" },
-	{ id = "DeepQuartz", name = "Deep Quartz", group = "Earth (Red Canyons / Caves)", locType = "biome", biome = "caves", suit = "MinerSuit" },
-
-	-- 3. Space Planets (Accessed via Orbit / Saucer / PlanetTravel)
-	{ id = "MoonRock", name = "Moon Rock", group = "Planet: The Moon", locType = "planet", planet = "Moon", suit = "SpaceSuit" },
-	{ id = "RedOre", name = "Red Ore", group = "Planet: Red Planet", locType = "planet", planet = "RedPlanet", suit = "SpaceSuit" },
-	{ id = "CryoIce", name = "Cryo Ice", group = "Planet: Ice Planet", locType = "planet", planet = "IcePlanet", suit = "SpaceSuit" },
-	{ id = "SquanchSpores", name = "Squanch Spores", group = "Planet: Planet Squanch", locType = "planet", planet = "SquanchPlanet", suit = "SpaceSuit" },
-	{ id = "ToxicSludge", name = "Toxic Sludge", group = "Planet: Toxic Planet", locType = "planet", planet = "ToxicPlanet", suit = "SpaceSuit" },
-	{ id = "PlasmaGas", name = "Plasma Gas", group = "Planet: Gas Giant", locType = "planet", planet = "GasGiant", suit = "SpaceSuit" },
-	{ id = "GearParts", name = "Precision Gears", group = "Planet: Gearworld", locType = "planet", planet = "Gearworld", suit = "SpaceSuit" },
-	{ id = "Plumbus", name = "Plumbus", group = "Planet: Plumbubo Prime 51b", locType = "planet", planet = "Plumbubo", suit = "SpaceSuit" },
-	{ id = "KalaxianCrystal", name = "Kalaxian Crystal", group = "Planet: Kalaxia", locType = "planet", planet = "Kalaxia", suit = "SpaceSuit" },
-	{ id = "PhoenixFeather", name = "Phoenix Feather", group = "Planet: Bird World", locType = "planet", planet = "BirdWorld", suit = "SpaceSuit" },
-	{ id = "GazorpTech", name = "Gazorpian Tech", group = "Planet: Gazorpazorp", locType = "planet", planet = "Gazorpazorp", suit = "SpaceSuit" },
-	{ id = "PurgeCrystal", name = "Purge Crystal", group = "Planet: Purge Planet", locType = "planet", planet = "PurgePlanet", suit = "SpaceSuit" },
-	{ id = "PlutoIce", name = "Pluto Ice", group = "Planet: Pluto", locType = "planet", planet = "Pluto", suit = "SpaceSuit" },
-	{ id = "AlphaGlyph", name = "Alphabetrian Glyph", group = "Planet: Alphabetrium", locType = "planet", planet = "Alphabetrium", suit = "SpaceSuit" },
-	{ id = "GromflomChitin", name = "Gromflom Chitin", group = "Planet: Gromflom Prime", locType = "planet", planet = "GromflomPrime", suit = "SpaceSuit" },
-	{ id = "CromulonGem", name = "Cromulon Gem", group = "Planet: Planet Music", locType = "planet", planet = "PlanetMusic", suit = "SpaceSuit" },
-	{ id = "SnakeVenom", name = "Snake Venom", group = "Planet: Snake Planet", locType = "planet", planet = "SnakePlanet", suit = "SpaceSuit" },
-
-	-- 4. Multiverse Dimensions (Accessed via Portal Gun Codes)
-	{ id = "PlutonicQuarks", name = "Plutonic Quarks", group = "Dimension: 35C (Code: 35C)", locType = "dim", dim = "35C", code = "35C" },
-	{ id = "PureCesium", name = "Pure Cesium", group = "Dimension: Zigerion (Code: J197)", locType = "dim", dim = "J197", code = "J197" },
-	{ id = "UnstableOrganicFluid", name = "Unstable Organic Fluid", group = "Dimension: Cronenberg (Code: PRIME)", locType = "dim", dim = "Prime", code = "PRIME" },
-	{ id = "GreenCrystals", name = "Green Radioactive Crystals", group = "Dimension: Citadel (Code: CITADEL)", locType = "dim", dim = "Citadel", code = "CITADEL" },
-	{ id = "Antimatter", name = "Antimatter Energy", group = "Dimension: Ex-01 (Code: EX01)", locType = "dim", dim = "Ex01", code = "EX01" },
-	{ id = "FroopyGoo", name = "Froopy Goo", group = "Dimension: Froopyland (Code: FROOPYLAND)", locType = "dim", dim = "FROOPYLAND", code = "FROOPYLAND" },
-	{ id = "ValhallaWood", name = "Valhalla Pine", group = "Dimension: Valhalla (Code: VALHALLA)", locType = "dim", dim = "Valhalla", code = "VALHALLA" },
-	{ id = "ValhallaStone", name = "Valhalla Stone", group = "Dimension: Valhalla (Code: VALHALLA)", locType = "dim", dim = "Valhalla", code = "VALHALLA" },
+local Cache = {
+    Materials = {} :: { [BasePart]: Enum.Material },
 }
 
-local MaterialById = {}
-for _, entry in ipairs(MaterialCatalog) do
-	if entry.id ~= "ALL" then
-		MaterialById[entry.id] = entry
-	end
+-- Tự động giải minigame (Circuit 1-2-3)
+task.spawn(function()
+    while true do
+        if States.AutoSolve then
+            local lab = workspace:FindFirstChild("ResearchLabLocal")
+            local cam = workspace.CurrentCamera
+            if lab and cam then
+                local points = {}
+                for _, desc in ipairs(lab:GetDescendants()) do
+                    if desc:IsA("TextLabel") and desc.Parent and desc.Parent:IsA("BillboardGui") then
+                        local n = tonumber(desc.Text)
+                        if n then
+                            local part = (desc.Parent :: BillboardGui).Adornee or desc.Parent.Parent
+                            if part and part:IsA("BasePart") then
+                                table.insert(points, { num = n, part = part })
+                            end
+                        end
+                    end
+                end
+
+                if #points > 0 then
+                    table.sort(points, function(a, b) return a.num < b.num end)
+                    for _, p in ipairs(points) do
+                        if not States.AutoSolve then break end
+                        local screenP, onScreen = cam:WorldToScreenPoint(p.part.Position)
+                        if onScreen then
+                            VirtualInputManager:SendMouseButtonEvent(screenP.X, screenP.Y, 0, true, game, 0)
+                            task.wait(0.04)
+                            VirtualInputManager:SendMouseButtonEvent(screenP.X, screenP.Y, 0, false, game, 0)
+                            task.wait(0.18)
+                        end
+                    end
+                end
+            end
+        end
+        task.wait(0.4)
+    end
+end)
+
+-- Tự động về Home khi ở Valhalla
+local function TeleportHome()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local root = char:FindFirstChild("HumanoidRootPart") :: BasePart?
+    if not root then return end
+
+    local homePos = LocalPlayer:GetAttribute("HomePos")
+    local targetPos = if typeof(homePos) == "Vector3" then homePos else nil
+
+    if not targetPos then
+        local house = workspace:FindFirstChild("SmithHouse_" .. tostring(LocalPlayer.UserId))
+        if house and house:IsA("Model") then targetPos = house:GetPivot().Position end
+    end
+    if not targetPos then
+        local spawn = workspace:FindFirstChildWhichIsA("SpawnLocation", true)
+        if spawn then targetPos = spawn.Position end
+    end
+
+    if targetPos then
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.CFrame = CFrame.new(targetPos + Vector3.new(0, 3.5, 0))
+    end
+
+    local goHome = ReplicatedStorage:FindFirstChild("GoHome") :: RemoteEvent?
+    if goHome then goHome:FireServer("start") end
+    LocalPlayer:SetAttribute("InValhalla", false)
 end
-
-local EnemyLocations = {
-	DeathStalker = { locType = "dim", dim = "Wasteland", code = "WASTELAND" },
-	Zigerion = { locType = "dim", dim = "J197", code = "J197" },
-	Cronenberg = { locType = "dim", dim = "Prime", code = "PRIME" },
-	CopRick = { locType = "dim", dim = "Citadel", code = "CITADEL" },
-	EvilMortyGuard = { locType = "dim", dim = "Ex01", code = "EX01" },
-	SecurityDrone = { locType = "planet", planet = "Moon" },
-	GearSoldier = { locType = "planet", planet = "Gearworld" },
-	Gazorpian = { locType = "planet", planet = "Gazorpazorp" },
-	Gromflomite = { locType = "planet", planet = "Kalaxia" },
-	SnakeSoldier = { locType = "planet", planet = "SnakePlanet" },
-	CrowWarrior = { locType = "planet", planet = "CrowPlanet" },
-	Purger = { locType = "planet", planet = "PurgePlanet" },
-}
-
-local Connections = {}
-local PlayerInventory = {}
-local HookedTables = setmetatable({}, { __mode = "k" })
-
--- Active ResearchLab references
-local ActiveLabTapQueue = nil
-local ActiveLabInputFunc = nil
-local ActiveLabHoldIndex = nil
-
--- Active AssemblyBench references
-local ActiveBenchInputFunc = nil
-local ActiveBenchSnapFunc = nil
-local ActiveBenchSetHintFunc = nil
-local ActiveBenchPieces = nil
-local ActiveBenchScrews = nil
-
-local FakeGamepadA = {
-	UserInputType = Enum.UserInputType.Gamepad1,
-	KeyCode = Enum.KeyCode.ButtonA,
-	Position = Vector3.zero,
-}
-
-local InventorySync = ReplicatedStorage:FindFirstChild("InventorySync")
-if InventorySync and InventorySync:IsA("RemoteEvent") then
-	table.insert(
-		Connections,
-		InventorySync.OnClientEvent:Connect(function(inv)
-			if type(inv) == "table" then
-				PlayerInventory = inv
-			end
-		end)
-	)
-	pcall(function()
-		InventorySync:FireServer()
-	end)
-end
-
--- Auto-complete ConstructionSite minigames when AutoMission or FastCraft is active
-local ConstructionEvent = ReplicatedStorage:FindFirstChild("ConstructionEvent")
-if ConstructionEvent and ConstructionEvent:IsA("RemoteEvent") then
-	table.insert(
-		Connections,
-		ConstructionEvent.OnClientEvent:Connect(function(action, data)
-			if (Config.AutoMission or Config.FastCraft) and action == "start" and type(data) == "table" and data.token then
-				task.delay(0.28, function()
-					pcall(function()
-						ConstructionEvent:FireServer("done", data.token)
-					end)
-				end)
-			end
-		end)
-	)
-end
-
---------------------------------------------------------------------------------
--- AUTO RESEARCH & FAST CRAFT CORE
---------------------------------------------------------------------------------
-local lastTapClock = 0
-local function sendLabTap(screenPos)
-	if type(ActiveLabTapQueue) == "table" then
-		pcall(function()
-			table.insert(ActiveLabTapQueue, screenPos)
-		end)
-	end
-
-	local now = os.clock()
-	if now - lastTapClock >= 0.04 and VirtualInputManager then
-		lastTapClock = now
-		pcall(function()
-			VirtualInputManager:SendMouseMoveEvent(screenPos.X, screenPos.Y, game)
-			VirtualInputManager:SendMouseButtonEvent(screenPos.X, screenPos.Y, 0, true, game, 1)
-			task.delay(0.02, function()
-				pcall(function()
-					VirtualInputManager:SendMouseButtonEvent(screenPos.X, screenPos.Y, 0, false, game, 1)
-				end)
-			end)
-		end)
-	end
-end
-
-local isHoldingMix = false
-local function setLabHold(holding, screenPos)
-	local debugSetupvalue = (debug and debug.setupvalue) or setupvalue
-	if ActiveLabInputFunc and ActiveLabHoldIndex and type(debugSetupvalue) == "function" then
-		pcall(function()
-			if holding then
-				debugSetupvalue(ActiveLabInputFunc, ActiveLabHoldIndex, {
-					UserInputType = Enum.UserInputType.Touch,
-					KeyCode = Enum.KeyCode.Unknown,
-				})
-			else
-				debugSetupvalue(ActiveLabInputFunc, ActiveLabHoldIndex, nil)
-			end
-		end)
-	end
-
-	if VirtualInputManager and isHoldingMix ~= holding then
-		isHoldingMix = holding
-		local pos = screenPos or Vector2.new(300, 300)
-		pcall(function()
-			VirtualInputManager:SendMouseMoveEvent(pos.X, pos.Y, game)
-			VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, holding, game, 1)
-		end)
-	elseif not holding then
-		isHoldingMix = false
-	end
-end
-
-local function inspectCandidateFunction(fn)
-	if type(fn) ~= "function" then
-		return
-	end
-	local debugGetupvalues = (debug and debug.getupvalues) or getupvalues
-	if type(debugGetupvalues) ~= "function" then
-		return
-	end
-
-	local okUp, ups = pcall(debugGetupvalues, fn)
-	if not okUp or type(ups) ~= "table" then
-		return
-	end
-
-	local hasButtonATable = false
-	local hasSpaceKey = false
-	local tapQueueCandidate = nil
-	local piecesCandidate = nil
-	local screwsCandidate = nil
-	local stageString = nil
-
-	for _, val in pairs(ups) do
-		if type(val) == "string" and (val == "pieces" or val == "screws" or val == "power") then
-			stageString = val
-		elseif type(val) == "table" then
-			if rawget(val, Enum.KeyCode.ButtonA) == true then
-				hasButtonATable = true
-				if rawget(val, Enum.KeyCode.Space) == true then
-					hasSpaceKey = true
-				end
-			elseif rawget(val, 1) ~= nil then
-				local first = rawget(val, 1)
-				if typeof(first) == "Vector2" then
-					tapQueueCandidate = val
-				elseif type(first) == "table" then
-					if first.target ~= nil and (first.ghostModel ~= nil or first.parts ~= nil) then
-						piecesCandidate = val
-					elseif first.prog ~= nil and first.pos ~= nil then
-						screwsCandidate = val
-					end
-				end
-			elseif tapQueueCandidate == nil then
-				tapQueueCandidate = val
-			end
-		end
-	end
-
-	if hasButtonATable and hasSpaceKey and tapQueueCandidate then
-		ActiveLabTapQueue = tapQueueCandidate
-		ActiveLabInputFunc = fn
-		ActiveLabHoldIndex = 3
-	end
-
-	if piecesCandidate or screwsCandidate or (hasButtonATable and not hasSpaceKey and stageString) then
-		if piecesCandidate then
-			ActiveBenchPieces = piecesCandidate
-		end
-		if screwsCandidate then
-			ActiveBenchScrews = screwsCandidate
-		end
-		if hasButtonATable and not hasSpaceKey then
-			ActiveBenchInputFunc = fn
-		end
-
-		for _, val in pairs(ups) do
-			if type(val) == "function" then
-				local okSub, subUps = pcall(debugGetupvalues, val)
-				if okSub and type(subUps) == "table" then
-					local hasBenchFolder = false
-					local hasTweenService = false
-					local hasLabelPair = 0
-					for _, sv in pairs(subUps) do
-						if typeof(sv) == "Instance" then
-							if sv.Name == "AssemblyBenchLocal" then
-								hasBenchFolder = true
-							elseif sv:IsA("TweenService") then
-								hasTweenService = true
-							elseif sv:IsA("TextLabel") then
-								hasLabelPair += 1
-							end
-						end
-					end
-					if hasBenchFolder and hasTweenService then
-						ActiveBenchSnapFunc = val
-					elseif hasLabelPair >= 2 then
-						ActiveBenchSetHintFunc = val
-					end
-				end
-			end
-		end
-	end
-end
-
-local function hookMinigameModules()
-	if not Config.AutoFastResearch and not Config.FastCraft and not Config.AutoMission then
-		return
-	end
-
-	pcall(function()
-		if type(getconnections) == "function" then
-			for _, conn in pairs(getconnections(UserInputService.InputBegan)) do
-				if conn.Function then
-					inspectCandidateFunction(conn.Function)
-				end
-			end
-			for _, conn in pairs(getconnections(RunService.RenderStepped)) do
-				if conn.Function then
-					inspectCandidateFunction(conn.Function)
-				end
-			end
-		end
-	end)
-
-	pcall(function()
-		if type(getgc) == "function" then
-			local gc = getgc(true)
-			for _, obj in pairs(gc) do
-				if type(obj) == "function" then
-					inspectCandidateFunction(obj)
-				elseif type(obj) == "table" then
-					local scanFn = rawget(obj, "scan")
-					local circuitFn = rawget(obj, "circuit")
-					local gyroFn = rawget(obj, "gyro")
-					local mixFn = rawget(obj, "mix")
-					if
-						type(scanFn) == "function"
-						and type(circuitFn) == "function"
-						and type(gyroFn) == "function"
-						and type(mixFn) == "function"
-					then
-						if not HookedTables[obj] then
-							HookedTables[obj] = {
-								scan = scanFn,
-								circuit = circuitFn,
-								gyro = gyroFn,
-								mix = mixFn,
-							}
-							rawset(obj, "scan", function(...)
-								if Config.AutoFastResearch or Config.AutoMission then
-									return true
-								end
-								return scanFn(...)
-							end)
-							rawset(obj, "circuit", function(...)
-								if Config.AutoFastResearch or Config.AutoMission then
-									return true
-								end
-								return circuitFn(...)
-							end)
-							rawset(obj, "gyro", function(...)
-								if Config.AutoFastResearch or Config.AutoMission then
-									return true
-								end
-								return gyroFn(...)
-							end)
-							rawset(obj, "mix", function(...)
-								if Config.AutoFastResearch or Config.AutoMission then
-									return true
-								end
-								return mixFn(...)
-							end)
-						end
-					end
-
-					local runFn = rawget(obj, "run")
-					local abortFn = rawget(obj, "abort")
-					if type(runFn) == "function" and type(abortFn) == "function" and not HookedTables[obj] then
-						HookedTables[obj] = { run = runFn }
-						rawset(obj, "run", function(arg)
-							if type(arg) == "table" then
-								if arg.research ~= nil and (Config.AutoFastResearch or Config.AutoMission) then
-									task.wait(Config.ResearchDelay)
-									return "done"
-								elseif arg.result ~= nil and (Config.FastCraft or Config.AutoMission) then
-									task.wait(0.25)
-									return "done"
-								end
-							elseif Config.AutoFastResearch or Config.AutoMission then
-								task.wait(Config.ResearchDelay)
-								return "done"
-							end
-							return runFn(arg)
-						end)
-					end
-				end
-			end
-		end
-	end)
-
-	pcall(function()
-		local labMod = ReplicatedStorage:FindFirstChild("ResearchLab")
-		if labMod and labMod:IsA("ModuleScript") then
-			local lab = require(labMod)
-			if type(lab) == "table" and type(lab.run) == "function" and not HookedTables[lab] then
-				local oldRun = lab.run
-				HookedTables[lab] = { run = oldRun }
-				lab.run = function(arg)
-					if Config.AutoFastResearch or Config.AutoMission then
-						task.wait(Config.ResearchDelay)
-						return "done"
-					end
-					return oldRun(arg)
-				end
-			end
-		end
-	end)
-
-	pcall(function()
-		local benchMod = ReplicatedStorage:FindFirstChild("AssemblyBench")
-		if benchMod and benchMod:IsA("ModuleScript") then
-			local bench = require(benchMod)
-			if type(bench) == "table" and type(bench.run) == "function" and not HookedTables[bench] then
-				local oldRun = bench.run
-				HookedTables[bench] = { run = oldRun }
-				bench.run = function(arg)
-					if Config.FastCraft or Config.AutoMission then
-						task.wait(0.25)
-						return "done"
-					end
-					return oldRun(arg)
-				end
-			end
-		end
-	end)
-end
-
-local function unhookMinigameModules()
-	for tbl, saved in pairs(HookedTables) do
-		pcall(function()
-			for k, v in pairs(saved) do
-				rawset(tbl, k, v)
-			end
-		end)
-	end
-	table.clear(HookedTables)
-end
-
-table.insert(
-	Connections,
-	workspace.ChildAdded:Connect(function(child)
-		if child.Name == "ResearchLabLocal" or child.Name == "AssemblyBenchLocal" then
-			ActiveLabTapQueue = nil
-			ActiveBenchInputFunc = nil
-			ActiveBenchSnapFunc = nil
-			ActiveBenchPieces = nil
-			ActiveBenchScrews = nil
-			if Config.AutoFastResearch or Config.FastCraft or Config.AutoMission then
-				task.delay(0.1, hookMinigameModules)
-				task.delay(0.5, hookMinigameModules)
-			end
-		end
-	end)
-)
-
--- Real-time solver for active ResearchLabLocal & AssemblyBenchLocal stages
-local lastSolverScan = 0
-local lastBenchHookAttempt = 0
-local padToggleState = false
-local isHoldingBenchMouse = false
-
-local function setBenchMouseHold(holding, screenPos)
-	if not VirtualInputManager then
-		return
-	end
-	if holding then
-		isHoldingBenchMouse = true
-		local pos = screenPos or Vector2.new(400, 300)
-		pcall(function()
-			VirtualInputManager:SendMouseMoveEvent(pos.X, pos.Y, game)
-			VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 1)
-		end)
-	elseif isHoldingBenchMouse then
-		isHoldingBenchMouse = false
-		local pos = screenPos or Vector2.new(400, 300)
-		pcall(function()
-			VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 1)
-			VirtualInputManager:SendGamepadButtonEvent(Enum.UserInputType.Gamepad1, Enum.KeyCode.ButtonA, false, game)
-		end)
-	end
-end
-
-table.insert(
-	Connections,
-	RunService.RenderStepped:Connect(function()
-		if not Config.AutoFastResearch and not Config.FastCraft and not Config.AutoMission then
-			return
-		end
-
-		local now = os.clock()
-		if now - lastSolverScan < 0.05 then
-			return
-		end
-		lastSolverScan = now
-
-		local cam = workspace.CurrentCamera
-		if not cam then
-			return
-		end
-
-		-- A. Auto-Solver for ResearchLabLocal
-		if Config.AutoFastResearch or Config.AutoMission then
-			local labFolder = workspace:FindFirstChild("ResearchLabLocal")
-			if labFolder then
-				if not ActiveLabTapQueue and now - lastBenchHookAttempt > 0.6 then
-					lastBenchHookAttempt = now
-					hookMinigameModules()
-				end
-
-				local foundMixStage = false
-
-				for _, inst in ipairs(labFolder:GetChildren()) do
-					if inst:IsA("WedgePart") then
-						local bb = inst:FindFirstChildOfClass("BillboardGui")
-						if bb and bb.Enabled then
-							local sp, onScreen = cam:WorldToScreenPoint(inst.Position)
-							if onScreen then
-								sendLabTap(Vector2.new(sp.X, sp.Y))
-							else
-								sendLabTap(cam.ViewportSize / 2)
-							end
-						end
-					elseif inst:IsA("Part") then
-						local bb = inst:FindFirstChildOfClass("BillboardGui")
-						local lbl = bb and bb:FindFirstChildOfClass("TextLabel")
-						if lbl then
-							local txt = lbl.Text
-							if txt == "HOLD" or txt == "POURING..." then
-								foundMixStage = true
-								local sp = cam:WorldToScreenPoint(inst.Position)
-								setLabHold(true, Vector2.new(sp.X, sp.Y))
-							elseif txt == "LET GO!" then
-								foundMixStage = true
-								local sp = cam:WorldToScreenPoint(inst.Position)
-								setLabHold(false, Vector2.new(sp.X, sp.Y))
-							end
-						end
-
-						if inst.Shape == Enum.PartType.Ball and inst.Transparency < 0.95 then
-							local reticle = inst:FindFirstChild("HoloReticle")
-							if reticle and not lbl then
-								local sp, onScreen = cam:WorldToScreenPoint(inst.Position)
-								if onScreen then
-									sendLabTap(Vector2.new(sp.X, sp.Y))
-								end
-							end
-
-							local c = inst.Color
-							if math.abs(c.R * 255 - 255) < 8 and math.abs(c.G * 255 - 225) < 8 and math.abs(c.B * 255 - 90) < 8 then
-								local sp, onScreen = cam:WorldToScreenPoint(inst.Position)
-								if onScreen then
-									sendLabTap(Vector2.new(sp.X, sp.Y))
-								end
-							end
-						end
-					end
-				end
-
-				if not foundMixStage and isHoldingMix then
-					setLabHold(false)
-				end
-			elseif isHoldingMix then
-				setLabHold(false)
-			end
-		end
-
-		-- B. Auto-Solver for AssemblyBenchLocal (Fast Craft)
-		if Config.FastCraft or Config.AutoMission then
-			local benchFolder = workspace:FindFirstChild("AssemblyBenchLocal")
-			if benchFolder then
-				if (not ActiveBenchInputFunc or not ActiveBenchPieces) and now - lastBenchHookAttempt > 0.5 then
-					lastBenchHookAttempt = now
-					hookMinigameModules()
-				end
-
-				if type(ActiveBenchPieces) == "table" then
-					for _, piece in ipairs(ActiveBenchPieces) do
-						if piece.placed and not piece.snapT0 and piece.ghostModel and piece.ghostModel.Parent then
-							piece.placed = false
-						end
-						if not piece.placed then
-							if type(ActiveBenchSnapFunc) == "function" then
-								pcall(ActiveBenchSnapFunc, piece)
-							elseif type(ActiveBenchInputFunc) == "function" then
-								pcall(ActiveBenchInputFunc, FakeGamepadA, false)
-							end
-						end
-					end
-				end
-
-				if type(ActiveBenchInputFunc) == "function" then
-					pcall(ActiveBenchInputFunc, FakeGamepadA, false)
-				end
-
-				if type(ActiveBenchScrews) == "table" then
-					for _, sc in ipairs(ActiveBenchScrews) do
-						if not sc.done then
-							sc.prog = 10
-						end
-					end
-				end
-
-				local debugSetupvalue = (debug and debug.setupvalue) or setupvalue
-				local debugGetupvalues = (debug and debug.getupvalues) or getupvalues
-				if ActiveBenchSetHintFunc and type(debugSetupvalue) == "function" and type(debugGetupvalues) == "function" then
-					pcall(function()
-						local okU, ups = pcall(debugGetupvalues, ActiveBenchSetHintFunc)
-						if okU and type(ups) == "table" and ups[5] == "power" and type(ups[9]) == "number" then
-							debugSetupvalue(ActiveBenchSetHintFunc, 9, 1)
-						end
-					end)
-				end
-
-				if VirtualInputManager then
-					local screwMarker = benchFolder:FindFirstChild("ScrewMarker", true)
-					local isPowerStage = false
-					for _, child in ipairs(benchFolder:GetChildren()) do
-						if child:IsA("BasePart") and child:GetAttribute("Progress") ~= nil then
-							isPowerStage = true
-							break
-						end
-					end
-
-					if screwMarker and screwMarker.Parent and screwMarker.Parent:IsA("BasePart") then
-						local sp = cam:WorldToScreenPoint(screwMarker.Parent.Position)
-						setBenchMouseHold(true, Vector2.new(sp.X, sp.Y))
-						pcall(function()
-							VirtualInputManager:SendGamepadButtonEvent(Enum.UserInputType.Gamepad1, Enum.KeyCode.ButtonA, true, game)
-						end)
-					elseif isPowerStage then
-						local center = cam.ViewportSize / 2
-						setBenchMouseHold(true, center)
-						pcall(function()
-							VirtualInputManager:SendGamepadButtonEvent(Enum.UserInputType.Gamepad1, Enum.KeyCode.ButtonA, true, game)
-						end)
-					else
-						padToggleState = not padToggleState
-						pcall(function()
-							VirtualInputManager:SendGamepadButtonEvent(
-								Enum.UserInputType.Gamepad1,
-								Enum.KeyCode.ButtonA,
-								padToggleState,
-								game
-							)
-						end)
-					end
-				end
-			elseif isHoldingBenchMouse then
-				setBenchMouseHold(false)
-			end
-		elseif isHoldingBenchMouse then
-			setBenchMouseHold(false)
-		end
-	end)
-)
-
---------------------------------------------------------------------------------
--- SHARED HELPERS: TELEPORT, STREAMING, PLANET & DIMENSION TRAVEL
---------------------------------------------------------------------------------
-local function decodeAttr(attrName)
-	local raw = LocalPlayer:GetAttribute(attrName)
-	if type(raw) ~= "string" or raw == "" then
-		return {}
-	end
-	local ok, data = pcall(function()
-		return HttpService:JSONDecode(raw)
-	end)
-	return (ok and type(data) == "table") and data or {}
-end
-
-local CachedGameData = nil
-local function getGameData()
-	if CachedGameData then
-		return CachedGameData
-	end
-	local mod = ReplicatedStorage:FindFirstChild("GameData")
-	if mod and mod:IsA("ModuleScript") then
-		local ok, data = pcall(require, mod)
-		if ok and type(data) == "table" then
-			CachedGameData = data
-			return data
-		end
-	end
-	return nil
-end
-
-local function getRootPart()
-	local char = LocalPlayer.Character
-	return char and char:FindFirstChild("HumanoidRootPart")
-end
-
-local function isInActiveMinigame()
-	return workspace:FindFirstChild("ResearchLabLocal") ~= nil
-		or workspace:FindFirstChild("AssemblyBenchLocal") ~= nil
-end
-
-local function unseatCharacter()
-	local char = LocalPlayer.Character
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	if hum and hum.SeatPart then
-		pcall(function()
-			hum.Sit = false
-			hum.Jump = true
-		end)
-		task.wait(0.1)
-	end
-end
-
--- Returns the active planet ID if the player is currently on a space planet, or nil
-local function getCurrentPlanetId()
-	local dim = tostring(LocalPlayer:GetAttribute("CurrentDimension") or "")
-	if dim:sub(1, 7) == "PLANET_" then
-		return dim:sub(8)
-	elseif dim == "PurgePlanet" then
-		return "PurgePlanet"
-	end
-	return nil
-end
-
--- Raycasts downward to find solid ground at a given (X, Z) near pos.Y
-local function findGroundAtPosition(pos, maxUp, maxDown)
-	local char = LocalPlayer.Character
-	local rayParams = RaycastParams.new()
-	rayParams.FilterType = Enum.RaycastFilterType.Exclude
-	rayParams.RespectCanCollide = true
-
-	local ignoreList = {}
-	if char then
-		table.insert(ignoreList, char)
-	end
-	local portals = workspace:FindFirstChild("Portals")
-	if portals then
-		table.insert(ignoreList, portals)
-	end
-	local hiddenDims = workspace:FindFirstChild("HiddenDimensions")
-	if hiddenDims then
-		table.insert(ignoreList, hiddenDims)
-	end
-	local hiddenGround = workspace:FindFirstChild("SpaceHiddenGround")
-	if hiddenGround then
-		table.insert(ignoreList, hiddenGround)
-	end
-	rayParams.FilterDescendantsInstances = ignoreList
-
-	local upOffset = maxUp or 260
-	local downDist = maxDown or 950
-	-- Clamp ray origin Y below 850 so we never raycast from Space/Orbit altitude when on Earth/Planets
-	local baseRefY = (pos.Y > 900) and 60 or pos.Y
-	local startY = math.min(baseRefY + upOffset, 850)
-	local origin = Vector3.new(pos.X, startY, pos.Z)
-	local hit = workspace:Raycast(origin, Vector3.new(0, -downDist, 0), rayParams)
-	if hit and hit.Position then
-		return hit.Position, hit.Instance
-	end
-	return nil, nil
-end
-
--- Safe teleportation that streams terrain, anchors until ground collision loads, and prevents void deaths
-local function teleportToPosition(pos, streamFirst, snapToGround)
-	if typeof(pos) ~= "Vector3" or isInActiveMinigame() then
-		return false
-	end
-	unseatCharacter()
-	local char = LocalPlayer.Character
-	local hrp = char and char:FindFirstChild("HumanoidRootPart")
-	if not hrp then
-		return false
-	end
-
-	-- Never teleport into Space/Orbit altitude (> 900) unless intentionally entering Orbit (>= 4800)
-	local targetPos = pos
-	if targetPos.Y > 900 and targetPos.Y < 4800 then
-		targetPos = Vector3.new(targetPos.X, 45, targetPos.Z)
-	end
-
-	-- Intentional Orbit teleport (Y >= 4800)
-	if targetPos.Y >= 4800 then
-		pcall(function()
-			hrp.Anchored = false
-			hrp.AssemblyLinearVelocity = Vector3.zero
-			hrp.AssemblyAngularVelocity = Vector3.zero
-			char:PivotTo(CFrame.new(targetPos))
-		end)
-		return true
-	end
-
-	local horizDist = Vector3.new(targetPos.X - hrp.Position.X, 0, targetPos.Z - hrp.Position.Z).Magnitude
-	local needStream = streamFirst or (horizDist > 75) or (hrp.Position.Y > 1200)
-
-	if needStream then
-		pcall(function()
-			hrp.AssemblyLinearVelocity = Vector3.zero
-			hrp.AssemblyAngularVelocity = Vector3.zero
-			hrp.Anchored = true
-		end)
-
-		local holdY = math.clamp(targetPos.Y + 35, 30, 380)
-		pcall(function()
-			char:PivotTo(CFrame.new(Vector3.new(targetPos.X, holdY, targetPos.Z)))
-		end)
-
-		pcall(function()
-			LocalPlayer:RequestStreamAroundAsync(Vector3.new(targetPos.X, math.clamp(targetPos.Y, 15, 250), targetPos.Z), 6)
-		end)
-
-		local groundPos = nil
-		local startWait = os.clock()
-		while os.clock() - startWait < 3.5 do
-			groundPos = findGroundAtPosition(targetPos, 350, 1200)
-			if groundPos then
-				break
-			end
-			task.wait(0.06)
-		end
-
-		local finalPos = targetPos
-		if groundPos then
-			if snapToGround ~= false or finalPos.Y < groundPos.Y + 2.2 or math.abs(finalPos.Y - groundPos.Y) > 45 then
-				finalPos = groundPos + Vector3.new(0, 3.8, 0)
-			end
-		elseif snapToGround ~= false then
-			local homePos = LocalPlayer:GetAttribute("HomePos")
-			local fallbackY = (typeof(homePos) == "Vector3" and homePos.Y + 4) or 18
-			finalPos = Vector3.new(targetPos.X, math.max(targetPos.Y, fallbackY), targetPos.Z)
-		end
-
-		pcall(function()
-			char:PivotTo(CFrame.new(finalPos))
-			hrp.AssemblyLinearVelocity = Vector3.zero
-			hrp.AssemblyAngularVelocity = Vector3.zero
-		end)
-		task.wait(0.06)
-		pcall(function()
-			hrp.Anchored = false
-			hrp.AssemblyLinearVelocity = Vector3.zero
-		end)
-		return true
-	end
-
-	-- Short-range hop: verify ground collision so we never clip underneath sloped terrain or into void
-	local finalPos = targetPos
-	local groundPos = findGroundAtPosition(targetPos, 55, 220)
-	if groundPos then
-		if snapToGround == true or finalPos.Y < groundPos.Y + 2.0 then
-			finalPos = Vector3.new(targetPos.X, groundPos.Y + 3.5, targetPos.Z)
-		end
-	else
-		-- Ground not loaded even at short range: briefly anchor and stream
-		pcall(function()
-			hrp.Anchored = true
-			hrp.AssemblyLinearVelocity = Vector3.zero
-			LocalPlayer:RequestStreamAroundAsync(targetPos, 4)
-		end)
-		local recheck = findGroundAtPosition(targetPos, 150, 500)
-		if recheck and (snapToGround == true or finalPos.Y < recheck.Y + 2.0) then
-			finalPos = Vector3.new(targetPos.X, recheck.Y + 3.5, targetPos.Z)
-		end
-	end
-
-	pcall(function()
-		hrp.Anchored = false
-		hrp.AssemblyLinearVelocity = Vector3.zero
-		hrp.AssemblyAngularVelocity = Vector3.zero
-		char:PivotTo(CFrame.new(finalPos))
-	end)
-	return true
-end
-
-local function triggerProximityPrompt(prompt)
-	if not prompt or not prompt:IsA("ProximityPrompt") or not prompt.Enabled then
-		return false
-	end
-	pcall(function()
-		prompt.HoldDuration = 0
-		prompt.RequiresLineOfSight = false
-		if prompt.MaxActivationDistance < 24 then
-			prompt.MaxActivationDistance = 24
-		end
-	end)
-	if type(fireproximityprompt) == "function" then
-		pcall(fireproximityprompt, prompt)
-	end
-	pcall(function()
-		prompt:InputHoldBegin()
-		task.delay(0.06, function()
-			pcall(function()
-				prompt:InputHoldEnd()
-			end)
-		end)
-	end)
-	return true
-end
-
-local function getMyBase()
-	local homePos = LocalPlayer:GetAttribute("HomePos")
-	local fallback = nil
-	for _, child in ipairs(workspace:GetChildren()) do
-		if child:IsA("Model") and child.Name:sub(1, 10) == "SmithHouse" then
-			if child:GetAttribute("OwnerId") == LocalPlayer.UserId then
-				return child
-			end
-			local members = "," .. tostring(child:GetAttribute("MemberIds") or "") .. ","
-			local offset = child:GetAttribute("Offset")
-			if
-				members:find("," .. LocalPlayer.UserId .. ",", 1, true)
-				or (
-					not fallback
-					and typeof(homePos) == "Vector3"
-					and typeof(offset) == "Vector3"
-					and (Vector3.new(139, 0, 82) + offset - homePos).Magnitude < 60
-				)
-			then
-				fallback = child
-			end
-		end
-	end
-	return fallback
-end
-
--- Crosses an existing portal in workspace.Portals that leads to targetDim safely without falling into the void
-local function tryCrossExistingPortal(targetDim)
-	local portalsFolder = workspace:FindFirstChild("Portals")
-	if not portalsFolder then
-		return false
-	end
-	local PortalCrossed = ReplicatedStorage:FindFirstChild("PortalCrossed")
-	local char = LocalPlayer.Character
-	local hrp = getRootPart()
-	if not char or not hrp then
-		return false
-	end
-
-	for _, p in ipairs(portalsFolder:GetChildren()) do
-		local dimA = p:GetAttribute("DimA")
-		local dimB = p:GetAttribute("DimB")
-		local acf = p:GetAttribute("ACF")
-		local bcf = p:GetAttribute("BCF")
-		if acf and bcf then
-			local enterSide = nil
-			local exitCF = nil
-			if not targetDim then
-				if p:GetAttribute("Owner") == LocalPlayer.UserId then
-					enterSide = "A"
-					exitCF = bcf
-					targetDim = dimB
-				end
-			elseif dimB == targetDim then
-				enterSide = "A"
-				exitCF = bcf
-			elseif dimA == targetDim then
-				enterSide = "B"
-				exitCF = acf
-			end
-
-			if enterSide and exitCF then
-				local enterCF = (enterSide == "A") and acf or bcf
-				teleportToPosition(enterCF.Position, false, false)
-				task.wait(0.1)
-				if targetDim then
-					pcall(function()
-						LocalPlayer:SetAttribute("CurrentDimension", targetDim)
-					end)
-				end
-				if PortalCrossed and PortalCrossed:IsA("RemoteEvent") then
-					pcall(function()
-						PortalCrossed:FireServer(p, enterSide)
-					end)
-				end
-				local exitTarget = exitCF.Position + exitCF.LookVector * 3.5 + Vector3.new(0, 1.5, 0)
-				teleportToPosition(exitTarget, true, true)
-				task.wait(0.35)
-				return true
-			end
-		end
-	end
-	return false
-end
-
--- Exits Orbit or any Space Planet and lands safely back on the player's Earth HomePos
-local function exitSpaceToEarth()
-	local PlanetTravel = ReplicatedStorage:FindFirstChild("PlanetTravel")
-	local returnPos = nil
-	if PlanetTravel and PlanetTravel:IsA("RemoteFunction") then
-		local ok, res = pcall(function()
-			return PlanetTravel:InvokeServer("home")
-		end)
-		if ok and typeof(res) == "Vector3" then
-			returnPos = res
-		end
-	end
-
-	local homeDim = tostring(LocalPlayer:GetAttribute("HomeDimension") or "C137")
-	pcall(function()
-		LocalPlayer:SetAttribute("InOrbit", false)
-		LocalPlayer:SetAttribute("CurrentDimension", homeDim)
-	end)
-
-	local homePos = returnPos or LocalPlayer:GetAttribute("HomePos") or Vector3.new(139, 10, 82)
-	teleportToPosition(homePos + Vector3.new(0, 4, 0), true, true)
-	task.wait(0.35)
-	return true
-end
-
--- Travels to Orbit or a specific Space Planet using PlanetTravel RemoteFunction
-local lastPlanetTravelClock = 0
-local function travelToOrbit()
-	if LocalPlayer:GetAttribute("InOrbit") == true and not getCurrentPlanetId() then
-		return true
-	end
-	local PlanetTravel = ReplicatedStorage:FindFirstChild("PlanetTravel")
-	if getCurrentPlanetId() and PlanetTravel then
-		pcall(function()
-			PlanetTravel:InvokeServer("leave")
-		end)
-		task.wait(0.3)
-	end
-
-	local base = getMyBase()
-	local pad = base and base:FindFirstChild("LaunchPad", true)
-	local plate = pad and (pad:FindFirstChild("LaunchPlate") or pad)
-	if plate then
-		local ok, pos = pcall(function()
-			return plate:IsA("Model") and plate:GetPivot().Position or plate.Position
-		end)
-		if ok and typeof(pos) == "Vector3" then
-			teleportToPosition(pos + Vector3.new(0, 3, 0), false, false)
-			task.wait(0.18)
-			local prompt = pad:FindFirstChildWhichIsA("ProximityPrompt", true)
-			if prompt then
-				triggerProximityPrompt(prompt)
-				task.wait(0.5)
-			end
-		end
-	end
-
-	local hrp = getRootPart()
-	if hrp then
-		teleportToPosition(Vector3.new(hrp.Position.X, 5200, hrp.Position.Z), false, false)
-		pcall(function()
-			LocalPlayer:SetAttribute("InOrbit", true)
-		end)
-		task.wait(0.35)
-		return true
-	end
-	return false
-end
-
-local function travelToPlanet(planetId)
-	if not planetId then
-		return false
-	end
-	if getCurrentPlanetId() == planetId and not LocalPlayer:GetAttribute("InOrbit") then
-		return true
-	end
-	local now = os.clock()
-	if now - lastPlanetTravelClock < 1.8 then
-		return false
-	end
-	lastPlanetTravelClock = now
-
-	local PlanetTravel = ReplicatedStorage:FindFirstChild("PlanetTravel")
-	if not PlanetTravel or not PlanetTravel:IsA("RemoteFunction") then
-		return false
-	end
-
-	if getCurrentPlanetId() ~= nil then
-		pcall(function()
-			PlanetTravel:InvokeServer("leave")
-		end)
-		task.wait(0.3)
-	end
-
-	if LocalPlayer:GetAttribute("InOrbit") ~= true then
-		travelToOrbit()
-	end
-
-	local ok, spawnPos = pcall(function()
-		return PlanetTravel:InvokeServer("enter", planetId)
-	end)
-	if ok and typeof(spawnPos) == "Vector3" then
-		local expectedDim = (planetId == "PurgePlanet") and "PurgePlanet" or ("PLANET_" .. planetId)
-		pcall(function()
-			LocalPlayer:SetAttribute("InOrbit", false)
-			LocalPlayer:SetAttribute("CurrentDimension", expectedDim)
-		end)
-		teleportToPosition(spawnPos, true, true)
-		task.wait(0.4)
-		return true
-	end
-	return false
-end
-
--- Travels to a Multiverse Dimension using PortalGun / PortalMachine / Existing Portals
-local lastDimTravelClock = 0
-local function travelToDimension(targetDim, portalCode)
-	if not targetDim then
-		return false
-	end
-	local code = portalCode or (targetDim == "EvilMorty" and "EVILMORTY" or string.upper(targetDim))
-
-	-- Leave planet/orbit first if currently in space
-	if getCurrentPlanetId() ~= nil or LocalPlayer:GetAttribute("InOrbit") == true then
-		exitSpaceToEarth()
-	end
-
-	if LocalPlayer:GetAttribute("CurrentDimension") == targetDim then
-		return true
-	end
-
-	if tryCrossExistingPortal(targetDim) then
-		return LocalPlayer:GetAttribute("CurrentDimension") == targetDim
-	end
-
-	local now = os.clock()
-	if now - lastDimTravelClock < 2.2 then
-		return false
-	end
-	lastDimTravelClock = now
-
-	local homeDim = tostring(LocalPlayer:GetAttribute("HomeDimension") or "C137")
-
-	-- Method 1: Use PortalMachine at base if available
-	local base = getMyBase()
-	local PortalMachine = ReplicatedStorage:FindFirstChild("PortalMachine")
-	if base and PortalMachine and PortalMachine:IsA("RemoteEvent") then
-		local machine = base:FindFirstChild("GoldenPortalMachine", true) or base:FindFirstChild("PortalMachine", true)
-		if machine then
-			pcall(function()
-				PortalMachine:FireServer("open", machine, code)
-			end)
-			task.wait(0.6)
-			if tryCrossExistingPortal(targetDim) then
-				return true
-			end
-		end
-	end
-
-	-- Method 2: Equip PortalGun / GoldenPortalGun / PortalGunJr and shoot a portal
-	local char = LocalPlayer.Character
-	local backpack = LocalPlayer:FindFirstChild("Backpack")
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	local hrp = getRootPart()
-	if char and hum and hrp then
-		local gun = char:FindFirstChild("GoldenPortalGun")
-			or char:FindFirstChild("PortalGun")
-			or char:FindFirstChild("PortalGunJr")
-		if not gun and backpack then
-			gun = backpack:FindFirstChild("GoldenPortalGun")
-				or backpack:FindFirstChild("PortalGun")
-				or backpack:FindFirstChild("PortalGunJr")
-			if gun then
-				pcall(function()
-					hum:EquipTool(gun)
-				end)
-				task.wait(0.2)
-			end
-		end
-
-		if gun then
-			if type(_G.PG_GunSetCode) == "function" then
-				pcall(_G.PG_GunSetCode, code)
-			end
-			local pgui = LocalPlayer:FindFirstChild("PlayerGui")
-			for _, guiName in ipairs({ "PortalGunUI", "PortalGunUILegacy" }) do
-				local ui = pgui and pgui:FindFirstChild(guiName)
-				if ui then
-					local td = ui:FindFirstChild("TargetDimension")
-					local pm = ui:FindFirstChild("PortalMode")
-					local pr = ui:FindFirstChild("PortalRange")
-					if td then
-						td.Value = code
-					end
-					if pm then
-						pm.Value = "dim"
-					end
-					if pr then
-						pr.Value = 30
-					end
-				end
-			end
-
-			task.wait(0.1)
-			pcall(function()
-				gun:Activate()
-			end)
-			task.delay(0.12, function()
-				pcall(function()
-					gun:Deactivate()
-				end)
-			end)
-
-			if VirtualInputManager then
-				local cam = workspace.CurrentCamera
-				if cam then
-					local center = cam.ViewportSize / 2
-					pcall(function()
-						VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 1)
-						task.delay(0.05, function()
-							VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, false, game, 1)
-						end)
-					end)
-				end
-			end
-
-			task.wait(0.65)
-			if tryCrossExistingPortal(targetDim) then
-				return true
-			end
-		end
-	end
-
-	-- Fallback when returning to HomeDimension without a portal gun
-	if targetDim == homeDim then
-		local GoHome = ReplicatedStorage:FindFirstChild("GoHome")
-		if GoHome and GoHome:IsA("RemoteEvent") then
-			pcall(function()
-				GoHome:FireServer("start")
-			end)
-			task.wait(5.2)
-			return LocalPlayer:GetAttribute("CurrentDimension") == homeDim
-		end
-	end
-
-	return false
-end
-
-local function ensureAtHomeBase()
-	local hrp = getRootPart()
-	if getCurrentPlanetId() ~= nil or LocalPlayer:GetAttribute("InOrbit") == true or (hrp and hrp.Position.Y > 1100) then
-		exitSpaceToEarth()
-	end
-	local homeDim = tostring(LocalPlayer:GetAttribute("HomeDimension") or "C137")
-	local curDim = tostring(LocalPlayer:GetAttribute("CurrentDimension") or "C137")
-	if curDim ~= homeDim then
-		travelToDimension(homeDim, homeDim)
-	end
-	return tostring(LocalPlayer:GetAttribute("CurrentDimension") or "C137") == homeDim
-		and not getCurrentPlanetId()
-		and not LocalPlayer:GetAttribute("InOrbit")
-end
-
-local function getGarageSpot()
-	local base = getMyBase()
-	if base then
-		local wb = base:FindFirstChild("GarageWorkbench", true)
-		local proj = wb and (wb:FindFirstChild("Projector") or wb)
-		if proj then
-			local ok, pos = pcall(function()
-				return proj:IsA("Model") and proj:GetPivot().Position or proj.Position
-			end)
-			if ok and typeof(pos) == "Vector3" then
-				return pos + Vector3.new(0, 2.5, 3)
-			end
-		end
-		local offset = base:GetAttribute("Offset") or Vector3.zero
-		return Vector3.new(149, 3.2, 83.3) + offset
-	end
-	for _, station in ipairs(CollectionService:GetTagged("CraftingStation")) do
-		if station:IsDescendantOf(workspace) then
-			local ok, pos = pcall(function()
-				return station:GetPivot().Position
-			end)
-			if ok and typeof(pos) == "Vector3" then
-				return pos + Vector3.new(0, 2.5, 3)
-			end
-		end
-	end
-	local homePos = LocalPlayer:GetAttribute("HomePos")
-	if typeof(homePos) == "Vector3" then
-		return homePos + Vector3.new(0, 3, 0)
-	end
-	return nil
-end
-
-local function isNearWorkbench()
-	local hrp = getRootPart()
-	if not hrp then
-		return false
-	end
-	local base = getMyBase()
-	local wb = base and base:FindFirstChild("GarageWorkbench", true)
-	wb = wb and (wb:FindFirstChild("Projector") or wb)
-	if wb then
-		local ok, pos = pcall(function()
-			return wb:IsA("Model") and wb:GetPivot().Position or wb.Position
-		end)
-		if ok and (pos - hrp.Position).Magnitude < 11 then
-			return true
-		end
-	end
-	for _, station in ipairs(CollectionService:GetTagged("CraftingStation")) do
-		if station:IsDescendantOf(workspace) then
-			local ok, pos = pcall(function()
-				return station:GetPivot().Position
-			end)
-			if ok and (pos - hrp.Position).Magnitude < 12 then
-				return true
-			end
-		end
-	end
-	return false
-end
-
-local WildItemBiome = {
-	MagmaShard = "volcano",
-	FrostGem = "snow",
-	DeepQuartz = "caves",
-}
-
-local biomeSpotToggle = 1
-
--- Returns the exact world position of an Earth biome in the player's current dimension (Proc_<dim>)
-local function getNearestBiomePosition(biomeName, cycleSpot)
-	local hrp = getRootPart()
-	local dim = tostring(LocalPlayer:GetAttribute("CurrentDimension") or LocalPlayer:GetAttribute("HomeDimension") or "C137")
-	local procFolder = workspace:FindFirstChild("Proc_" .. dim)
-	if not procFolder then
-		local homeDim = tostring(LocalPlayer:GetAttribute("HomeDimension") or "C137")
-		procFolder = workspace:FindFirstChild("Proc_" .. homeDim) or workspace:FindFirstChild("Proc_C137")
-	end
-	if not procFolder or not hrp then
-		return nil
-	end
-
-	local spots = {}
-	for i = 1, 4 do
-		local attr = procFolder:GetAttribute(("Biome_%s_%d"):format(biomeName, i))
-		if not attr and i == 1 then
-			attr = procFolder:GetAttribute("Biome_" .. biomeName)
-		end
-		if typeof(attr) == "Vector3" then
-			table.insert(spots, attr)
-		end
-	end
-
-	if #spots == 0 then
-		return nil
-	end
-
-	if cycleSpot and #spots > 1 then
-		biomeSpotToggle = (biomeSpotToggle % #spots) + 1
-		local chosen = spots[biomeSpotToggle]
-		return Vector3.new(chosen.X, math.clamp(chosen.Y, 15, 160), chosen.Z)
-	end
-
-	local bestPos = nil
-	local bestDist = nil
-	for _, spot in ipairs(spots) do
-		local dist = Vector3.new(spot.X - hrp.Position.X, 0, spot.Z - hrp.Position.Z).Magnitude
-		if not bestDist or dist < bestDist then
-			bestDist = dist
-			bestPos = Vector3.new(spot.X, math.clamp(spot.Y, 15, 160), spot.Z)
-		end
-	end
-	return bestPos
-end
-
--- Checks if a ResourceNode belongs to the player's current active dimension/planet and is not in Space/other worlds
-local function isNodeInCurrentWorld(node, nodePos)
-	local hiddenDims = workspace:FindFirstChild("HiddenDimensions")
-	if hiddenDims and node:IsDescendantOf(hiddenDims) then
-		return false
-	end
-	local hiddenGround = workspace:FindFirstChild("SpaceHiddenGround")
-	if hiddenGround and node:IsDescendantOf(hiddenGround) then
-		return false
-	end
-
-	-- Never target nodes at Space/Orbit altitude or shared sky floor
-	if nodePos.Y > 850 or nodePos.Y < -120 then
-		return false
-	end
-
-	local currentDim = tostring(LocalPlayer:GetAttribute("CurrentDimension") or LocalPlayer:GetAttribute("HomeDimension") or "C137")
-	local anc = node.Parent
-	while anc and anc ~= workspace do
-		local dimAttr = anc:GetAttribute("DimensionName")
-		if dimAttr and tostring(dimAttr) ~= currentDim then
-			return false
-		end
-		local name = anc.Name
-		if name:sub(1, 5) == "Proc_" then
-			local folderDim = name:sub(6)
-			if folderDim ~= currentDim then
-				return false
-			end
-		elseif name:sub(1, 4) == "Dim_" then
-			local folderDim = name:sub(5)
-			if folderDim ~= currentDim then
-				return false
-			end
-		end
-		anc = anc.Parent
-	end
-
-	-- On Earth, also ensure the node is within the current Earth zone bounds (not another player's distant dimension)
-	local procFolder = workspace:FindFirstChild("Proc_" .. currentDim)
-	if procFolder then
-		local zoneCenter = procFolder:GetAttribute("ZoneCenter")
-		if typeof(zoneCenter) == "Vector3" then
-			local horizFromZone = Vector3.new(nodePos.X - zoneCenter.X, 0, nodePos.Z - zoneCenter.Z).Magnitude
-			if horizFromZone > 3500 then
-				return false
-			end
-		end
-	end
-
-	return true
-end
-
-local function findNearestResourceNode(itemFilter, maxDist)
-	local hrp = getRootPart()
-	if not hrp then
-		return nil, nil
-	end
-
-	local bestNode = nil
-	local bestPrompt = nil
-	local bestDist = maxDist or 3200
-
-	for _, node in ipairs(CollectionService:GetTagged("ResourceNode")) do
-		if node:IsDescendantOf(workspace) then
-			if not itemFilter or itemFilter == "ALL" or node:GetAttribute("Item") == itemFilter then
-				local prompt = node:FindFirstChild("HarvestPrompt", true)
-				if prompt and prompt:IsA("ProximityPrompt") and prompt.Enabled then
-					local ok, pos = pcall(function()
-						return node:GetPivot().Position
-					end)
-					if ok and typeof(pos) == "Vector3" and isNodeInCurrentWorld(node, pos) then
-						local dist = (pos - hrp.Position).Magnitude
-						if dist < bestDist then
-							bestDist = dist
-							bestNode = node
-							bestPrompt = prompt
-						end
-					end
-				end
-			end
-		end
-	end
-
-	return bestNode, bestPrompt
-end
-
--- Travels to the required Planet, Dimension, or Earth Biome for a specific material item
-local function ensureCorrectWorldForMaterial(itemId)
-	if not itemId or itemId == "ALL" then
-		-- If stuck in Orbit while collecting ALL, land back on Earth
-		if LocalPlayer:GetAttribute("InOrbit") == true then
-			exitSpaceToEarth()
-		end
-		return true
-	end
-
-	local cat = MaterialById[itemId]
-	local GameData = getGameData()
-	local gameItem = GameData and GameData.Items and GameData.Items[itemId]
-
-	local planetId = (cat and cat.planet) or (gameItem and gameItem.planet)
-	local dimId = (cat and cat.dim) or (gameItem and gameItem.dim)
-	local biomeName = (cat and cat.biome) or WildItemBiome[itemId]
-
-	if planetId then
-		if getCurrentPlanetId() ~= planetId or LocalPlayer:GetAttribute("InOrbit") == true then
-			return travelToPlanet(planetId)
-		end
-		return true
-	elseif dimId then
-		if getCurrentPlanetId() ~= nil or LocalPlayer:GetAttribute("InOrbit") == true then
-			exitSpaceToEarth()
-		end
-		if LocalPlayer:GetAttribute("CurrentDimension") ~= dimId then
-			return travelToDimension(dimId, cat and cat.code or dimId)
-		end
-		return true
-	elseif biomeName or (cat and cat.locType == "home") or not planetId then
-		ensureAtHomeBase()
-		return true
-	end
-
-	return true
-end
-
-local function harvestResourceNode(itemFilter)
-	if isInActiveMinigame() then
-		return false
-	end
-
-	local targetItem = (itemFilter ~= "ALL") and itemFilter or nil
-	ensureCorrectWorldForMaterial(targetItem or "ALL")
-
-	local node, prompt = findNearestResourceNode(targetItem, 3200)
-	if node and prompt then
-		local ok, pos = pcall(function()
-			return node:GetPivot().Position
-		end)
-		if ok and typeof(pos) == "Vector3" then
-			local hrp = getRootPart()
-			if hrp and (pos - hrp.Position).Magnitude > 8 then
-				local needStream = (pos - hrp.Position).Magnitude > 85
-				teleportToPosition(pos + Vector3.new(0, 3.0, 0), needStream, false)
-				task.wait(0.2)
-			end
-			triggerProximityPrompt(prompt)
-			task.wait(0.18)
-			return true
-		end
-	end
-
-	-- If harvesting a wild Earth biome item (MagmaShard, FrostGem, DeepQuartz) and no node is streamed in yet, move to the biome
-	local cat = targetItem and MaterialById[targetItem]
-	local biomeName = (targetItem and WildItemBiome[targetItem]) or (cat and cat.biome)
-	if biomeName then
-		local biomePos = getNearestBiomePosition(biomeName, true)
-		if biomePos then
-			teleportToPosition(biomePos, true, true)
-			task.wait(0.45)
-			local streamedNode, streamedPrompt = findNearestResourceNode(targetItem, 2200)
-			if streamedNode and streamedPrompt then
-				local ok, pos = pcall(function()
-					return streamedNode:GetPivot().Position
-				end)
-				if ok and typeof(pos) == "Vector3" then
-					teleportToPosition(pos + Vector3.new(0, 3.0, 0), (pos - getRootPart().Position).Magnitude > 85, false)
-					task.wait(0.2)
-					triggerProximityPrompt(streamedPrompt)
-					return true
-				end
-			end
-		end
-		return false
-	end
-
-	-- If harvesting a home base material and we are far from home, return to HomePos so home nodes stream in
-	if not targetItem or (cat and cat.locType == "home") then
-		local hrp = getRootPart()
-		local homePos = LocalPlayer:GetAttribute("HomePos")
-		if hrp and typeof(homePos) == "Vector3" and (hrp.Position - homePos).Magnitude > 260 then
-			teleportToPosition(homePos + Vector3.new(0, 4, 0), true, true)
-			task.wait(0.35)
-			return false
-		end
-	end
-
-	-- If on a planet and no node is streamed in around current spot, patrol safely within the planet surface
-	if getCurrentPlanetId() ~= nil then
-		local hrp = getRootPart()
-		local curDim = tostring(LocalPlayer:GetAttribute("CurrentDimension") or "")
-		local procPlanet = workspace:FindFirstChild("Proc_" .. curDim)
-		local center = (procPlanet and procPlanet:GetAttribute("ZoneCenter")) or (hrp and hrp.Position)
-		if typeof(center) == "Vector3" then
-			local offset = Vector3.new(math.random(-110, 110), 15, math.random(-110, 110))
-			teleportToPosition(center + offset, true, true)
-			task.wait(0.35)
-		end
-	end
-
-	return false
-end
-
---------------------------------------------------------------------------------
--- RESEARCH & CRAFT EXECUTION HELPERS
---------------------------------------------------------------------------------
-local isAutoResearchBusy = false
-
-local function startResearchById(resId)
-	if isAutoResearchBusy or isInActiveMinigame() then
-		return false
-	end
-	local ProgressAction = ReplicatedStorage:FindFirstChild("ProgressAction")
-	if not ProgressAction then
-		return false
-	end
-
-	local known = decodeAttr("Research")
-	if known[resId] then
-		return true
-	end
-
-	local researching = decodeAttr("Researching")
-	local researchingMore = decodeAttr("ResearchingMore")
-	if researching.id == resId or (type(researchingMore) == "table" and researchingMore[resId] ~= nil) then
-		return true
-	end
-
-	if researching.id ~= nil and not LocalPlayer:GetAttribute("ParallelLab") then
-		return false
-	end
-
-	local GameData = getGameData()
-	local resDef = GameData and GameData.ResearchById and GameData.ResearchById[resId]
-	if resDef then
-		local genius = LocalPlayer:GetAttribute("Genius") or 1
-		local currentQI = LocalPlayer:GetAttribute("QI") or 0
-		if genius < (resDef.level or 1) or currentQI < (resDef.qi or 0) then
-			return false
-		end
-	end
-
-	isAutoResearchBusy = true
-	local completed = false
-	pcall(function()
-		local okStart, started, tokenOrErr = pcall(function()
-			return ProgressAction:InvokeServer("labstart", resId)
-		end)
-		if okStart and started and tokenOrErr then
-			local delays = { Config.ResearchDelay, 1.5, 3.0, 5.0 }
-			for _, d in ipairs(delays) do
-				task.wait(d)
-				local okRes, success, msg = pcall(function()
-					return ProgressAction:InvokeServer("research", resId, tokenOrErr)
-				end)
-				if okRes and success then
-					Config.ResearchDelay = math.max(0.2, d)
-					completed = true
-					break
-				else
-					local errStr = string.lower(tostring(msg or ""))
-					if errStr:find("fast") or errStr:find("wait") or errStr:find("time") or not success then
-						local okRe, reStarted, newToken = pcall(function()
-							return ProgressAction:InvokeServer("labstart", resId)
-						end)
-						if okRe and reStarted and newToken then
-							tokenOrErr = newToken
-						else
-							break
-						end
-					end
-				end
-			end
-		end
-	end)
-	task.wait(0.4)
-	isAutoResearchBusy = false
-	return completed
-end
-
-local function tryAutoStartNextResearch()
-	if not (Config.AutoQueueResearch or Config.AutoMission) or isAutoResearchBusy or isInActiveMinigame() then
-		return false
-	end
-
-	local GameData = getGameData()
-	if not GameData or type(GameData.Research) ~= "table" then
-		return false
-	end
-
-	local built = decodeAttr("Built")
-	if not built.Workbench then
-		return false
-	end
-
-	local researching = decodeAttr("Researching")
-	local parallelLab = LocalPlayer:GetAttribute("ParallelLab")
-	if researching.id ~= nil and not parallelLab then
-		return false
-	end
-
-	local researchingMore = decodeAttr("ResearchingMore")
-	local known = decodeAttr("Research")
-	local currentQI = LocalPlayer:GetAttribute("QI") or 0
-	local totalQI = LocalPlayer:GetAttribute("TotalQI") or 0
-	local geniusCap = LocalPlayer:GetAttribute("GeniusCap") or 45
-	local geniusLevel = LocalPlayer:GetAttribute("Genius") or 1
-	pcall(function()
-		geniusLevel = math.max(geniusLevel, GameData.GeniusLevel(totalQI))
-	end)
-
-	for _, res in ipairs(GameData.Research) do
-		local id = res.id
-		local alreadyActive = (researching.id == id) or (type(researchingMore) == "table" and researchingMore[id] ~= nil)
-		if id and not known[id] and not alreadyActive then
-			local reqLevel = res.level or 1
-			if reqLevel <= geniusLevel and reqLevel <= geniusCap and currentQI >= (res.qi or 0) then
-				local reqMet = true
-				for _, preId in ipairs(res.requires or {}) do
-					if not known[preId] then
-						reqMet = false
-						break
-					end
-				end
-
-				if reqMet and type(res.items) == "table" then
-					for _, cost in ipairs(res.items) do
-						local have = tonumber(PlayerInventory[cost.item]) or 0
-						if have < (cost.count or 1) then
-							reqMet = false
-							break
-						end
-					end
-				end
-
-				if reqMet then
-					task.spawn(function()
-						startResearchById(id)
-					end)
-					return true
-				end
-			end
-		end
-	end
-	return false
-end
-
--- Crafts a single unit of recipeId at the home workbench (passes all 3 args: recipeId, 1, "assemble")
-local isCraftingBusy = false
-local function craftRecipeAtWorkbench(recipeId)
-	if not recipeId or isCraftingBusy or isInActiveMinigame() then
-		return false
-	end
-	local CraftItem = ReplicatedStorage:FindFirstChild("CraftItem")
-	local CraftFinish = ReplicatedStorage:FindFirstChild("CraftFinish")
-	if not CraftItem then
-		return false
-	end
-
-	-- Ensure Workbench is built first
-	local built = decodeAttr("Built")
-	if not built.Workbench then
-		local haveScrap = tonumber(PlayerInventory.Scrap) or 0
-		if haveScrap < 15 then
-			harvestResourceNode("Scrap")
-			return false
-		end
-		ensureAtHomeBase()
-		local spot = getGarageSpot()
-		if spot then
-			teleportToPosition(spot, false, false)
-			task.wait(0.2)
-		end
-		local ProgressAction = ReplicatedStorage:FindFirstChild("ProgressAction")
-		if ProgressAction then
-			pcall(function()
-				ProgressAction:InvokeServer("build", "Workbench")
-			end)
-			task.wait(0.35)
-		end
-		return false
-	end
-
-	ensureAtHomeBase()
-
-	if not isNearWorkbench() then
-		local spot = getGarageSpot()
-		if spot then
-			teleportToPosition(spot, false, false)
-			task.wait(0.25)
-		end
-	end
-
-	isCraftingBusy = true
-	local crafted = false
-
-	-- Method 1: Instant handCraft via 3-arg CraftItem:InvokeServer(recipeId, 1, "assemble") + CraftFinish:InvokeServer(token, "done")
-	if CraftFinish then
-		local okAsm, asmOk, token = pcall(function()
-			return CraftItem:InvokeServer(recipeId, 1, "assemble")
-		end)
-		if okAsm and asmOk and type(token) == "string" then
-			local delays = { 0.4, 1.1, 2.2 }
-			for _, d in ipairs(delays) do
-				task.wait(d)
-				local okFin, finSuccess = pcall(function()
-					return CraftFinish:InvokeServer(token, "done")
-				end)
-				if okFin and finSuccess then
-					crafted = true
-					break
-				end
-				local okRe, reOk, newToken = pcall(function()
-					return CraftItem:InvokeServer(recipeId, 1, "assemble")
-				end)
-				if okRe and reOk and type(newToken) == "string" then
-					token = newToken
-				else
-					break
-				end
-			end
-		end
-	end
-
-	-- Method 2: Fallback to 2-arg autoCraft CraftItem:InvokeServer(recipeId, 1)
-	if not crafted then
-		local okDirect, directOk = pcall(function()
-			return CraftItem:InvokeServer(recipeId, 1)
-		end)
-		if okDirect and directOk == true then
-			crafted = true
-		end
-	end
-
-	if InventorySync then
-		pcall(function()
-			InventorySync:FireServer()
-		end)
-	end
-	task.wait(0.25)
-	isCraftingBusy = false
-	return crafted
-end
-
--- Completes any active construction site pieces at the player's home
-local function completeActiveConstructionSites()
-	ensureAtHomeBase()
-	local base = getMyBase()
-	if not base then
-		return false
-	end
-
-	for _, desc in ipairs(base:GetDescendants()) do
-		if desc:IsA("ProximityPrompt") and desc.Enabled and desc.Name ~= "HarvestPrompt" then
-			local actionText = string.lower(tostring(desc.ActionText or ""))
-			local objText = string.lower(tostring(desc.ObjectText or ""))
-			local parentName = string.lower(tostring(desc.Parent and desc.Parent.Name or ""))
-			if
-				actionText:find("build")
-				or actionText:find("weld")
-				or actionText:find("wire")
-				or actionText:find("bolt")
-				or actionText:find("hammer")
-				or actionText:find("construct")
-				or actionText:find("install")
-				or actionText:find("assemble")
-				or objText:find("step")
-				or parentName:find("site")
-				or parentName:find("piece")
-			then
-				local part = desc.Parent
-				local ok, pos = pcall(function()
-					if part:IsA("BasePart") then
-						return part.Position
-					elseif part:IsA("Attachment") then
-						return part.WorldPosition
-					elseif part:IsA("Model") then
-						return part:GetPivot().Position
-					end
-					return nil
-				end)
-				if ok and typeof(pos) == "Vector3" then
-					teleportToPosition(pos + Vector3.new(0, 2.5, 0), false, false)
-					task.wait(0.18)
-					triggerProximityPrompt(desc)
-					task.wait(0.45)
-					return true
-				end
-			end
-		end
-	end
-	return false
-end
-
---------------------------------------------------------------------------------
--- UPDATED AUTO MISSION ENGINE
---------------------------------------------------------------------------------
-local function findRecipeForItem(itemId)
-	local GameData = getGameData()
-	if not GameData or type(GameData.Recipes) ~= "table" then
-		return nil
-	end
-	for _, r in ipairs(GameData.Recipes) do
-		if r.id == itemId or r.result == itemId or r.item == itemId then
-			return r
-		end
-	end
-	return nil
-end
-
-local ensureItemAvailable
-
--- Ensures prerequisite research (and its recursive prerequisites) is completed
-local function ensureResearchUnlocked(resId)
-	local GameData = getGameData()
-	if not GameData or not resId then
-		return true
-	end
-	local known = decodeAttr("Research")
-	if known[resId] then
-		return true
-	end
-
-	local resDef = GameData.ResearchById and GameData.ResearchById[resId]
-	if resDef then
-		for _, reqId in ipairs(resDef.requires or {}) do
-			if not known[reqId] then
-				return ensureResearchUnlocked(reqId)
-			end
-		end
-
-		local genius = LocalPlayer:GetAttribute("Genius") or 1
-		if genius < (resDef.level or 1) then
-			return false -- Requires higher Genius level; caller will farm IQ
-		end
-
-		if type(resDef.items) == "table" then
-			for _, cost in ipairs(resDef.items) do
-				local have = tonumber(PlayerInventory[cost.item]) or 0
-				if have < (cost.count or 1) then
-					ensureItemAvailable(cost.item, cost.count or 1, 1)
-					return false
-				end
-			end
-		end
-
-		local currentQI = LocalPlayer:GetAttribute("QI") or 0
-		if currentQI < (resDef.qi or 0) then
-			harvestResourceNode(nil)
-			return false
-		end
-	end
-
-	local built = decodeAttr("Built")
-	if not built.Workbench then
-		local haveScrap = tonumber(PlayerInventory.Scrap) or 0
-		if haveScrap < 15 then
-			harvestResourceNode("Scrap")
-			return false
-		end
-		ensureAtHomeBase()
-		local spot = getGarageSpot()
-		if spot then
-			teleportToPosition(spot, false)
-			task.wait(0.2)
-		end
-		local ProgressAction = ReplicatedStorage:FindFirstChild("ProgressAction")
-		if ProgressAction then
-			pcall(function()
-				ProgressAction:InvokeServer("build", "Workbench")
-			end)
-		end
-		return false
-	end
-
-	startResearchById(resId)
-	return decodeAttr("Research")[resId] == true
-end
-
--- Ensures the player has `neededCount` of `itemId` (harvests if raw material, crafts if craftable, equips hazard suit if needed)
-ensureItemAvailable = function(itemId, neededCount, depth)
-	depth = (depth or 0) + 1
-	if depth > 5 then
-		return false
-	end
-	local have = tonumber(PlayerInventory[itemId]) or 0
-	if have >= neededCount then
-		return true
-	end
-
-	-- If this material requires a hazard suit (HeatSuit, ThermalSuit, MinerSuit, SpaceSuit) and its research is unlocked, craft the suit first
-	local cat = MaterialById[itemId]
-	if cat and cat.suit and (tonumber(PlayerInventory[cat.suit]) or 0) < 1 then
-		local GameData = getGameData()
-		local suitRes = GameData and GameData.RecipeResearch and GameData.RecipeResearch[cat.suit]
-		if not suitRes or decodeAttr("Research")[suitRes] then
-			ensureItemAvailable(cat.suit, 1, depth)
-			return false
-		end
-	end
-
-	-- If it is a known harvestable material in MaterialById, harvest it in its world
-	if MaterialById[itemId] then
-		harvestResourceNode(itemId)
-		return false
-	end
-
-	-- Check if it is a craftable recipe
-	local GameData = getGameData()
-	local recipe = findRecipeForItem(itemId)
-	if recipe and GameData then
-		local reqRes = GameData.RecipeResearch and GameData.RecipeResearch[itemId]
-		if reqRes and not decodeAttr("Research")[reqRes] then
-			ensureResearchUnlocked(reqRes)
-			return false
-		end
-		for _, ing in ipairs(recipe.cost or recipe.ingredients or {}) do
-			local ingHave = tonumber(PlayerInventory[ing.item]) or 0
-			if ingHave < (ing.count or 1) then
-				ensureItemAvailable(ing.item, ing.count or 1, depth)
-				return false
-			end
-		end
-		craftRecipeAtWorkbench(recipe.id or recipe.item)
-		return false
-	end
-
-	harvestResourceNode(itemId)
-	return false
-end
-
--- Defeats an enemy by travelling to its world/planet and attacking
-local function attackEnemyByType(enemyId)
-	local loc = EnemyLocations[enemyId]
-	if loc then
-		if loc.locType == "planet" and getCurrentPlanetId() ~= loc.planet then
-			travelToPlanet(loc.planet)
-			return true
-		elseif loc.locType == "dim" and LocalPlayer:GetAttribute("CurrentDimension") ~= loc.dim then
-			travelToDimension(loc.dim, loc.code)
-			return true
-		end
-	end
-
-	local hrp = getRootPart()
-	if not hrp then
-		return false
-	end
-
-	local targetEnemy = nil
-	local bestDist = 3500
-
-	for _, obj in ipairs(workspace:GetDescendants()) do
-		if obj:IsA("Model") and obj ~= LocalPlayer.Character then
-			local hum = obj:FindFirstChildOfClass("Humanoid")
-			local eRoot = obj:FindFirstChild("HumanoidRootPart") or obj.PrimaryPart
-			if hum and hum.Health > 0 and eRoot and isNodeInCurrentWorld(obj, eRoot.Position) then
-				local eType = tostring(obj:GetAttribute("EnemyType") or obj:GetAttribute("Enemy") or obj.Name)
-				if not enemyId or eType:find(enemyId, 1, true) or obj.Name:find(enemyId, 1, true) then
-					local dist = (eRoot.Position - hrp.Position).Magnitude
-					if dist < bestDist then
-						bestDist = dist
-						targetEnemy = eRoot
-					end
-				end
-			end
-		end
-	end
-
-	if targetEnemy then
-		teleportToPosition(targetEnemy.Position + Vector3.new(0, 4, 4), bestDist > 85, false)
-		local char = LocalPlayer.Character
-		local backpack = LocalPlayer:FindFirstChild("Backpack")
-		if char and backpack then
-			local tool = char:FindFirstChildOfClass("Tool")
-			if not tool or tool.Name == "PortalGun" or tool.Name == "GoldenPortalGun" or tool.Name == "PortalGunJr" then
-				for _, item in ipairs(backpack:GetChildren()) do
-					if
-						item:IsA("Tool")
-						and item.Name ~= "PortalGun"
-						and item.Name ~= "GoldenPortalGun"
-						and item.Name ~= "PortalGunJr"
-					then
-						local hum = char:FindFirstChildOfClass("Humanoid")
-						if hum then
-							pcall(function()
-								hum:EquipTool(item)
-							end)
-							tool = item
-							break
-						end
-					end
-				end
-			end
-			if tool then
-				pcall(function()
-					tool:Activate()
-				end)
-			end
-			local LaserGunFire = ReplicatedStorage:FindFirstChild("LaserGunFire")
-			if LaserGunFire and LaserGunFire:IsA("RemoteEvent") then
-				pcall(function()
-					LaserGunFire:FireServer(targetEnemy.Position)
-				end)
-			end
-		end
-		return true
-	end
-
-	return false
-end
-
--- Complete OddJob handler (uses JobAction RemoteFunction with "take" and "give")
-local function handleOddJobMission()
-	local JobAction = ReplicatedStorage:FindFirstChild("JobAction")
-	if not JobAction or not JobAction:IsA("RemoteFunction") then
-		return false
-	end
-
-	local activeJob = decodeAttr("OddJob")
-	if activeJob and activeJob.kind then
-		local kind = activeJob.kind
-		if kind == "fetch" and activeJob.item then
-			local needCount = activeJob.count or 1
-			local haveCount = tonumber(PlayerInventory[activeJob.item]) or 0
-			if haveCount < needCount then
-				ensureItemAvailable(activeJob.item, needCount, 1)
-				return true
-			end
-		elseif kind == "lost" and not activeJob.found then
-			for _, item in ipairs(CollectionService:GetTagged("LostItem")) do
-				if item:GetAttribute("Owner") == LocalPlayer.UserId and item:IsDescendantOf(workspace) then
-					local ok, pos = pcall(function()
-						return item:IsA("Model") and item:GetPivot().Position or item.Position
-					end)
-					if ok and typeof(pos) == "Vector3" then
-						teleportToPosition(pos + Vector3.new(0, 2.5, 0), false, false)
-						task.wait(0.2)
-						local prompt = item:FindFirstChildWhichIsA("ProximityPrompt", true)
-						if prompt then
-							triggerProximityPrompt(prompt)
-						end
-						return true
-					end
-				end
-			end
-		elseif kind == "hunt" then
-			local killed = (tonumber(LocalPlayer:GetAttribute("StatKills")) or 0) - (tonumber(activeJob.startKills) or 0)
-			if killed < (activeJob.count or 1) then
-				attackEnemyByType(activeJob.enemy)
-				return true
-			end
-		elseif kind == "courier" and activeJob.target then
-			if LocalPlayer:GetAttribute("CurrentDimension") ~= activeJob.target then
-				travelToDimension(activeJob.target, activeJob.target)
-				return true
-			end
-		end
-
-		-- Job requirements met: find the target/giver NPC and invoke "give"
-		local targetNpcName = (kind == "courier") and activeJob.npc or activeJob.giver
-		local targetDim = (kind == "courier") and activeJob.target or activeJob.dim
-		if targetDim and LocalPlayer:GetAttribute("CurrentDimension") ~= targetDim then
-			travelToDimension(targetDim, targetDim)
-			return true
-		end
-
-		for _, npc in ipairs(CollectionService:GetTagged("NPC")) do
-			if npc:IsDescendantOf(workspace) then
-				local npcName = npc:GetAttribute("NPCName") or npc.Name
-				if not targetNpcName or npcName == targetNpcName then
-					local npcRoot = npc:FindFirstChild("HumanoidRootPart")
-					if npcRoot and isNodeInCurrentWorld(npc, npcRoot.Position) then
-						teleportToPosition(npcRoot.Position + Vector3.new(0, 2.5, 3), false, false)
-						task.wait(0.22)
-						pcall(function()
-							JobAction:InvokeServer("give", npc)
-						end)
-						return true
-					end
-				end
-			end
-		end
-		return false
-	end
-
-	-- No active OddJob: find an NPC with OddJob attribute and invoke "take"
-	for _, npc in ipairs(CollectionService:GetTagged("NPC")) do
-		if npc:GetAttribute("OddJob") and npc:IsDescendantOf(workspace) then
-			local npcRoot = npc:FindFirstChild("HumanoidRootPart")
-			if npcRoot and isNodeInCurrentWorld(npc, npcRoot.Position) then
-				teleportToPosition(npcRoot.Position + Vector3.new(0, 2.5, 3), false, false)
-				task.wait(0.22)
-				pcall(function()
-					JobAction:InvokeServer("take", npc)
-				end)
-				return true
-			end
-		end
-	end
-
-	return false
-end
-
-local discoverCycleIdx = 1
-local travelCycleIdx = 1
-local TravelCodes = { "35C", "J197", "PRIME", "CITADEL", "WASTELAND", "C137" }
-local DiscoverBiomes = { "volcano", "snow", "caves" }
-
-local function executeMissionGoal(goalOrDef)
-	if type(goalOrDef) ~= "table" or isInActiveMinigame() then
-		return false
-	end
-
-	-- Unwrap .goal if a Daily/Bonus definition table was passed
-	local goal = goalOrDef.goal or goalOrDef
-	local gType = goal.type
-	if not gType then
-		return false
-	end
-
-	local GameData = getGameData()
-	if not GameData then
-		return false
-	end
-
-	if gType == "harvest" and goal.item then
-		local cat = MaterialById[goal.item]
-		if cat and cat.suit and (tonumber(PlayerInventory[cat.suit]) or 0) < 1 then
-			local suitRes = GameData.RecipeResearch and GameData.RecipeResearch[cat.suit]
-			if not suitRes or decodeAttr("Research")[suitRes] then
-				return ensureItemAvailable(cat.suit, 1, 1)
-			end
-		end
-		return harvestResourceNode(goal.item)
-
-	elseif gType == "harvestplanet" then
-		if not getCurrentPlanetId() then
-			return travelToPlanet("Moon")
-		end
-		return harvestResourceNode(nil)
-
-	elseif gType == "research" and goal.id then
-		return ensureResearchUnlocked(goal.id)
-
-	elseif gType == "craft" and goal.item then
-		local reqRes = GameData.RecipeResearch and GameData.RecipeResearch[goal.item]
-		if reqRes and not decodeAttr("Research")[reqRes] then
-			return ensureResearchUnlocked(reqRes)
-		end
-
-		local recipe = findRecipeForItem(goal.item)
-		if recipe then
-			for _, ing in ipairs(recipe.cost or recipe.ingredients or {}) do
-				local have = tonumber(PlayerInventory[ing.item]) or 0
-				if have < (ing.count or 1) then
-					return ensureItemAvailable(ing.item, ing.count or 1, 1)
-				end
-			end
-			return craftRecipeAtWorkbench(recipe.id or recipe.item)
-		end
-
-	elseif gType == "build" and goal.id then
-		local sites = decodeAttr("Sites")
-		if sites[goal.id] then
-			if completeActiveConstructionSites() then
-				return true
-			end
-		end
-
-		local reqRes = GameData.BuildResearch and GameData.BuildResearch[goal.id]
-		if reqRes and not decodeAttr("Research")[reqRes] then
-			return ensureResearchUnlocked(reqRes)
-		end
-
-		local bDef = GameData.BuildingById and GameData.BuildingById[goal.id]
-		if bDef and type(bDef.cost) == "table" then
-			for _, cost in ipairs(bDef.cost) do
-				local have = tonumber(PlayerInventory[cost.item]) or 0
-				if have < (cost.count or 1) then
-					return ensureItemAvailable(cost.item, cost.count or 1, 1)
-				end
-			end
-		end
-
-		ensureAtHomeBase()
-		local spot = getGarageSpot()
-		if spot then
-			teleportToPosition(spot, false, false)
-			task.wait(0.2)
-		end
-
-		local ProgressAction = ReplicatedStorage:FindFirstChild("ProgressAction")
-		if ProgressAction then
-			pcall(function()
-				if goal.id == "BunkerEntrance" then
-					ProgressAction:InvokeServer("build", goal.id, "1234")
-				else
-					ProgressAction:InvokeServer("build", goal.id)
-				end
-			end)
-			task.wait(0.35)
-			completeActiveConstructionSites()
-			return true
-		end
-
-	elseif gType == "kill" then
-		return attackEnemyByType(goal.enemy)
-
-	elseif gType == "visit" and goal.dim then
-		if (tonumber(PlayerInventory.PortalGun) or 0) < 1 and (tonumber(PlayerInventory.GoldenPortalGun) or 0) < 1 then
-			local char = LocalPlayer.Character
-			local bp = LocalPlayer:FindFirstChild("Backpack")
-			local hasGunTool = (char and (char:FindFirstChild("PortalGun") or char:FindFirstChild("GoldenPortalGun")))
-				or (bp and (bp:FindFirstChild("PortalGun") or bp:FindFirstChild("GoldenPortalGun")))
-			if not hasGunTool then
-				ensureItemAvailable("PortalGun", 1, 1)
-				return true
-			end
-		end
-		return travelToDimension(goal.dim, goal.dim == "EvilMorty" and "EVILMORTY" or string.upper(goal.dim))
-
-	elseif gType == "travel" then
-		local code = TravelCodes[travelCycleIdx]
-		travelCycleIdx = (travelCycleIdx % #TravelCodes) + 1
-		return travelToDimension(code == "PRIME" and "Prime" or (code == "CITADEL" and "Citadel" or code), code)
-
-	elseif gType == "orbit" then
-		return travelToOrbit()
-
-	elseif gType == "planet" and goal.id then
-		return travelToPlanet(goal.id)
-
-	elseif gType == "job" then
-		return handleOddJobMission()
-
-	elseif gType == "discover" then
-		ensureAtHomeBase()
-		local biome = DiscoverBiomes[discoverCycleIdx]
-		discoverCycleIdx = (discoverCycleIdx % #DiscoverBiomes) + 1
-		local bPos = getNearestBiomePosition(biome, true)
-		if bPos then
-			teleportToPosition(bPos, true, true)
-			task.wait(0.6)
-			return true
-		end
-	end
-
-	return false
-end
-
--- Checks if the current Story Mission is locked waiting for a higher Genius Level
-local function isStoryWaitingOnGeniusLevel(questDef)
-	if not questDef or not questDef.goal then
-		return true
-	end
-	local genius = LocalPlayer:GetAttribute("Genius") or 1
-	local g = questDef.goal
-	if g.type == "level" and genius < (g.n or 1) then
-		return true
-	elseif g.type == "research" and g.id then
-		local GameData = getGameData()
-		local resDef = GameData and GameData.ResearchById and GameData.ResearchById[g.id]
-		if resDef and genius < (resDef.level or 1) then
-			return true
-		end
-	end
-	return false
-end
-
-local function stepAutoMission()
-	if not Config.AutoMission or isInActiveMinigame() then
-		return
-	end
-
-	local GameData = getGameData()
-	if not GameData then
-		return
-	end
-
-	-- 1. Finish any active construction site pieces at home
-	local sites = decodeAttr("Sites")
-	if next(sites) ~= nil then
-		if completeActiveConstructionSites() then
-			return
-		end
-	end
-
-	-- 2. Main Story Mission (unless waiting for a higher Genius level)
-	local questState = decodeAttr("Quest")
-	local questIdx = questState.i or 1
-	local currentQuest = GameData.Quests and GameData.Quests[questIdx]
-	if currentQuest and currentQuest.goal and not isStoryWaitingOnGeniusLevel(currentQuest) then
-		if executeMissionGoal(currentQuest.goal) then
-			return
-		end
-	end
-
-	-- 3. Daily Missions (High IQ reward to level up Genius quickly)
-	local dailyState = decodeAttr("Daily")
-	if dailyState and type(dailyState.list) == "table" and GameData.DailyById then
-		for _, entry in ipairs(dailyState.list) do
-			if not entry.done and entry.id then
-				local dailyDef = GameData.DailyById[entry.id]
-				if dailyDef and executeMissionGoal(dailyDef.goal or dailyDef) then
-					return
-				end
-			end
-		end
-	end
-
-	-- 4. Bonus Mission (Infinite repeatable missions when Story is waiting on Genius level)
-	local bonusState = decodeAttr("Bonus")
-	if bonusState and bonusState.id and GameData.DailyById then
-		local bonusDef = GameData.DailyById[bonusState.id]
-		if bonusDef then
-			local bonusGoal = bonusDef.goal or bonusDef
-			local needCount = bonusGoal.n or bonusDef.n or 1
-			if (bonusState.n or 0) < needCount then
-				if executeMissionGoal(bonusGoal) then
-					return
-				end
-			end
-		end
-	end
-
-	-- 5. Start any available Research or Odd Job or harvest materials to earn IQ
-	if tryAutoStartNextResearch() then
-		return
-	end
-	if handleOddJobMission() then
-		return
-	end
-	harvestResourceNode(nil)
-end
-
--- Anti-Void Safety Rescue when Auto Collect Material or Auto Mission is active
-local function checkAntiVoidRescue()
-	if not (Config.AutoCollectMaterial or Config.AutoMission) then
-		return
-	end
-	local hrp = getRootPart()
-	if hrp and hrp.Position.Y < -28 then
-		pcall(function()
-			hrp.Anchored = true
-			hrp.AssemblyLinearVelocity = Vector3.zero
-			hrp.AssemblyAngularVelocity = Vector3.zero
-		end)
-		local ground = findGroundAtPosition(Vector3.new(hrp.Position.X, 80, hrp.Position.Z), 300, 900)
-		local safePos = ground and (ground + Vector3.new(0, 4, 0))
-			or (LocalPlayer:GetAttribute("HomePos") or Vector3.new(139, 12, 82))
-		teleportToPosition(safePos, true, true)
-	end
-end
-
--- Background loops for Auto Collect Material, Auto Mission, and Auto Queue Research
-local isLoopRunning = true
 
 task.spawn(function()
-	while isLoopRunning do
-		task.wait(0.42)
-		pcall(checkAntiVoidRescue)
-		if Config.AutoMission then
-			pcall(stepAutoMission)
-		elseif Config.AutoCollectMaterial then
-			pcall(function()
-				local entry = MaterialCatalog[Config.SelectedMaterialIndex] or MaterialCatalog[1]
-				harvestResourceNode(entry.id)
-			end)
-		end
-	end
+    while true do
+        if States.AutoHome and LocalPlayer:GetAttribute("InValhalla") == true then
+            TeleportHome()
+        end
+        task.wait(0.8)
+    end
 end)
 
-task.spawn(function()
-	while isLoopRunning do
-		task.wait(2.2)
-		if Config.AutoQueueResearch or Config.AutoMission or Config.AutoCollectMaterial then
-			pcall(function()
-				if InventorySync then
-					InventorySync:FireServer()
-				end
-			end)
-		end
-		if Config.AutoQueueResearch then
-			pcall(tryAutoStartNextResearch)
-		end
-	end
-end)
-
---------------------------------------------------------------------------------
--- RECTANGULAR ENGLISH UI (MOBILE TOUCH & PC MOUSE)
---------------------------------------------------------------------------------
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "ResearchCraftHubUI"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.IgnoreGuiInset = true
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-ScreenGui.DisplayOrder = 999
-ScreenGui.Parent = getGuiParent()
-
-local function makeDraggable(dragHandle, targetFrame, onClickCallback)
-	local dragging = false
-	local dragInput = nil
-	local dragStart = nil
-	local startPos = nil
-	local moved = false
-
-	dragHandle.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = true
-			moved = false
-			dragStart = input.Position
-			startPos = targetFrame.Position
-
-			input.Changed:Connect(function()
-				if input.UserInputState == Enum.UserInputState.End then
-					if dragging and not moved and onClickCallback then
-						onClickCallback()
-					end
-					dragging = false
-				end
-			end)
-		end
-	end)
-
-	dragHandle.InputChanged:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-			dragInput = input
-		end
-	end)
-
-	table.insert(
-		Connections,
-		UserInputService.InputChanged:Connect(function(input)
-			if input == dragInput and dragging then
-				local delta = input.Position - dragStart
-				if delta.Magnitude > 6 then
-					moved = true
-				end
-				targetFrame.Position = UDim2.new(
-					startPos.X.Scale,
-					startPos.X.Offset + delta.X,
-					startPos.Y.Scale,
-					startPos.Y.Offset + delta.Y
-				)
-			end
-		end)
-	)
+-- Fix lag
+local function SetSmooth(enable: boolean)
+    for _, desc in ipairs(workspace:GetDescendants()) do
+        if desc:IsA("BasePart") and not (LocalPlayer.Character and desc:IsDescendantOf(LocalPlayer.Character)) then
+            if enable then
+                if not Cache.Materials[desc] then Cache.Materials[desc] = desc.Material end
+                desc.Material = Enum.Material.SmoothPlastic
+            elseif Cache.Materials[desc] then
+                desc.Material = Cache.Materials[desc]
+            end
+        elseif desc:IsA("Texture") or desc:IsA("Decal") then
+            desc.Transparency = enable and 1 or 0
+        end
+    end
 end
 
--- Minimized Rectangular Floating Button
-local OpenBtn = Instance.new("TextButton")
-OpenBtn.Name = "OpenHubButton"
-OpenBtn.Size = IsMobile and UDim2.fromOffset(130, 34) or UDim2.fromOffset(140, 36)
-OpenBtn.Position = UDim2.new(0, 16, 0.5, -18)
-OpenBtn.BackgroundColor3 = Color3.fromRGB(18, 22, 30)
-OpenBtn.BorderSizePixel = 0
-OpenBtn.Text = "RESEARCH HUB"
-OpenBtn.TextColor3 = Color3.fromRGB(235, 240, 248)
-OpenBtn.Font = Enum.Font.GothamBold
-OpenBtn.TextSize = IsMobile and 12 or 13
-OpenBtn.AutoButtonColor = false
-OpenBtn.Visible = false
-OpenBtn.Parent = ScreenGui
-
-local OpenCorner = Instance.new("UICorner")
-OpenCorner.CornerRadius = UDim.new(0, 4)
-OpenCorner.Parent = OpenBtn
-
-local OpenStroke = Instance.new("UIStroke")
-OpenStroke.Color = Color3.fromRGB(56, 189, 248)
-OpenStroke.Thickness = 1.5
-OpenStroke.Parent = OpenBtn
-
--- Main Rectangular Panel
-local PanelWidth = IsMobile and 390 or 430
-local PanelHeight = IsMobile and 348 or 366
-
-local MainFrame = Instance.new("Frame")
-MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.fromOffset(PanelWidth, PanelHeight)
-MainFrame.Position = UDim2.new(0.5, -math.floor(PanelWidth / 2), 0.5, -math.floor(PanelHeight / 2))
-MainFrame.BackgroundColor3 = Color3.fromRGB(16, 20, 28)
-MainFrame.BorderSizePixel = 0
-MainFrame.Visible = true
-MainFrame.Parent = ScreenGui
-
-local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 4)
-MainCorner.Parent = MainFrame
-
-local MainStroke = Instance.new("UIStroke")
-MainStroke.Color = Color3.fromRGB(48, 58, 76)
-MainStroke.Thickness = 1.5
-MainStroke.Parent = MainFrame
-
--- Rectangular Top Header Bar
-local Header = Instance.new("Frame")
-Header.Name = "Header"
-Header.Size = UDim2.new(1, 0, 0, 36)
-Header.BackgroundColor3 = Color3.fromRGB(24, 30, 42)
-Header.BorderSizePixel = 0
-Header.Active = true
-Header.Parent = MainFrame
-
-local HeaderCorner = Instance.new("UICorner")
-HeaderCorner.CornerRadius = UDim.new(0, 4)
-HeaderCorner.Parent = Header
-
-local HeaderDivider = Instance.new("Frame")
-HeaderDivider.Size = UDim2.new(1, 0, 0, 1)
-HeaderDivider.Position = UDim2.new(0, 0, 1, -1)
-HeaderDivider.BackgroundColor3 = Color3.fromRGB(48, 58, 76)
-HeaderDivider.BorderSizePixel = 0
-HeaderDivider.Parent = Header
-
-local AccentBar = Instance.new("Frame")
-AccentBar.Size = UDim2.new(0, 4, 0, 18)
-AccentBar.Position = UDim2.new(0, 12, 0.5, -9)
-AccentBar.BackgroundColor3 = Color3.fromRGB(56, 189, 248)
-AccentBar.BorderSizePixel = 0
-AccentBar.Parent = Header
-
-local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, -110, 1, 0)
-Title.Position = UDim2.fromOffset(24, 0)
-Title.BackgroundTransparency = 1
-Title.Text = "RESEARCH & MISSION HUB"
-Title.TextColor3 = Color3.fromRGB(240, 245, 255)
-Title.Font = Enum.Font.GothamBold
-Title.TextSize = IsMobile and 13 or 14
-Title.TextXAlignment = Enum.TextXAlignment.Left
-Title.Parent = Header
-
-local MinimizeBtn = Instance.new("TextButton")
-MinimizeBtn.Size = UDim2.fromOffset(28, 24)
-MinimizeBtn.Position = UDim2.new(1, -34, 0.5, -12)
-MinimizeBtn.BackgroundColor3 = Color3.fromRGB(38, 46, 62)
-MinimizeBtn.BorderSizePixel = 0
-MinimizeBtn.Text = "-"
-MinimizeBtn.TextColor3 = Color3.fromRGB(220, 228, 240)
-MinimizeBtn.Font = Enum.Font.GothamBold
-MinimizeBtn.TextSize = 16
-MinimizeBtn.Parent = Header
-
-local MinCorner = Instance.new("UICorner")
-MinCorner.CornerRadius = UDim.new(0, 3)
-MinCorner.Parent = MinimizeBtn
-
--- Planet & World Material List Drawer (Rectangular Side/Overlay Panel)
-local CatalogFrame = Instance.new("Frame")
-CatalogFrame.Name = "MaterialCatalogFrame"
-CatalogFrame.Size = UDim2.fromOffset(IsMobile and 340 or 360, PanelHeight)
-CatalogFrame.Position = UDim2.new(0.5, -math.floor((IsMobile and 340 or 360) / 2), 0.5, -math.floor(PanelHeight / 2))
-CatalogFrame.BackgroundColor3 = Color3.fromRGB(16, 20, 28)
-CatalogFrame.BorderSizePixel = 0
-CatalogFrame.Visible = false
-CatalogFrame.ZIndex = 20
-CatalogFrame.Parent = ScreenGui
-
-local CatCorner = Instance.new("UICorner")
-CatCorner.CornerRadius = UDim.new(0, 4)
-CatCorner.Parent = CatalogFrame
-
-local CatStroke = Instance.new("UIStroke")
-CatStroke.Color = Color3.fromRGB(56, 189, 248)
-CatStroke.Thickness = 1.5
-CatStroke.Parent = CatalogFrame
-
-local CatHeader = Instance.new("Frame")
-CatHeader.Size = UDim2.new(1, 0, 0, 36)
-CatHeader.BackgroundColor3 = Color3.fromRGB(24, 30, 42)
-CatHeader.BorderSizePixel = 0
-CatHeader.Active = true
-CatHeader.ZIndex = 21
-CatHeader.Parent = CatalogFrame
-
-local CatTitle = Instance.new("TextLabel")
-CatTitle.Size = UDim2.new(1, -60, 1, 0)
-CatTitle.Position = UDim2.fromOffset(14, 0)
-CatTitle.BackgroundTransparency = 1
-CatTitle.Text = "PLANET & DIMENSION MATERIALS"
-CatTitle.TextColor3 = Color3.fromRGB(56, 189, 248)
-CatTitle.Font = Enum.Font.GothamBold
-CatTitle.TextSize = IsMobile and 12 or 13
-CatTitle.TextXAlignment = Enum.TextXAlignment.Left
-CatTitle.ZIndex = 22
-CatTitle.Parent = CatHeader
-
-local CloseCatBtn = Instance.new("TextButton")
-CloseCatBtn.Size = UDim2.fromOffset(28, 24)
-CloseCatBtn.Position = UDim2.new(1, -34, 0.5, -12)
-CloseCatBtn.BackgroundColor3 = Color3.fromRGB(38, 46, 62)
-CloseCatBtn.BorderSizePixel = 0
-CloseCatBtn.Text = "X"
-CloseCatBtn.TextColor3 = Color3.fromRGB(220, 228, 240)
-CloseCatBtn.Font = Enum.Font.GothamBold
-CloseCatBtn.TextSize = 13
-CloseCatBtn.ZIndex = 22
-CloseCatBtn.Parent = CatHeader
-
-local CloseCatCorner = Instance.new("UICorner")
-CloseCatCorner.CornerRadius = UDim.new(0, 3)
-CloseCatCorner.Parent = CloseCatBtn
-
-CloseCatBtn.Activated:Connect(function()
-	CatalogFrame.Visible = false
-end)
-
-makeDraggable(CatHeader, CatalogFrame)
-
-MinimizeBtn.Activated:Connect(function()
-	MainFrame.Visible = false
-	CatalogFrame.Visible = false
-	OpenBtn.Visible = true
-end)
-
-makeDraggable(Header, MainFrame)
-makeDraggable(OpenBtn, OpenBtn, function()
-	OpenBtn.Visible = false
-	MainFrame.Visible = true
-end)
-
--- Content Container
-local Content = Instance.new("Frame")
-Content.Name = "Content"
-Content.Size = UDim2.new(1, -24, 1, -48)
-Content.Position = UDim2.fromOffset(12, 42)
-Content.BackgroundTransparency = 1
-Content.Parent = MainFrame
-
-local ListLayout = Instance.new("UIListLayout")
-ListLayout.Padding = UDim.new(0, 6)
-ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
-ListLayout.Parent = Content
-
-local function createToggleRow(order, titleText, descText, getValue, onToggle)
-	local Row = Instance.new("Frame")
-	Row.LayoutOrder = order
-	Row.Size = UDim2.new(1, 0, 0, IsMobile and 43 or 45)
-	Row.BackgroundColor3 = Color3.fromRGB(22, 28, 38)
-	Row.BorderSizePixel = 0
-	Row.Parent = Content
-
-	local RowCorner = Instance.new("UICorner")
-	RowCorner.CornerRadius = UDim.new(0, 4)
-	RowCorner.Parent = Row
-
-	local RowStroke = Instance.new("UIStroke")
-	RowStroke.Color = Color3.fromRGB(38, 48, 64)
-	RowStroke.Thickness = 1
-	RowStroke.Parent = Row
-
-	local LabelTitle = Instance.new("TextLabel")
-	LabelTitle.Size = UDim2.new(1, -96, 0, 20)
-	LabelTitle.Position = UDim2.fromOffset(12, 4)
-	LabelTitle.BackgroundTransparency = 1
-	LabelTitle.Text = titleText
-	LabelTitle.TextColor3 = Color3.fromRGB(235, 240, 250)
-	LabelTitle.Font = Enum.Font.GothamBold
-	LabelTitle.TextSize = IsMobile and 12 or 13
-	LabelTitle.TextXAlignment = Enum.TextXAlignment.Left
-	LabelTitle.Parent = Row
-
-	local LabelDesc = Instance.new("TextLabel")
-	LabelDesc.Size = UDim2.new(1, -96, 0, 16)
-	LabelDesc.Position = UDim2.fromOffset(12, 23)
-	LabelDesc.BackgroundTransparency = 1
-	LabelDesc.Text = descText
-	LabelDesc.TextColor3 = Color3.fromRGB(145, 158, 180)
-	LabelDesc.Font = Enum.Font.Gotham
-	LabelDesc.TextSize = IsMobile and 10 or 11
-	LabelDesc.TextXAlignment = Enum.TextXAlignment.Left
-	LabelDesc.Parent = Row
-
-	local StateBtn = Instance.new("TextButton")
-	StateBtn.Size = UDim2.fromOffset(72, 28)
-	StateBtn.Position = UDim2.new(1, -82, 0.5, -14)
-	StateBtn.BorderSizePixel = 0
-	StateBtn.Font = Enum.Font.GothamBold
-	StateBtn.TextSize = 12
-	StateBtn.AutoButtonColor = false
-	StateBtn.Parent = Row
-
-	local BtnCorner = Instance.new("UICorner")
-	BtnCorner.CornerRadius = UDim.new(0, 3)
-	BtnCorner.Parent = StateBtn
-
-	local BtnStroke = Instance.new("UIStroke")
-	BtnStroke.Thickness = 1
-	BtnStroke.Parent = StateBtn
-
-	local function refreshVisual()
-		local state = getValue()
-		StateBtn.Text = state and "ON" or "OFF"
-		if state then
-			StateBtn.BackgroundColor3 = Color3.fromRGB(16, 185, 129)
-			StateBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-			BtnStroke.Color = Color3.fromRGB(52, 211, 153)
-			RowStroke.Color = Color3.fromRGB(16, 185, 129)
-		else
-			StateBtn.BackgroundColor3 = Color3.fromRGB(36, 44, 58)
-			StateBtn.TextColor3 = Color3.fromRGB(160, 172, 192)
-			BtnStroke.Color = Color3.fromRGB(58, 70, 90)
-			RowStroke.Color = Color3.fromRGB(38, 48, 64)
-		end
-	end
-
-	StateBtn.Activated:Connect(function()
-		local nextState = not getValue()
-		onToggle(nextState)
-		refreshVisual()
-	end)
-
-	refreshVisual()
+local function SetVFX(disable: boolean)
+    for _, desc in ipairs(workspace:GetDescendants()) do
+        if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or desc:IsA("Beam") then
+            (desc :: any).Enabled = not disable
+        end
+    end
 end
 
-createToggleRow(
-	1,
-	"Auto Fast Research",
-	"Skips & auto-solves Scan, Circuit, Gyro, and Mix lab stages",
-	function()
-		return Config.AutoFastResearch
-	end,
-	function(val)
-		Config.AutoFastResearch = val
-		if val then
-			task.spawn(hookMinigameModules)
-		else
-			setLabHold(false)
-		end
-	end
-)
-
-createToggleRow(
-	2,
-	"Auto Queue Research",
-	"Automatically starts the next available research project",
-	function()
-		return Config.AutoQueueResearch
-	end,
-	function(val)
-		Config.AutoQueueResearch = val
-		if val then
-			task.spawn(tryAutoStartNextResearch)
-		end
-	end
-)
-
-createToggleRow(
-	3,
-	"Fast Craft",
-	"Skips & auto-completes Pieces, Screws, and Power stages",
-	function()
-		return Config.FastCraft
-	end,
-	function(val)
-		Config.FastCraft = val
-		if val then
-			task.spawn(hookMinigameModules)
-		else
-			setBenchMouseHold(false)
-		end
-	end
-)
-
-createToggleRow(
-	4,
-	"Auto Collect Material",
-	"Teleports & harvests selected planet / world material",
-	function()
-		return Config.AutoCollectMaterial
-	end,
-	function(val)
-		Config.AutoCollectMaterial = val
-	end
-)
-
--- Row 5: Planet / Material Target Selector Row
-local SelectorRow = Instance.new("Frame")
-SelectorRow.LayoutOrder = 5
-SelectorRow.Size = UDim2.new(1, 0, 0, IsMobile and 44 or 46)
-SelectorRow.BackgroundColor3 = Color3.fromRGB(22, 28, 38)
-SelectorRow.BorderSizePixel = 0
-SelectorRow.Parent = Content
-
-local SelCorner = Instance.new("UICorner")
-SelCorner.CornerRadius = UDim.new(0, 4)
-SelCorner.Parent = SelectorRow
-
-local SelStroke = Instance.new("UIStroke")
-SelStroke.Color = Color3.fromRGB(38, 48, 64)
-SelStroke.Thickness = 1
-SelStroke.Parent = SelectorRow
-
-local SelTitle = Instance.new("TextLabel")
-SelTitle.Size = UDim2.new(1, -148, 0, 18)
-SelTitle.Position = UDim2.fromOffset(12, 4)
-SelTitle.BackgroundTransparency = 1
-SelTitle.Text = "Target Material: ALL Materials"
-SelTitle.TextColor3 = Color3.fromRGB(56, 189, 248)
-SelTitle.Font = Enum.Font.GothamBold
-SelTitle.TextSize = IsMobile and 11 or 12
-SelTitle.TextXAlignment = Enum.TextXAlignment.Left
-SelTitle.TextTruncate = Enum.TextTruncate.AtEnd
-SelTitle.Parent = SelectorRow
-
-local SelSub = Instance.new("TextLabel")
-SelSub.Size = UDim2.new(1, -148, 0, 16)
-SelSub.Position = UDim2.fromOffset(12, 23)
-SelSub.BackgroundTransparency = 1
-SelSub.Text = "Location: Current World (Tap LIST for all planets)"
-SelSub.TextColor3 = Color3.fromRGB(145, 158, 180)
-SelSub.Font = Enum.Font.Gotham
-SelSub.TextSize = IsMobile and 10 or 11
-SelSub.TextXAlignment = Enum.TextXAlignment.Left
-SelSub.TextTruncate = Enum.TextTruncate.AtEnd
-SelSub.Parent = SelectorRow
-
-local PrevMatBtn = Instance.new("TextButton")
-PrevMatBtn.Size = UDim2.fromOffset(26, 28)
-PrevMatBtn.Position = UDim2.new(1, -138, 0.5, -14)
-PrevMatBtn.BackgroundColor3 = Color3.fromRGB(36, 44, 58)
-PrevMatBtn.BorderSizePixel = 0
-PrevMatBtn.Text = "<"
-PrevMatBtn.TextColor3 = Color3.fromRGB(220, 228, 240)
-PrevMatBtn.Font = Enum.Font.GothamBold
-PrevMatBtn.TextSize = 12
-PrevMatBtn.AutoButtonColor = false
-PrevMatBtn.Parent = SelectorRow
-Instance.new("UICorner", PrevMatBtn).CornerRadius = UDim.new(0, 3)
-
-local NextMatBtn = Instance.new("TextButton")
-NextMatBtn.Size = UDim2.fromOffset(26, 28)
-NextMatBtn.Position = UDim2.new(1, -108, 0.5, -14)
-NextMatBtn.BackgroundColor3 = Color3.fromRGB(36, 44, 58)
-NextMatBtn.BorderSizePixel = 0
-NextMatBtn.Text = ">"
-NextMatBtn.TextColor3 = Color3.fromRGB(220, 228, 240)
-NextMatBtn.Font = Enum.Font.GothamBold
-NextMatBtn.TextSize = 12
-NextMatBtn.AutoButtonColor = false
-NextMatBtn.Parent = SelectorRow
-Instance.new("UICorner", NextMatBtn).CornerRadius = UDim.new(0, 3)
-
-local OpenListBtn = Instance.new("TextButton")
-OpenListBtn.Size = UDim2.fromOffset(68, 28)
-OpenListBtn.Position = UDim2.new(1, -78, 0.5, -14)
-OpenListBtn.BackgroundColor3 = Color3.fromRGB(28, 92, 138)
-OpenListBtn.BorderSizePixel = 0
-OpenListBtn.Text = "LIST"
-OpenListBtn.TextColor3 = Color3.fromRGB(240, 248, 255)
-OpenListBtn.Font = Enum.Font.GothamBold
-OpenListBtn.TextSize = 11
-OpenListBtn.AutoButtonColor = false
-OpenListBtn.Parent = SelectorRow
-Instance.new("UICorner", OpenListBtn).CornerRadius = UDim.new(0, 3)
-
-local function updateMaterialDisplay()
-	local entry = MaterialCatalog[Config.SelectedMaterialIndex] or MaterialCatalog[1]
-	SelTitle.Text = "Material: " .. entry.name
-	SelSub.Text = entry.group
+local function SetLighting(disable: boolean)
+    Lighting.GlobalShadows = not disable
+    Lighting.FogEnd = disable and 1e6 or 100000
+    for _, e in ipairs(Lighting:GetChildren()) do
+        if e:IsA("PostEffect") or e:IsA("Atmosphere") then
+            e.Enabled = not disable
+        end
+    end
 end
 
-PrevMatBtn.Activated:Connect(function()
-	Config.SelectedMaterialIndex -= 1
-	if Config.SelectedMaterialIndex < 1 then
-		Config.SelectedMaterialIndex = #MaterialCatalog
-	end
-	updateMaterialDisplay()
-end)
+---------------------------------------------------------------------
+-- 3. HÀM TẠO NÚT BẬT / TẮT ĐƠN GIẢN
+---------------------------------------------------------------------
+local function CreateSimpleToggle(name: string, onToggle: (boolean) -> ())
+    local box = Instance.new("Frame")
+    box.BackgroundColor3 = Color3.fromRGB(30, 32, 40)
+    box.BorderSizePixel = 1
+    box.BorderColor3 = Color3.fromRGB(48, 52, 64)
+    box.Parent = content
 
-NextMatBtn.Activated:Connect(function()
-	Config.SelectedMaterialIndex = (Config.SelectedMaterialIndex % #MaterialCatalog) + 1
-	updateMaterialDisplay()
-end)
+    local label = Instance.new("TextLabel")
+    label.Text = name
+    label.Font = Enum.Font.SourceSansBold
+    label.TextSize = 13
+    label.TextColor3 = Color3.fromRGB(220, 220, 220)
+    label.Position = UDim2.new(0, 8, 0, 0)
+    label.Size = UDim2.new(0.62, 0, 1, 0)
+    label.BackgroundTransparency = 1
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = box
 
-OpenListBtn.Activated:Connect(function()
-	CatalogFrame.Visible = not CatalogFrame.Visible
-end)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 58, 0, 26)
+    btn.Position = UDim2.new(1, -66, 0.5, -13)
+    btn.BackgroundColor3 = Color3.fromRGB(55, 58, 70)
+    btn.Text = "[ TẮT ]"
+    btn.Font = Enum.Font.SourceSansBold
+    btn.TextSize = 12
+    btn.TextColor3 = Color3.fromRGB(180, 180, 180)
+    btn.BorderSizePixel = 0
+    btn.Parent = box
 
--- Populate Scrollable Planet & Dimension Material Catalog
-local CatScroll = Instance.new("ScrollingFrame")
-CatScroll.Size = UDim2.new(1, -16, 1, -46)
-CatScroll.Position = UDim2.fromOffset(8, 40)
-CatScroll.BackgroundTransparency = 1
-CatScroll.BorderSizePixel = 0
-CatScroll.ScrollBarThickness = 4
-CatScroll.ScrollBarImageColor3 = Color3.fromRGB(56, 189, 248)
-CatScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-CatScroll.CanvasSize = UDim2.new()
-CatScroll.ZIndex = 21
-CatScroll.Parent = CatalogFrame
-
-local CatLayout = Instance.new("UIListLayout")
-CatLayout.Padding = UDim.new(0, 4)
-CatLayout.SortOrder = Enum.SortOrder.LayoutOrder
-CatLayout.Parent = CatScroll
-
-for idx, item in ipairs(MaterialCatalog) do
-	local ItemBtn = Instance.new("TextButton")
-	ItemBtn.LayoutOrder = idx
-	ItemBtn.Size = UDim2.new(1, -6, 0, 34)
-	ItemBtn.BackgroundColor3 = Color3.fromRGB(24, 30, 42)
-	ItemBtn.BorderSizePixel = 0
-	ItemBtn.Text = ""
-	ItemBtn.AutoButtonColor = false
-	ItemBtn.ZIndex = 22
-	ItemBtn.Parent = CatScroll
-	Instance.new("UICorner", ItemBtn).CornerRadius = UDim.new(0, 3)
-
-	local ItemName = Instance.new("TextLabel")
-	ItemName.Size = UDim2.new(1, -16, 0, 17)
-	ItemName.Position = UDim2.fromOffset(8, 2)
-	ItemName.BackgroundTransparency = 1
-	ItemName.Text = item.name
-	ItemName.TextColor3 = Color3.fromRGB(235, 240, 250)
-	ItemName.Font = Enum.Font.GothamBold
-	ItemName.TextSize = 11
-	ItemName.TextXAlignment = Enum.TextXAlignment.Left
-	ItemName.ZIndex = 23
-	ItemName.Parent = ItemBtn
-
-	local ItemGroup = Instance.new("TextLabel")
-	ItemGroup.Size = UDim2.new(1, -16, 0, 14)
-	ItemGroup.Position = UDim2.fromOffset(8, 18)
-	ItemGroup.BackgroundTransparency = 1
-	ItemGroup.Text = item.group
-	ItemGroup.TextColor3 = Color3.fromRGB(130, 150, 175)
-	ItemGroup.Font = Enum.Font.Gotham
-	ItemGroup.TextSize = 10
-	ItemGroup.TextXAlignment = Enum.TextXAlignment.Left
-	ItemGroup.ZIndex = 23
-	ItemGroup.Parent = ItemBtn
-
-	ItemBtn.Activated:Connect(function()
-		Config.SelectedMaterialIndex = idx
-		updateMaterialDisplay()
-		CatalogFrame.Visible = false
-	end)
+    local isOn = false
+    btn.MouseButton1Click:Connect(function()
+        isOn = not isOn
+        if isOn then
+            btn.Text = "[ BẬT ]"
+            btn.BackgroundColor3 = Color3.fromRGB(46, 125, 50) -- Màu xanh lá đơn giản
+            btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        else
+            btn.Text = "[ TẮT ]"
+            btn.BackgroundColor3 = Color3.fromRGB(55, 58, 70)
+            btn.TextColor3 = Color3.fromRGB(180, 180, 180)
+        end
+        onToggle(isOn)
+    end)
 end
 
-updateMaterialDisplay()
+-- Tạo danh sách các nút
+CreateSimpleToggle("Tự Giải Minigame", function(state)
+    States.AutoSolve = state
+end)
 
-createToggleRow(
-	6,
-	"Auto Mission",
-	"Auto Story, Daily, Bonus, Planets, Portals & Odd Jobs",
-	function()
-		return Config.AutoMission
-	end,
-	function(val)
-		Config.AutoMission = val
-		if val then
-			task.spawn(hookMinigameModules)
-		end
-	end
-)
+CreateSimpleToggle("Tự Về Home (Valhalla)", function(state)
+    States.AutoHome = state
+    if state and LocalPlayer:GetAttribute("InValhalla") == true then
+        TeleportHome()
+    end
+end)
 
-table.insert(
-	Connections,
-	UserInputService.InputBegan:Connect(function(input, gp)
-		if not gp and input.KeyCode == Enum.KeyCode.RightShift then
-			local showMain = not MainFrame.Visible
-			MainFrame.Visible = showMain
-			if not showMain then
-				CatalogFrame.Visible = false
-			end
-			OpenBtn.Visible = not showMain
-		end
-	end)
-)
+CreateSimpleToggle("Xóa Texture (Mượt)", function(state)
+    States.Smooth = state
+    SetSmooth(state)
+end)
 
-_G.ResearchHubCleanup = function()
-	isLoopRunning = false
-	Config.AutoFastResearch = false
-	Config.AutoQueueResearch = false
-	Config.FastCraft = false
-	Config.AutoCollectMaterial = false
-	Config.AutoMission = false
-	setLabHold(false)
-	setBenchMouseHold(false)
-	unhookMinigameModules()
-	for _, c in ipairs(Connections) do
-		pcall(function()
-			c:Disconnect()
-		end)
-	end
-	table.clear(Connections)
-	if ScreenGui and ScreenGui.Parent then
-		ScreenGui:Destroy()
-	end
-end
-_G.FixLagCleanup = _G.ResearchHubCleanup
+CreateSimpleToggle("Tắt Hạt & Laser (VFX)", function(state)
+    States.NoVFX = state
+    SetVFX(state)
+end)
+
+CreateSimpleToggle("Tắt Đổ Bóng & Sương", function(state)
+    States.NoShadow = state
+    SetLighting(state)
+end)
+
+CreateSimpleToggle("Dịch Chuyển Về Home Ngay", function(state)
+    TeleportHome()
+end)
+
+---------------------------------------------------------------------
+-- 4. KÉO THẢ & ẨN HIỆN
+---------------------------------------------------------------------
+local centeredPos = UDim2.new(0.5, 0, 0.5, 0)
+
+closeBtn.MouseButton1Click:Connect(function()
+    card.Visible = false
+    openMiniBtn.Visible = true
+end)
+
+openMiniBtn.MouseButton1Click:Connect(function()
+    card.Visible = true
+    openMiniBtn.Visible = false
+end)
+
+-- Kéo thả bảng menu
+local dragging, dragStart, startPos = false, Vector3.zero, UDim2.new()
+header.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = card.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        card.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+-- Cập nhật FPS
+local frames, last = 0, os.clock()
+RunService.RenderStepped:Connect(function()
+    frames += 1
+    local now = os.clock()
+    if now - last >= 0.5 then
+        fpsLabel.Text = string.format("FPS: %d", math.round(frames / (now - last)))
+        frames = 0
+        last = now
+    end
+end)
