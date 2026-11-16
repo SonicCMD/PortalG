@@ -2183,13 +2183,15 @@ local Automation = (function()
 	local destroyed = false
 
 	local researchBusy = false
+	local notebookLabBusy = false
 	local craftBusy = false
 	local failedResearchCooldown: { [string]: number } = {}
+	local learnedMinDelay = 0
 
 	local researchConfig = {
 		AutoEnabled = false,
 		Interval = 1.2,
-		ConfirmDelay = 0,
+		ConfirmDelay = 9,
 	}
 
 	local lastResearchMsg = "Chưa chạy"
@@ -2218,6 +2220,53 @@ local Automation = (function()
 		end
 	end
 
+	local function isTimingRejectMsg(msgText: string): boolean
+		local lower = string.lower(msgText)
+		return string.find(lower, "not finished", 1, true) ~= nil
+			or string.find(lower, "unfinished", 1, true) ~= nil
+			or string.find(lower, "too fast", 1, true) ~= nil
+			or string.find(lower, "too early", 1, true) ~= nil
+			or string.find(lower, "wait", 1, true) ~= nil
+			or string.find(lower, "in progress", 1, true) ~= nil
+	end
+
+	local function waitExperimentWindow(targetSec: number, labelName: string, startClock: number, requireAutoEnabled: boolean): boolean
+		if targetSec <= 0 then
+			return true
+		end
+		while not destroyed do
+			if requireAutoEnabled and not researchConfig.AutoEnabled then
+				return false
+			end
+			local elapsed = os.clock() - startClock
+			local remain = targetSec - elapsed
+			if remain <= 0 then
+				return true
+			end
+			lastResearchMsg = ("Đang thí nghiệm %s (còn %.1fs)"):format(labelName, remain)
+			task.wait(math.min(0.25, remain))
+		end
+		return false
+	end
+
+	local function abortActiveLabMinigame(): boolean
+		local pg = LocalPlayer:FindFirstChild("PlayerGui")
+		local hasHud = pg ~= nil and pg:FindFirstChild("ResearchLabHUD") ~= nil
+		local hasLocal = workspace:FindFirstChild("ResearchLabLocal") ~= nil
+		if not hasHud and not hasLocal then
+			return false
+		end
+		local mod = ReplicatedStorage:FindFirstChild("ResearchLab")
+		if mod and mod:IsA("ModuleScript") then
+			local ok, tbl = pcall(require, mod)
+			if ok and type(tbl) == "table" and type(tbl.abort) == "function" then
+				pcall(tbl.abort)
+				return true
+			end
+		end
+		return false
+	end
+
 	local function hookResearchLab()
 		if origResearchRun then
 			return
@@ -2230,12 +2279,16 @@ local Automation = (function()
 				origResearchRun = tbl.run
 				tbl.run = function(args: any)
 					if not destroyed and researchConfig.AutoEnabled then
+						notebookLabBusy = true
 						local r = if type(args) == "table" then args.research else nil
-						local rName = if type(r) == "table" then (r.name or r.id) else "Research"
-						if researchConfig.ConfirmDelay > 0 then
-							task.wait(researchConfig.ConfirmDelay)
+						local rName = tostring(if type(r) == "table" then (r.name or r.id) else "Research")
+						local waitSec = math.max(researchConfig.ConfirmDelay, learnedMinDelay, 9)
+						local okWait = waitExperimentWindow(waitSec, rName, os.clock(), true)
+						notebookLabBusy = false
+						if not okWait then
+							return "cancel"
 						end
-						lastResearchMsg = ("Bỏ qua minigame: %s"):format(tostring(rName))
+						lastResearchMsg = ("Hoàn tất minigame 3 bước: %s"):format(rName)
 						sendNotice("Auto Research", lastResearchMsg, Color3.fromRGB(52, 211, 153))
 						return "done"
 					end
@@ -2431,7 +2484,8 @@ local Automation = (function()
 		local nowClock = os.clock()
 		local candidates: { any } = {}
 		local allDone = true
-		local sampleFailReason = "Không có Research nào đủ điều kiện (IQ/Level/Nguyên liệu)"
+		local bestFailLevel = math.huge
+		local bestFailReason = "Không có Research nào đủ điều kiện (IQ/Level/Nguyên liệu)"
 
 		for _, entry in ipairs(gd.Research) do
 			if type(entry) == "table" and entry.id and not known[entry.id] then
@@ -2451,8 +2505,15 @@ local Automation = (function()
 			)
 			if ok then
 				table.insert(candidates, entry)
-			elseif reason ~= "Đã nghiên cứu xong" and reason ~= "Đang tạm bỏ qua mục lỗi trước đó" then
-				sampleFailReason = reason
+			elseif reason ~= "Đã nghiên cứu xong" then
+				local lv = if type(entry) == "table" then (entry.level or 1) else 999
+				if reason == "Đang tạm bỏ qua mục lỗi trước đó" then
+					lv += 500
+				end
+				if lv < bestFailLevel then
+					bestFailLevel = lv
+					bestFailReason = reason
+				end
 			end
 		end
 
@@ -2460,7 +2521,7 @@ local Automation = (function()
 			if allDone then
 				return {}, "Đã hoàn thành tất cả Research!"
 			end
-			return {}, sampleFailReason
+			return {}, bestFailReason
 		end
 
 		table.sort(candidates, function(a: any, b: any)
@@ -2476,8 +2537,13 @@ local Automation = (function()
 	end
 
 	function Automation:RunResearchOnce(): (boolean, string)
-		if researchBusy then
+		if researchBusy or notebookLabBusy then
 			return false, "Đang xử lý yêu cầu Research..."
+		end
+
+		local pg = LocalPlayer:FindFirstChild("PlayerGui")
+		if pg and pg:FindFirstChild("ResearchLabHUD") then
+			return false, "Đang mở minigame Notebook..."
 		end
 
 		local gd = getGameData()
@@ -2514,18 +2580,73 @@ local Automation = (function()
 				return false, "Đã dừng Auto Research"
 			end
 
+			local entryLabel = tostring(chosenEntry.name or chosenEntry.id)
 			local okStart, started, tokenOrErr = pcall(function()
 				return progressAction:InvokeServer("labstart", chosenEntry.id)
 			end)
 
 			if not okStart or not started then
 				failedResearchCooldown[chosenEntry.id] = os.clock() + 15
-				lastErr = ("%s: %s"):format(tostring(chosenEntry.name or chosenEntry.id), tostring(tokenOrErr or "labstart thất bại"))
+				lastErr = ("%s: %s"):format(entryLabel, tostring(tokenOrErr or "labstart thất bại"))
 				continue
 			end
 
-			if researchConfig.ConfirmDelay > 0 then
-				task.wait(researchConfig.ConfirmDelay)
+			local labStartedAt = os.clock()
+			local initialDelay = if learnedMinDelay > 0
+				then math.max(researchConfig.ConfirmDelay, learnedMinDelay)
+				else researchConfig.ConfirmDelay
+
+			if initialDelay > 0 then
+				local keptRunning = waitExperimentWindow(initialDelay, entryLabel, labStartedAt, true)
+				if not keptRunning then
+					pcall(function()
+						progressAction:InvokeServer("cancelresearch")
+					end)
+					researchBusy = false
+					return false, "Đã dừng Auto Research"
+				end
+			end
+
+			local MAX_EXPERIMENT_WAIT = 24
+			local attemptSucceeded = false
+			local attemptFatalErr = ""
+
+			while not destroyed and researchConfig.AutoEnabled do
+				local okFinish, doneOk, msg = pcall(function()
+					return progressAction:InvokeServer("research", chosenEntry.id, tokenOrErr)
+				end)
+
+				if okFinish and doneOk then
+					local totalElapsed = os.clock() - labStartedAt
+					if totalElapsed > learnedMinDelay then
+						learnedMinDelay = math.clamp(math.ceil(totalElapsed * 2) / 2, 0, 20)
+					end
+					attemptSucceeded = true
+					break
+				end
+
+				local errText = if not okFinish
+					then "Lỗi gọi ProgressAction(research): " .. tostring(doneOk)
+					else tostring(msg or "Server từ chối research")
+
+				local elapsedSoFar = os.clock() - labStartedAt
+				if okFinish and isTimingRejectMsg(errText) and elapsedSoFar < MAX_EXPERIMENT_WAIT then
+					lastResearchMsg = ("Đang chờ server hoàn tất %s (%.1fs)..."):format(entryLabel, elapsedSoFar)
+					local stepDeadline = os.clock() + 1.5
+					while os.clock() < stepDeadline and not destroyed and researchConfig.AutoEnabled do
+						task.wait(0.2)
+					end
+				else
+					attemptFatalErr = ("%s: %s"):format(entryLabel, errText)
+					break
+				end
+			end
+
+			if attemptSucceeded then
+				researchBusy = false
+				local okMsg = ("Đã bắt đầu: %s"):format(entryLabel)
+				lastResearchMsg = okMsg
+				return true, okMsg
 			end
 
 			if destroyed or not researchConfig.AutoEnabled then
@@ -2536,26 +2657,11 @@ local Automation = (function()
 				return false, "Đã dừng Auto Research"
 			end
 
-			local okFinish, doneOk, msg = pcall(function()
-				return progressAction:InvokeServer("research", chosenEntry.id, tokenOrErr)
-			end)
-
-			if okFinish and doneOk then
-				researchBusy = false
-				local okMsg = ("Đã bắt đầu: %s"):format(tostring(chosenEntry.name or chosenEntry.id))
-				lastResearchMsg = okMsg
-				return true, okMsg
-			end
-
 			pcall(function()
 				progressAction:InvokeServer("cancelresearch")
 			end)
 			failedResearchCooldown[chosenEntry.id] = os.clock() + 15
-			if not okFinish then
-				lastErr = "Lỗi gọi ProgressAction(research): " .. tostring(doneOk)
-			else
-				lastErr = ("%s: %s"):format(tostring(chosenEntry.name or chosenEntry.id), tostring(msg or "Server từ chối research"))
-			end
+			lastErr = if attemptFatalErr ~= "" then attemptFatalErr else ("%s: Hết thời gian chờ thí nghiệm"):format(entryLabel)
 		end
 
 		researchBusy = false
@@ -2576,13 +2682,23 @@ local Automation = (function()
 		hookResearchLab()
 
 		task.spawn(function()
+			if abortActiveLabMinigame() then
+				lastResearchMsg = "Đang đóng minigame cũ..."
+				task.wait(0.85)
+			end
+
 			local lastNotifiedErr = ""
 			while researchConfig.AutoEnabled and myToken == researchLoopToken and not destroyed do
 				local ok, msg = self:RunResearchOnce()
 				if ok then
 					lastNotifiedErr = ""
 					sendNotice("Auto Research", msg, Color3.fromRGB(52, 211, 153))
-				elseif msg ~= "Đang có nghiên cứu khác chạy" and msg ~= lastNotifiedErr then
+				elseif msg ~= "Đang có nghiên cứu khác chạy"
+					and msg ~= "Đang xử lý yêu cầu Research..."
+					and msg ~= "Đang mở minigame Notebook..."
+					and msg ~= "Đã dừng Auto Research"
+					and msg ~= lastNotifiedErr
+				then
 					lastNotifiedErr = msg
 					sendNotice("Auto Research", msg, Color3.fromRGB(251, 191, 36))
 				end
@@ -2592,7 +2708,7 @@ local Automation = (function()
 	end
 
 	function Automation:SetResearchConfirmDelay(sec: number)
-		researchConfig.ConfirmDelay = math.clamp(sec, 0, 10)
+		researchConfig.ConfirmDelay = math.clamp(sec, 0, 20)
 	end
 
 	function Automation:GetResearchStatusText(): string
@@ -3109,10 +3225,10 @@ local tglAutoResearch = ResearchTab:CreateToggle({
 
 ResearchTab:CreateSlider({
 	Name = "Độ trễ xác nhận Research",
-	Range = { 0, 10 },
+	Range = { 0, 20 },
 	Increment = 0.5,
 	Suffix = "s",
-	CurrentValue = 0,
+	CurrentValue = 9,
 	Callback = function(value: number)
 		Automation:SetResearchConfirmDelay(value)
 	end,
@@ -3268,7 +3384,7 @@ local elapsed = 0
 monitorConn = RunService.RenderStepped:Connect(function(dt: number)
 	frameCount += 1
 	elapsed += dt
-	if elapsed < 0.5 then
+	if elapsed < 0.25 then
 		return
 	end
 	local fps = math.round(frameCount / elapsed)
