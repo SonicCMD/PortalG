@@ -3,7 +3,7 @@
 	Rayfield Client Menu (Full Single-File LocalScript)
 	Đặt trong: StarterPlayer -> StarterPlayerScripts
 	- Mặc định khi chạy: TẤT CẢ chức năng & nút gạt đều OFF (false).
-	- Đã fix: Không bị ResearchLab/AssemblyBench ẩn ScreenGui và tự skip minigame khi Auto Research / Fast Assemble bật.
+	- Đã fix: Multi-touch drag Mobile, non-blocking Stash sync, giữ ScreenGui Enabled, skip minigame ResearchLab/AssemblyBench, hiển thị lỗi chi tiết.
 ]]
 
 local HttpService = game:GetService("HttpService")
@@ -131,7 +131,6 @@ local Rayfield = (function()
 		screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 		screenGui.Parent = PlayerGui
 
-		-- Chống bị ResearchLab / AssemblyBench tắt mất ScreenGui
 		track(screenGui:GetPropertyChangedSignal("Enabled"):Connect(function()
 			if not destroyed and not screenGui.Enabled then
 				task.defer(function()
@@ -340,50 +339,70 @@ local Rayfield = (function()
 		pagesHolder.BackgroundTransparency = 1
 		pagesHolder.Parent = bodyFrame
 
+		-- Kéo thả MainWindow (an toàn cho đa điểm Mobile + kẹp trong màn hình)
 		do
-			local dragging = false
+			local dragInput: InputObject? = nil
 			local dragStart: Vector3
 			local startPos: UDim2
 
+			local function clampWindowPos(offsetX: number, offsetY: number): (number, number)
+				local cam = workspace.CurrentCamera
+				if not cam then
+					return offsetX, offsetY
+				end
+				local vp = cam.ViewportSize
+				local s = uiScale.Scale
+				local halfW = (WINDOW_W * s) * 0.5
+				local halfH = (mainFrame.AbsoluteSize.Y) * 0.5
+				local minX = -vp.X * 0.5 + math.min(halfW, 120)
+				local maxX = vp.X * 0.5 - math.min(halfW, 120)
+				local minY = -vp.Y * 0.5 + halfH
+				local maxY = vp.Y * 0.5 - math.min(halfH, 46)
+				return math.clamp(offsetX, minX, maxX), math.clamp(offsetY, minY, maxY)
+			end
+
 			track(topbar.InputBegan:Connect(function(input: InputObject)
-				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-					dragging = true
+				if not dragInput and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+					dragInput = input
 					dragStart = input.Position
 					startPos = mainFrame.Position
 				end
 			end))
 
 			track(UserInputService.InputChanged:Connect(function(input: InputObject)
-				if not dragging then
+				if not dragInput then
 					return
 				end
-				if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-					local delta = input.Position - dragStart
-					mainFrame.Position = UDim2.new(
-						startPos.X.Scale,
-						startPos.X.Offset + delta.X,
-						startPos.Y.Scale,
-						startPos.Y.Offset + delta.Y
-					)
+				local isMatch = (dragInput.UserInputType == Enum.UserInputType.Touch and input == dragInput)
+					or (dragInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseMovement)
+				if not isMatch then
+					return
 				end
+				local delta = input.Position - dragStart
+				local nx, ny = clampWindowPos(startPos.X.Offset + delta.X, startPos.Y.Offset + delta.Y)
+				mainFrame.Position = UDim2.new(startPos.X.Scale, nx, startPos.Y.Scale, ny)
 			end))
 
 			track(UserInputService.InputEnded:Connect(function(input: InputObject)
-				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-					dragging = false
+				if not dragInput then
+					return
+				end
+				if input == dragInput or (dragInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseButton1) then
+					dragInput = nil
 				end
 			end))
 		end
 
+		-- Kéo thả / bấm nút RF Menu
 		do
-			local pillDragging = false
+			local pillInput: InputObject? = nil
 			local pillDragMoved = false
 			local pillDragStart: Vector3
 			local pillStartPos: UDim2
 
 			track(togglePill.InputBegan:Connect(function(input: InputObject)
-				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-					pillDragging = true
+				if not pillInput and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+					pillInput = input
 					pillDragMoved = false
 					pillDragStart = input.Position
 					pillStartPos = togglePill.Position
@@ -391,28 +410,34 @@ local Rayfield = (function()
 			end))
 
 			track(UserInputService.InputChanged:Connect(function(input: InputObject)
-				if not pillDragging then
+				if not pillInput then
 					return
 				end
-				if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-					local delta = input.Position - pillDragStart
-					if delta.Magnitude > 6 then
-						pillDragMoved = true
-					end
-					if pillDragMoved then
-						togglePill.Position = UDim2.new(
-							pillStartPos.X.Scale,
-							pillStartPos.X.Offset + delta.X,
-							pillStartPos.Y.Scale,
-							pillStartPos.Y.Offset + delta.Y
-						)
-					end
+				local isMatch = (pillInput.UserInputType == Enum.UserInputType.Touch and input == pillInput)
+					or (pillInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseMovement)
+				if not isMatch then
+					return
+				end
+				local delta = input.Position - pillDragStart
+				if delta.Magnitude > 6 then
+					pillDragMoved = true
+				end
+				if pillDragMoved then
+					togglePill.Position = UDim2.new(
+						pillStartPos.X.Scale,
+						pillStartPos.X.Offset + delta.X,
+						pillStartPos.Y.Scale,
+						pillStartPos.Y.Offset + delta.Y
+					)
 				end
 			end))
 
 			track(UserInputService.InputEnded:Connect(function(input: InputObject)
-				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-					pillDragging = false
+				if not pillInput then
+					return
+				end
+				if input == pillInput or (pillInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseButton1) then
+					pillInput = nil
 				end
 			end))
 
@@ -430,18 +455,14 @@ local Rayfield = (function()
 		local Window = {}
 
 		function Window:SetVisible(visible: boolean)
-			if destroyed then
-				return
-			end
+			if destroyed then return end
 			isVisible = visible
 			mainFrame.Visible = visible
 			togglePill.Visible = not visible
 		end
 
 		function Window:SetMinimized(minimized: boolean)
-			if destroyed then
-				return
-			end
+			if destroyed then return end
 			isMinimized = minimized
 			minimizeBtn.Text = if minimized then "+" else "−"
 			local targetHeight = if minimized then TOPBAR_H else WINDOW_H
@@ -449,9 +470,7 @@ local Rayfield = (function()
 		end
 
 		function Window:Notify(notifyCfg: { Title: string?, Content: string?, Duration: number?, Color: Color3? })
-			if destroyed then
-				return
-			end
+			if destroyed then return end
 			local title = notifyCfg.Title or "Thông báo"
 			local content = notifyCfg.Content or ""
 			local duration = notifyCfg.Duration or 3.5
@@ -509,38 +528,26 @@ local Rayfield = (function()
 			tween(nBody, TWEEN_FAST, { TextTransparency = 0 })
 
 			task.delay(duration, function()
-				if not card.Parent then
-					return
-				end
+				if not card.Parent then return end
 				tween(card, TWEEN_FAST, { BackgroundTransparency = 1 })
 				tween(stroke, TWEEN_FAST, { Transparency = 1 })
 				tween(strip, TWEEN_FAST, { BackgroundTransparency = 1 })
 				tween(nTitle, TWEEN_FAST, { TextTransparency = 1 })
 				local fadeOut = tween(nBody, TWEEN_FAST, { TextTransparency = 1 })
 				fadeOut.Completed:Wait()
-				if card.Parent then
-					card:Destroy()
-				end
+				if card.Parent then card:Destroy() end
 			end)
 		end
 
 		function Window:Destroy()
-			if destroyed then
-				return
-			end
+			if destroyed then return end
 			destroyed = true
-			for _, conn in ipairs(connections) do
-				conn:Disconnect()
-			end
+			for _, conn in ipairs(connections) do conn:Disconnect() end
 			table.clear(connections)
-			if screenGui.Parent then
-				screenGui:Destroy()
-			end
+			if screenGui.Parent then screenGui:Destroy() end
 		end
 
-		track(minimizeBtn.Activated:Connect(function()
-			Window:SetMinimized(not isMinimized)
-		end))
+		track(minimizeBtn.Activated:Connect(function() Window:SetMinimized(not isMinimized) end))
 
 		track(closeBtn.Activated:Connect(function()
 			Window:SetVisible(false)
@@ -552,12 +559,8 @@ local Rayfield = (function()
 		end))
 
 		track(UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessedEvent: boolean)
-			if gameProcessedEvent then
-				return
-			end
-			if input.KeyCode == toggleKey then
-				Window:SetVisible(not isVisible)
-			end
+			if gameProcessedEvent then return end
+			if input.KeyCode == toggleKey then Window:SetVisible(not isVisible) end
 		end))
 
 		local tabs: { { button: TextButton, indicator: Frame, page: ScrollingFrame } } = {}
@@ -624,13 +627,8 @@ local Rayfield = (function()
 
 			table.insert(tabs, { button = tabBtn, indicator = indicator, page = page })
 
-			track(tabBtn.Activated:Connect(function()
-				selectTab(page)
-			end))
-
-			if #tabs == 1 then
-				selectTab(page)
-			end
+			track(tabBtn.Activated:Connect(function() selectTab(page) end))
+			if #tabs == 1 then selectTab(page) end
 
 			local elemOrder = 0
 			local function nextOrder(): number
@@ -697,12 +695,8 @@ local Rayfield = (function()
 
 				local handle = {}
 				function handle:Set(newCfg: { Title: string?, Content: string? })
-					if newCfg.Title ~= nil then
-						pTitle.Text = newCfg.Title
-					end
-					if newCfg.Content ~= nil then
-						pBody.Text = newCfg.Content
-					end
+					if newCfg.Title ~= nil then pTitle.Text = newCfg.Title end
+					if newCfg.Content ~= nil then pBody.Text = newCfg.Content end
 				end
 				return handle
 			end
@@ -759,12 +753,8 @@ local Rayfield = (function()
 				badge.Parent = btn
 				makeCorner(badge, 6)
 
-				track(btn.MouseEnter:Connect(function()
-					tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardHover })
-				end))
-				track(btn.MouseLeave:Connect(function()
-					tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardBg })
-				end))
+				track(btn.MouseEnter:Connect(function() tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardHover }) end))
+				track(btn.MouseLeave:Connect(function() tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardBg }) end))
 				track(btn.Activated:Connect(function()
 					tween(badge, TWEEN_FAST, { BackgroundColor3 = THEME.Accent, TextColor3 = THEME.WindowBg })
 					task.delay(0.15, function()
@@ -772,9 +762,7 @@ local Rayfield = (function()
 							tween(badge, TWEEN_FAST, { BackgroundColor3 = THEME.ControlBg, TextColor3 = THEME.Accent })
 						end
 					end)
-					if btnCfg.Callback then
-						task.spawn(btnCfg.Callback)
-					end
+					if btnCfg.Callback then task.spawn(btnCfg.Callback) end
 				end))
 
 				return btn
@@ -856,29 +844,19 @@ local Rayfield = (function()
 				local handle = {}
 				function handle:Set(newVal: boolean, skipCallback: boolean?)
 					local nextBool = newVal == true
-					if value == nextBool then
-						return
-					end
+					if value == nextBool then return end
 					value = nextBool
 					render()
-					if not skipCallback and tglCfg.Callback then
-						task.spawn(tglCfg.Callback, value)
-					end
+					if not skipCallback and tglCfg.Callback then task.spawn(tglCfg.Callback, value) end
 				end
 
 				function handle:Get(): boolean
 					return value
 				end
 
-				track(card.MouseEnter:Connect(function()
-					tween(card, TWEEN_FAST, { BackgroundColor3 = THEME.CardHover })
-				end))
-				track(card.MouseLeave:Connect(function()
-					tween(card, TWEEN_FAST, { BackgroundColor3 = THEME.CardBg })
-				end))
-				track(card.Activated:Connect(function()
-					handle:Set(not value, false)
-				end))
+				track(card.MouseEnter:Connect(function() tween(card, TWEEN_FAST, { BackgroundColor3 = THEME.CardHover }) end))
+				track(card.MouseLeave:Connect(function() tween(card, TWEEN_FAST, { BackgroundColor3 = THEME.CardBg }) end))
+				track(card.Activated:Connect(function() handle:Set(not value, false) end))
 
 				return handle
 			end
@@ -893,13 +871,9 @@ local Rayfield = (function()
 			})
 				local minVal = sldCfg.Range[1] or 0
 				local maxVal = sldCfg.Range[2] or 100
-				if maxVal <= minVal then
-					maxVal = minVal + 1
-				end
+				if maxVal <= minVal then maxVal = minVal + 1 end
 				local inc = sldCfg.Increment or 1
-				if inc <= 0 then
-					inc = 1
-				end
+				if inc <= 0 then inc = 1 end
 				local currentVal = roundToStep(sldCfg.CurrentValue or minVal, minVal, maxVal, inc)
 
 				local card = Instance.new("Frame")
@@ -979,50 +953,43 @@ local Rayfield = (function()
 				local handle = {}
 				function handle:Set(newVal: number, skipCallback: boolean?)
 					local nextVal = roundToStep(newVal, minVal, maxVal, inc)
-					if nextVal == currentVal then
-						return
-					end
+					if nextVal == currentVal then return end
 					currentVal = nextVal
 					renderVal()
-					if not skipCallback and sldCfg.Callback then
-						task.spawn(sldCfg.Callback, currentVal)
-					end
+					if not skipCallback and sldCfg.Callback then task.spawn(sldCfg.Callback, currentVal) end
 				end
 
 				function handle:Get(): number
 					return currentVal
 				end
 
-				local sliding = false
+				local slideInput: InputObject? = nil
 				local function applyFromInputX(posX: number)
 					local width = barTrack.AbsoluteSize.X
-					if width <= 0 then
-						return
-					end
+					if width <= 0 then return end
 					local alpha = math.clamp((posX - barTrack.AbsolutePosition.X) / width, 0, 1)
 					local rawVal = minVal + (maxVal - minVal) * alpha
 					handle:Set(rawVal, false)
 				end
 
 				track(hitArea.InputBegan:Connect(function(input: InputObject)
-					if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-						sliding = true
+					if not slideInput and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+						slideInput = input
 						applyFromInputX(input.Position.X)
 					end
 				end))
 
 				track(UserInputService.InputChanged:Connect(function(input: InputObject)
-					if not sliding then
-						return
-					end
-					if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-						applyFromInputX(input.Position.X)
-					end
+					if not slideInput then return end
+					local isMatch = (slideInput.UserInputType == Enum.UserInputType.Touch and input == slideInput)
+						or (slideInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseMovement)
+					if isMatch then applyFromInputX(input.Position.X) end
 				end))
 
 				track(UserInputService.InputEnded:Connect(function(input: InputObject)
-					if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-						sliding = false
+					if not slideInput then return end
+					if input == slideInput or (slideInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseButton1) then
+						slideInput = nil
 					end
 				end))
 
@@ -1162,14 +1129,10 @@ local Rayfield = (function()
 
 				local handle = {}
 				function handle:Set(option: string, skipCallback: boolean?)
-					if selected == option then
-						return
-					end
+					if selected == option then return end
 					selected = option
 					refreshOptionVisuals()
-					if not skipCallback and drpCfg.Callback then
-						task.spawn(drpCfg.Callback, selected)
-					end
+					if not skipCallback and drpCfg.Callback then task.spawn(drpCfg.Callback, selected) end
 				end
 
 				function handle:Get(): string
@@ -1269,15 +1232,11 @@ local FixLag = (function()
 
 	local function isProtectedInstance(inst: Instance): boolean
 		local cam = workspace.CurrentCamera
-		if cam and inst:IsDescendantOf(cam) then
-			return true
-		end
+		if cam and inst:IsDescendantOf(cam) then return true end
 		if config.SkipCharacters then
 			for _, plr in ipairs(Players:GetPlayers()) do
 				local char = plr.Character
-				if char and (inst == char or inst:IsDescendantOf(char)) then
-					return true
-				end
+				if char and (inst == char or inst:IsDescendantOf(char)) then return true end
 			end
 		end
 		return false
@@ -1463,32 +1422,10 @@ local FixLag = (function()
 		end)
 	end
 
-	function FixLagModule:SetShadowsAndPostFX(enabled: boolean)
-		config.ShadowsAndPostFX = enabled
-		applyLightingAndPostFX()
-		refreshListeners()
-		if enabled then self:RescanWorkspaceAsync() end
-	end
-
-	function FixLagModule:SetParticlesAndTrails(enabled: boolean)
-		config.ParticlesAndTrails = enabled
-		if not enabled then restoreParticles() end
-		refreshListeners()
-		if enabled then self:RescanWorkspaceAsync() end
-	end
-
-	function FixLagModule:SetMaterialsAndTextures(enabled: boolean)
-		config.MaterialsAndTextures = enabled
-		if not enabled then restoreMaterialsAndTextures() end
-		refreshListeners()
-		if enabled then self:RescanWorkspaceAsync() end
-	end
-
-	function FixLagModule:SetLowTerrain(enabled: boolean)
-		config.LowTerrain = enabled
-		applyTerrain()
-	end
-
+	function FixLagModule:SetShadowsAndPostFX(enabled: boolean) config.ShadowsAndPostFX = enabled; applyLightingAndPostFX(); refreshListeners(); if enabled then self:RescanWorkspaceAsync() end end
+	function FixLagModule:SetParticlesAndTrails(enabled: boolean) config.ParticlesAndTrails = enabled; if not enabled then restoreParticles() end; refreshListeners(); if enabled then self:RescanWorkspaceAsync() end end
+	function FixLagModule:SetMaterialsAndTextures(enabled: boolean) config.MaterialsAndTextures = enabled; if not enabled then restoreMaterialsAndTextures() end; refreshListeners(); if enabled then self:RescanWorkspaceAsync() end end
+	function FixLagModule:SetLowTerrain(enabled: boolean) config.LowTerrain = enabled; applyTerrain() end
 	function FixLagModule:SetSkipCharacters(enabled: boolean)
 		if config.SkipCharacters == enabled then return end
 		config.SkipCharacters = enabled
@@ -1496,7 +1433,6 @@ local FixLag = (function()
 		if config.MaterialsAndTextures then restoreMaterialsAndTextures() end
 		self:RescanWorkspaceAsync()
 	end
-
 	function FixLagModule:SetAll(enabled: boolean)
 		config.ShadowsAndPostFX = enabled
 		config.ParticlesAndTrails = enabled
@@ -1512,7 +1448,6 @@ local FixLag = (function()
 		refreshListeners()
 		if enabled then self:RescanWorkspaceAsync() end
 	end
-
 	function FixLagModule:GetActiveCount(): number
 		local n = 0
 		if config.ShadowsAndPostFX then n += 1 end
@@ -1521,7 +1456,6 @@ local FixLag = (function()
 		if config.LowTerrain then n += 1 end
 		return n
 	end
-
 	function FixLagModule:Destroy()
 		destroyed = true
 		self:SetAll(false)
@@ -1907,7 +1841,10 @@ local Automation = (function()
 		CheckItems = false,
 		SelectedId = "",
 		Interval = 1.2,
+		ConfirmDelay = 0,
 	}
+
+	local lastResearchMsg = "Chưa chạy"
 
 	local craftConfig = {
 		AutoEnabled = false,
@@ -1945,7 +1882,11 @@ local Automation = (function()
 					if not destroyed and researchConfig.AutoEnabled then
 						local r = if type(args) == "table" then args.research else nil
 						local rName = if type(r) == "table" then (r.name or r.id) else "Research"
-						sendNotice("Auto Research", ("Bỏ qua minigame: %s"):format(tostring(rName)), Color3.fromRGB(52, 211, 153))
+						if researchConfig.ConfirmDelay > 0 then
+							task.wait(researchConfig.ConfirmDelay)
+						end
+						lastResearchMsg = ("Bỏ qua minigame: %s"):format(tostring(rName))
+						sendNotice("Auto Research", lastResearchMsg, Color3.fromRGB(52, 211, 153))
 						return "done"
 					end
 					return origResearchRun(args)
@@ -2010,13 +1951,15 @@ local Automation = (function()
 	local function refreshStash(force: boolean?)
 		if not force and (os.clock() - lastStashRefresh < 2.5) then return end
 		lastStashRefresh = os.clock()
-		local stashAction = ReplicatedStorage:FindFirstChild("StashAction")
-		if stashAction and stashAction:IsA("RemoteFunction") then
-			local ok, success, res = pcall(function() return stashAction:InvokeServer("list") end)
-			if ok and success and type(res) == "table" and type(res.stash) == "table" then
-				stash = res.stash
+		task.spawn(function()
+			local stashAction = ReplicatedStorage:FindFirstChild("StashAction")
+			if stashAction and stashAction:IsA("RemoteFunction") then
+				local ok, success, res = pcall(function() return stashAction:InvokeServer("list") end)
+				if not destroyed and ok and success and type(res) == "table" and type(res.stash) == "table" then
+					stash = res.stash
+				end
 			end
-		end
+		end)
 	end
 
 	local function totalOwned(itemId: string): number
@@ -2100,11 +2043,15 @@ local Automation = (function()
 	function AutomationModule:RunResearchOnce(targetId: string?): (boolean, string)
 		if researchBusy then return false, "Đang xử lý yêu cầu Research..." end
 		local gd = getGameData()
-		if not gd or type(gd.Research) ~= "table" then return false, "Không tìm thấy GameData.Research" end
+		if not gd or type(gd.Research) ~= "table" then
+			lastResearchMsg = "Không tìm thấy GameData.Research"
+			return false, lastResearchMsg
+		end
 
 		local progressAction = ReplicatedStorage:FindFirstChild("ProgressAction")
 		if not progressAction or not progressAction:IsA("RemoteFunction") then
-			return false, "Không tìm thấy RemoteFunction ProgressAction"
+			lastResearchMsg = "Không tìm thấy RemoteFunction ProgressAction"
+			return false, lastResearchMsg
 		end
 
 		initInventorySync()
@@ -2118,7 +2065,10 @@ local Automation = (function()
 					if r.id == targetId then chosenEntry = r; break end
 				end
 			end
-			if not chosenEntry then return false, "Không tìm thấy Research: " .. tostring(targetId) end
+			if not chosenEntry then
+				lastResearchMsg = "Không tìm thấy Research: " .. tostring(targetId)
+				return false, lastResearchMsg
+			end
 
 			local known = decodeAttrTable("Research")
 			local built = decodeAttrTable("Built")
@@ -2131,10 +2081,19 @@ local Automation = (function()
 			local geniusLevel = if gd.GeniusLevel then gd.GeniusLevel(totalQi) else 1
 
 			local eligible, reason = isResearchEligible(chosenEntry, known, built, researching, researchingMore, geniusLevel, geniusCap, qi, parallelLab)
-			if not eligible then return false, reason end
+			if not eligible then
+				lastResearchMsg = reason
+				return false, reason
+			end
 		else
 			chosenEntry = pickEligibleResearch()
-			if not chosenEntry then return false, "Không có Research nào đủ điều kiện hoặc slot đang bận" end
+			if not chosenEntry then
+				local built = decodeAttrTable("Built")
+				local researching = decodeAttrTable("Researching")
+				local reason = if not built.Workbench then "Chưa xây Workbench" elseif researching.id then "Đang có nghiên cứu khác chạy" else "Không có Research nào đủ điều kiện (IQ/Level/Tiên quyết)"
+				lastResearchMsg = reason
+				return false, reason
+			end
 		end
 
 		researchBusy = true
@@ -2143,7 +2102,12 @@ local Automation = (function()
 		end)
 		if not okStart or not started then
 			researchBusy = false
-			return false, tostring(tokenOrErr or "labstart thất bại")
+			lastResearchMsg = tostring(tokenOrErr or "labstart thất bại")
+			return false, lastResearchMsg
+		end
+
+		if researchConfig.ConfirmDelay > 0 then
+			task.wait(researchConfig.ConfirmDelay)
 		end
 
 		local okFinish, doneOk, msg = pcall(function()
@@ -2151,9 +2115,17 @@ local Automation = (function()
 		end)
 		researchBusy = false
 
-		if not okFinish then return false, "Lỗi gọi ProgressAction(research): " .. tostring(doneOk) end
-		if not doneOk then return false, tostring(msg or "Server từ chối bắt đầu research") end
-		return true, ("Đã bắt đầu nhanh: %s"):format(tostring(chosenEntry.name or chosenEntry.id))
+		if not okFinish then
+			lastResearchMsg = "Lỗi gọi ProgressAction(research): " .. tostring(doneOk)
+			return false, lastResearchMsg
+		end
+		if not doneOk then
+			lastResearchMsg = tostring(msg or "Server từ chối bắt đầu research")
+			return false, lastResearchMsg
+		end
+
+		lastResearchMsg = ("Đã bắt đầu: %s"):format(tostring(chosenEntry.name or chosenEntry.id))
+		return true, lastResearchMsg
 	end
 
 	function AutomationModule:CancelResearch(): (boolean, string)
@@ -2176,16 +2148,20 @@ local Automation = (function()
 		hookResearchLab()
 
 		task.spawn(function()
-			local notifiedWaiting = false
+			local lastNotifiedErr = ""
 			while researchConfig.AutoEnabled and myToken == researchLoopToken and not destroyed do
 				local targetId = if researchConfig.AutoPickNext then nil else researchConfig.SelectedId
 				local ok, msg = self:RunResearchOnce(targetId)
 				if ok then
-					notifiedWaiting = false
+					lastNotifiedErr = ""
 					sendNotice("Auto Research", msg, Color3.fromRGB(52, 211, 153))
-				elseif not notifiedWaiting and msg ~= "Đang có nghiên cứu khác chạy" and msg ~= "Đã nghiên cứu xong" then
-					notifiedWaiting = true
-					sendNotice("Auto Research", msg, Color3.fromRGB(251, 191, 36))
+				elseif msg ~= "Đang có nghiên cứu khác chạy" and msg ~= lastNotifiedErr then
+					lastNotifiedErr = msg
+					local displayMsg = msg
+					if msg == "Đã nghiên cứu xong" and not researchConfig.AutoPickNext then
+						displayMsg = "Mục đã chọn đã xong — bật 'Tự chọn Research hợp lệ tiếp theo' hoặc chọn mục khác."
+					end
+					sendNotice("Auto Research", displayMsg, Color3.fromRGB(251, 191, 36))
 				end
 				task.wait(researchConfig.Interval)
 			end
@@ -2195,6 +2171,7 @@ local Automation = (function()
 	function AutomationModule:SetResearchAutoPick(enabled: boolean) researchConfig.AutoPickNext = enabled end
 	function AutomationModule:SetResearchCheckItems(enabled: boolean) researchConfig.CheckItems = enabled end
 	function AutomationModule:SetSelectedResearch(researchId: string) researchConfig.SelectedId = researchId end
+	function AutomationModule:SetResearchConfirmDelay(sec: number) researchConfig.ConfirmDelay = math.clamp(sec, 0, 10) end
 
 	function AutomationModule:GetResearchOptions(): ({ string }, { [string]: string })
 		local gd = getGameData()
@@ -2240,7 +2217,14 @@ local Automation = (function()
 			activeStr = ("%s (còn %ds)"):format(tostring(rName), remain)
 		end
 
-		return ("Đã xong: %d/%d | Lv.%d | IQ: %d\nĐang chạy: %s"):format(doneCount, totalCount, lv, qi, activeStr)
+		return ("Đã xong: %d/%d | Lv.%d | IQ: %d\nĐang chạy: %s\nLần cuối: %s"):format(
+			doneCount,
+			totalCount,
+			lv,
+			qi,
+			activeStr,
+			lastResearchMsg
+		)
 	end
 
 	local function findRecipeById(recipeId: string): any?
@@ -2710,11 +2694,23 @@ ResearchTab:CreateDropdown({
 	end,
 })
 
+ResearchTab:CreateSlider({
+	Name = "Độ trễ xác nhận Research",
+	Range = { 0, 10 },
+	Increment = 0.5,
+	Suffix = "s",
+	CurrentValue = 0,
+	Callback = function(value: number)
+		Automation:SetResearchConfirmDelay(value)
+	end,
+})
+
 ResearchTab:CreateButton({
 	Name = "Research Nhanh Ngay (1 lần)",
-	Description = "Chạy ngay Research đang chọn (hoặc mục hợp lệ tiếp theo)",
+	Description = "Chạy ngay Research hợp lệ (theo AutoPick hoặc mục đang chọn)",
 	Callback = function()
-		local ok, msg = Automation:RunResearchOnce(if selectedResearchId ~= "" then selectedResearchId else nil)
+		local targetId = if tglResearchAutoPick:Get() or selectedResearchId == "" then nil else selectedResearchId
+		local ok, msg = Automation:RunResearchOnce(targetId)
 		Window:Notify({
 			Title = "Research Nhanh",
 			Content = msg,
