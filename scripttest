@@ -2,7 +2,8 @@
 --[[
 	Rayfield Client Menu (Full Single-File LocalScript)
 	Đặt trong: StarterPlayer -> StarterPlayerScripts
-	Mặc định khi chạy: TẤT CẢ chức năng & nút gạt đều OFF (false).
+	- Mặc định khi chạy: TẤT CẢ chức năng & nút gạt đều OFF (false).
+	- Đã fix: Không bị ResearchLab/AssemblyBench ẩn ScreenGui và tự skip minigame khi Auto Research / Fast Assemble bật.
 ]]
 
 local HttpService = game:GetService("HttpService")
@@ -120,6 +121,8 @@ local Rayfield = (function()
 			existing:Destroy()
 		end
 
+		local destroyed = false
+
 		local screenGui = Instance.new("ScreenGui")
 		screenGui.Name = "RayfieldMenuGui"
 		screenGui.IgnoreGuiInset = true
@@ -127,6 +130,17 @@ local Rayfield = (function()
 		screenGui.DisplayOrder = displayOrder
 		screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 		screenGui.Parent = PlayerGui
+
+		-- Chống bị ResearchLab / AssemblyBench tắt mất ScreenGui
+		track(screenGui:GetPropertyChangedSignal("Enabled"):Connect(function()
+			if not destroyed and not screenGui.Enabled then
+				task.defer(function()
+					if not destroyed and screenGui.Parent and not screenGui.Enabled then
+						screenGui.Enabled = true
+					end
+				end)
+			end
+		end))
 
 		local notifyContainer = Instance.new("Frame")
 		notifyContainer.Name = "Notifications"
@@ -413,7 +427,6 @@ local Rayfield = (function()
 
 		local isMinimized = false
 		local isVisible = true
-		local destroyed = false
 		local Window = {}
 
 		function Window:SetVisible(visible: boolean)
@@ -1271,67 +1284,41 @@ local FixLag = (function()
 	end
 
 	local function applyPostFxItem(inst: Instance)
-		if not config.ShadowsAndPostFX then
-			return
-		end
+		if not config.ShadowsAndPostFX then return end
 		if inst:IsA("PostEffect") then
-			if savedPostFx[inst] == nil then
-				savedPostFx[inst] = inst.Enabled
-			end
+			if savedPostFx[inst] == nil then savedPostFx[inst] = inst.Enabled end
 			inst.Enabled = false
 		elseif inst:IsA("Light") then
-			if savedLightShadows[inst] == nil then
-				savedLightShadows[inst] = inst.Shadows
-			end
+			if savedLightShadows[inst] == nil then savedLightShadows[inst] = inst.Shadows end
 			inst.Shadows = false
 		end
 	end
 
 	local function applyParticleItem(inst: Instance)
-		if not config.ParticlesAndTrails then
-			return
-		end
+		if not config.ParticlesAndTrails then return end
 		if PARTICLE_CLASSES[inst.ClassName] then
-			if isProtectedInstance(inst) then
-				return
-			end
+			if isProtectedInstance(inst) then return end
 			local anyInst = inst :: any
-			if savedParticles[inst] == nil then
-				savedParticles[inst] = anyInst.Enabled
-			end
+			if savedParticles[inst] == nil then savedParticles[inst] = anyInst.Enabled end
 			anyInst.Enabled = false
 		end
 	end
 
 	local function applyMaterialItem(inst: Instance)
-		if not config.MaterialsAndTextures then
-			return
-		end
-		if isProtectedInstance(inst) then
-			return
-		end
-
+		if not config.MaterialsAndTextures or isProtectedInstance(inst) then return end
 		if inst:IsA("BasePart") and not inst:IsA("Terrain") then
 			if savedPartProps[inst] == nil then
-				savedPartProps[inst] = {
-					Material = inst.Material,
-					CastShadow = inst.CastShadow,
-				}
+				savedPartProps[inst] = { Material = inst.Material, CastShadow = inst.CastShadow }
 			end
 			inst.Material = Enum.Material.SmoothPlastic
 			inst.CastShadow = false
 		elseif inst:IsA("Decal") then
-			if savedDecalTransp[inst] == nil then
-				savedDecalTransp[inst] = inst.Transparency
-			end
+			if savedDecalTransp[inst] == nil then savedDecalTransp[inst] = inst.Transparency end
 			inst.Transparency = 1
 		elseif inst:IsA("SurfaceAppearance") then
 			local parent = inst.Parent
 			if parent and savedSurfaceAppearance[inst] == nil then
-				local ok = pcall(function()
-					inst.Parent = nil
-				end)
-				if ok then
+				if pcall(function() inst.Parent = nil end) then
 					savedSurfaceAppearance[inst] = parent
 				end
 			end
@@ -1350,26 +1337,17 @@ local FixLag = (function()
 				savedLighting.GlobalShadows = Lighting.GlobalShadows
 				savedLighting.EnvironmentDiffuseScale = Lighting.EnvironmentDiffuseScale
 				savedLighting.EnvironmentSpecularScale = Lighting.EnvironmentSpecularScale
-				pcall(function()
-					savedLighting.ShadowSoftness = Lighting.ShadowSoftness
-				end)
+				pcall(function() savedLighting.ShadowSoftness = Lighting.ShadowSoftness end)
 			end
 			Lighting.GlobalShadows = false
 			Lighting.EnvironmentDiffuseScale = 0
 			Lighting.EnvironmentSpecularScale = 0
-			pcall(function()
-				Lighting.ShadowSoftness = 0
-			end)
-
-			for _, child in ipairs(Lighting:GetDescendants()) do
-				applyPostFxItem(child)
-			end
+			pcall(function() Lighting.ShadowSoftness = 0 end)
+			for _, child in ipairs(Lighting:GetDescendants()) do applyPostFxItem(child) end
 			local cam = workspace.CurrentCamera
 			if cam then
 				for _, child in ipairs(cam:GetChildren()) do
-					if child:IsA("PostEffect") then
-						applyPostFxItem(child)
-					end
+					if child:IsA("PostEffect") then applyPostFxItem(child) end
 				end
 			end
 		else
@@ -1378,28 +1356,16 @@ local FixLag = (function()
 				Lighting.EnvironmentDiffuseScale = savedLighting.EnvironmentDiffuseScale
 				Lighting.EnvironmentSpecularScale = savedLighting.EnvironmentSpecularScale
 				if savedLighting.ShadowSoftness ~= nil then
-					pcall(function()
-						Lighting.ShadowSoftness = savedLighting.ShadowSoftness
-					end)
+					pcall(function() Lighting.ShadowSoftness = savedLighting.ShadowSoftness end)
 				end
 				table.clear(savedLighting)
 			end
-
 			for inst, origEnabled in pairs(savedPostFx) do
-				if inst.Parent then
-					pcall(function()
-						(inst :: PostEffect).Enabled = origEnabled
-					end)
-				end
+				if inst.Parent then pcall(function() (inst :: PostEffect).Enabled = origEnabled end) end
 			end
 			table.clear(savedPostFx)
-
 			for inst, origShadow in pairs(savedLightShadows) do
-				if inst.Parent then
-					pcall(function()
-						(inst :: Light).Shadows = origShadow
-					end)
-				end
+				if inst.Parent then pcall(function() (inst :: Light).Shadows = origShadow end) end
 			end
 			table.clear(savedLightShadows)
 		end
@@ -1407,26 +1373,20 @@ local FixLag = (function()
 
 	local function applyTerrain()
 		local terrain = workspace.Terrain
-		if not terrain then
-			return
-		end
+		if not terrain then return end
 		if config.LowTerrain then
 			if savedTerrain.WaterWaveSize == nil then
 				savedTerrain.WaterWaveSize = terrain.WaterWaveSize
 				savedTerrain.WaterWaveSpeed = terrain.WaterWaveSpeed
 				savedTerrain.WaterReflectance = terrain.WaterReflectance
 				savedTerrain.WaterTransparency = terrain.WaterTransparency
-				pcall(function()
-					savedTerrain.Decoration = (terrain :: any).Decoration
-				end)
+				pcall(function() savedTerrain.Decoration = (terrain :: any).Decoration end)
 			end
 			terrain.WaterWaveSize = 0
 			terrain.WaterWaveSpeed = 0
 			terrain.WaterReflectance = 0
 			terrain.WaterTransparency = 0
-			pcall(function()
-				(terrain :: any).Decoration = false
-			end)
+			pcall(function() (terrain :: any).Decoration = false end)
 		else
 			if savedTerrain.WaterWaveSize ~= nil then
 				terrain.WaterWaveSize = savedTerrain.WaterWaveSize
@@ -1434,9 +1394,7 @@ local FixLag = (function()
 				terrain.WaterReflectance = savedTerrain.WaterReflectance
 				terrain.WaterTransparency = savedTerrain.WaterTransparency
 				if savedTerrain.Decoration ~= nil then
-					pcall(function()
-						(terrain :: any).Decoration = savedTerrain.Decoration
-					end)
+					pcall(function() (terrain :: any).Decoration = savedTerrain.Decoration end)
 				end
 				table.clear(savedTerrain)
 			end
@@ -1445,11 +1403,7 @@ local FixLag = (function()
 
 	local function restoreParticles()
 		for inst, origEnabled in pairs(savedParticles) do
-			if inst.Parent then
-				pcall(function()
-					(inst :: any).Enabled = origEnabled
-				end)
-			end
+			if inst.Parent then pcall(function() (inst :: any).Enabled = origEnabled end) end
 		end
 		table.clear(savedParticles)
 	end
@@ -1464,42 +1418,26 @@ local FixLag = (function()
 			end
 		end
 		table.clear(savedPartProps)
-
 		for decal, origTransp in pairs(savedDecalTransp) do
-			if decal.Parent then
-				pcall(function()
-					decal.Transparency = origTransp
-				end)
-			end
+			if decal.Parent then pcall(function() decal.Transparency = origTransp end) end
 		end
 		table.clear(savedDecalTransp)
-
 		for sa, origParent in pairs(savedSurfaceAppearance) do
-			if origParent.Parent then
-				pcall(function()
-					sa.Parent = origParent
-				end)
-			end
+			if origParent.Parent then pcall(function() sa.Parent = origParent end) end
 		end
 		table.clear(savedSurfaceAppearance)
 	end
 
 	local function refreshListeners()
 		local needsWorkspaceWatch = config.ShadowsAndPostFX or config.ParticlesAndTrails or config.MaterialsAndTextures
-
 		if needsWorkspaceWatch and not workspaceConn and not destroyed then
-			workspaceConn = workspace.DescendantAdded:Connect(function(inst: Instance)
-				processInstance(inst)
-			end)
+			workspaceConn = workspace.DescendantAdded:Connect(processInstance)
 		elseif not needsWorkspaceWatch and workspaceConn then
 			workspaceConn:Disconnect()
 			workspaceConn = nil
 		end
-
 		if config.ShadowsAndPostFX and not lightingConn and not destroyed then
-			lightingConn = Lighting.DescendantAdded:Connect(function(inst: Instance)
-				applyPostFxItem(inst)
-			end)
+			lightingConn = Lighting.DescendantAdded:Connect(applyPostFxItem)
 		elseif not config.ShadowsAndPostFX and lightingConn then
 			lightingConn:Disconnect()
 			lightingConn = nil
@@ -1507,23 +1445,14 @@ local FixLag = (function()
 	end
 
 	function FixLagModule:RescanWorkspaceAsync()
-		if destroyed then
-			return
-		end
-		if not (config.ShadowsAndPostFX or config.ParticlesAndTrails or config.MaterialsAndTextures) then
-			return
-		end
-
+		if destroyed then return end
+		if not (config.ShadowsAndPostFX or config.ParticlesAndTrails or config.MaterialsAndTextures) then return end
 		scanToken += 1
 		local myToken = scanToken
-
 		task.spawn(function()
-			local descendants = workspace:GetDescendants()
 			local count = 0
-			for _, inst in ipairs(descendants) do
-				if myToken ~= scanToken or destroyed then
-					return
-				end
+			for _, inst in ipairs(workspace:GetDescendants()) do
+				if myToken ~= scanToken or destroyed then return end
 				processInstance(inst)
 				count += 1
 				if count >= 350 then
@@ -1561,9 +1490,7 @@ local FixLag = (function()
 	end
 
 	function FixLagModule:SetSkipCharacters(enabled: boolean)
-		if config.SkipCharacters == enabled then
-			return
-		end
+		if config.SkipCharacters == enabled then return end
 		config.SkipCharacters = enabled
 		if config.ParticlesAndTrails then restoreParticles() end
 		if config.MaterialsAndTextures then restoreMaterialsAndTextures() end
@@ -1575,7 +1502,6 @@ local FixLag = (function()
 		config.ParticlesAndTrails = enabled
 		config.MaterialsAndTextures = enabled
 		config.LowTerrain = enabled
-
 		applyLightingAndPostFX()
 		applyTerrain()
 		if not enabled then
@@ -1599,14 +1525,8 @@ local FixLag = (function()
 	function FixLagModule:Destroy()
 		destroyed = true
 		self:SetAll(false)
-		if workspaceConn then
-			workspaceConn:Disconnect()
-			workspaceConn = nil
-		end
-		if lightingConn then
-			lightingConn:Disconnect()
-			lightingConn = nil
-		end
+		if workspaceConn then workspaceConn:Disconnect(); workspaceConn = nil end
+		if lightingConn then lightingConn:Disconnect(); lightingConn = nil end
 	end
 
 	return FixLagModule
@@ -1653,15 +1573,9 @@ local Esp = (function()
 
 	local function getEspFolder(): Folder?
 		local cam = workspace.CurrentCamera
-		if not cam then
-			return nil
-		end
-		if espFolder and espFolder.Parent == cam then
-			return espFolder
-		end
-		if espFolder then
-			espFolder:Destroy()
-		end
+		if not cam then return nil end
+		if espFolder and espFolder.Parent == cam then return espFolder end
+		if espFolder then espFolder:Destroy() end
 		local folder = Instance.new("Folder")
 		folder.Name = "RayfieldESP"
 		folder.Parent = cam
@@ -1670,14 +1584,8 @@ local Esp = (function()
 	end
 
 	local function clearVisuals(entry: PlayerEntry)
-		if entry.highlight then
-			entry.highlight:Destroy()
-			entry.highlight = nil
-		end
-		if entry.billboard then
-			entry.billboard:Destroy()
-			entry.billboard = nil
-		end
+		if entry.highlight then entry.highlight:Destroy(); entry.highlight = nil end
+		if entry.billboard then entry.billboard:Destroy(); entry.billboard = nil end
 		entry.nameLabel = nil
 		entry.hpContainer = nil
 		entry.hpFill = nil
@@ -1685,16 +1593,10 @@ local Esp = (function()
 
 	local function resolveAdorneePart(character: Model): BasePart?
 		local head = character:FindFirstChild("Head")
-		if head and head:IsA("BasePart") then
-			return head
-		end
+		if head and head:IsA("BasePart") then return head end
 		local hrp = character:FindFirstChild("HumanoidRootPart")
-		if hrp and hrp:IsA("BasePart") then
-			return hrp
-		end
-		if character.PrimaryPart then
-			return character.PrimaryPart
-		end
+		if hrp and hrp:IsA("BasePart") then return hrp end
+		if character.PrimaryPart then return character.PrimaryPart end
 		return character:FindFirstChildWhichIsA("BasePart")
 	end
 
@@ -1706,27 +1608,16 @@ local Esp = (function()
 	end
 
 	local function isTeammate(player: Player): boolean
-		if not config.TeamCheck then
-			return false
-		end
-		if LocalPlayer.Neutral or player.Neutral then
-			return false
-		end
+		if not config.TeamCheck then return false end
+		if LocalPlayer.Neutral or player.Neutral then return false end
 		return LocalPlayer.Team ~= nil and player.Team == LocalPlayer.Team
 	end
 
 	local function ensureBillboard(entry: PlayerEntry, character: Model)
-		if entry.billboard and entry.billboard.Parent then
-			return
-		end
+		if entry.billboard and entry.billboard.Parent then return end
 		local folder = getEspFolder()
-		if not folder then
-			return
-		end
 		local adornee = resolveAdorneePart(character)
-		if not adornee then
-			return
-		end
+		if not folder or not adornee then return end
 
 		local bb = Instance.new("BillboardGui")
 		bb.Name = "ESP_" .. entry.player.Name
@@ -1760,10 +1651,7 @@ local Esp = (function()
 		hpBg.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
 		hpBg.BorderSizePixel = 0
 		hpBg.Parent = bb
-
-		local hpCorner = Instance.new("UICorner")
-		hpCorner.CornerRadius = UDim.new(0, 3)
-		hpCorner.Parent = hpBg
+		Instance.new("UICorner", hpBg).CornerRadius = UDim.new(0, 3)
 
 		local hpStroke = Instance.new("UIStroke")
 		hpStroke.Color = Color3.new(0, 0, 0)
@@ -1777,10 +1665,7 @@ local Esp = (function()
 		hpFill.BackgroundColor3 = Color3.fromRGB(74, 222, 128)
 		hpFill.BorderSizePixel = 0
 		hpFill.Parent = hpBg
-
-		local fillCorner = Instance.new("UICorner")
-		fillCorner.CornerRadius = UDim.new(0, 3)
-		fillCorner.Parent = hpFill
+		Instance.new("UICorner", hpFill).CornerRadius = UDim.new(0, 3)
 
 		entry.billboard = bb
 		entry.nameLabel = nameLbl
@@ -1790,16 +1675,11 @@ local Esp = (function()
 
 	local function ensureHighlight(entry: PlayerEntry, character: Model)
 		if entry.highlight and entry.highlight.Parent then
-			if entry.highlight.Adornee ~= character then
-				entry.highlight.Adornee = character
-			end
+			if entry.highlight.Adornee ~= character then entry.highlight.Adornee = character end
 			return
 		end
 		local folder = getEspFolder()
-		if not folder then
-			return
-		end
-
+		if not folder then return end
 		local hl = Instance.new("Highlight")
 		hl.Name = "HL_" .. entry.player.Name
 		hl.Adornee = character
@@ -1816,16 +1696,12 @@ local Esp = (function()
 	local function bindCharacter(entry: PlayerEntry, character: Model?)
 		clearVisuals(entry)
 		entry.character = character
-		if not config.Enabled or not character then
-			return
-		end
+		if not config.Enabled or not character then return end
 		ensureBillboard(entry, character)
 	end
 
 	local function registerPlayer(player: Player)
-		if player == LocalPlayer or entries[player] then
-			return
-		end
+		if player == LocalPlayer or entries[player] then return end
 		local entry: PlayerEntry = {
 			player = player,
 			character = player.Character,
@@ -1837,27 +1713,15 @@ local Esp = (function()
 			conns = {},
 		}
 		entries[player] = entry
-
-		table.insert(entry.conns, player.CharacterAdded:Connect(function(char: Model)
-			bindCharacter(entry, char)
-		end))
-		table.insert(entry.conns, player.CharacterRemoving:Connect(function()
-			bindCharacter(entry, nil)
-		end))
-
-		if config.Enabled and player.Character then
-			bindCharacter(entry, player.Character)
-		end
+		table.insert(entry.conns, player.CharacterAdded:Connect(function(char: Model) bindCharacter(entry, char) end))
+		table.insert(entry.conns, player.CharacterRemoving:Connect(function() bindCharacter(entry, nil) end))
+		if config.Enabled and player.Character then bindCharacter(entry, player.Character) end
 	end
 
 	local function unregisterPlayer(player: Player)
 		local entry = entries[player]
-		if not entry then
-			return
-		end
-		for _, conn in ipairs(entry.conns) do
-			conn:Disconnect()
-		end
+		if not entry then return end
+		for _, conn in ipairs(entry.conns) do conn:Disconnect() end
 		table.clear(entry.conns)
 		clearVisuals(entry)
 		entries[player] = nil
@@ -1867,21 +1731,15 @@ local Esp = (function()
 		local char = LocalPlayer.Character
 		if char then
 			local hrp = char:FindFirstChild("HumanoidRootPart")
-			if hrp and hrp:IsA("BasePart") then
-				return hrp.Position
-			end
+			if hrp and hrp:IsA("BasePart") then return hrp.Position end
 		end
 		local cam = workspace.CurrentCamera
-		if cam then
-			return cam.CFrame.Position
-		end
+		if cam then return cam.CFrame.Position end
 		return nil
 	end
 
 	local function updateAllEntries()
-		if not config.Enabled then
-			return
-		end
+		if not config.Enabled then return end
 		local origin = getOriginPosition()
 		local visibleCandidates: { { entry: PlayerEntry, dist: number } } = {}
 
@@ -1891,35 +1749,20 @@ local Esp = (function()
 				char = entry.player.Character
 				entry.character = char
 			end
-
 			if not char or not char.Parent or isTeammate(entry.player) then
-				if entry.billboard then
-					entry.billboard.Enabled = false
-				end
-				if entry.highlight then
-					entry.highlight:Destroy()
-					entry.highlight = nil
-				end
+				if entry.billboard then entry.billboard.Enabled = false end
+				if entry.highlight then entry.highlight:Destroy(); entry.highlight = nil end
 				continue
 			end
-
 			local adornee = resolveAdorneePart(char)
 			if not adornee then
-				if entry.billboard then
-					entry.billboard.Enabled = false
-				end
+				if entry.billboard then entry.billboard.Enabled = false end
 				continue
 			end
-
 			local dist = if origin then (adornee.Position - origin).Magnitude else 0
 			if dist > config.MaxDistance then
-				if entry.billboard then
-					entry.billboard.Enabled = false
-				end
-				if entry.highlight then
-					entry.highlight:Destroy()
-					entry.highlight = nil
-				end
+				if entry.billboard then entry.billboard.Enabled = false end
+				if entry.highlight then entry.highlight:Destroy(); entry.highlight = nil end
 				continue
 			end
 
@@ -1931,7 +1774,6 @@ local Esp = (function()
 				entry.billboard.MaxDistance = config.MaxDistance
 				entry.billboard.Enabled = config.ShowNameDistance or config.ShowHealth
 			end
-
 			if entry.nameLabel then
 				entry.nameLabel.Visible = config.ShowNameDistance
 				if config.ShowNameDistance then
@@ -1939,7 +1781,6 @@ local Esp = (function()
 					entry.nameLabel.Text = ("%s [%dm]"):format(entry.player.DisplayName, math.round(dist))
 				end
 			end
-
 			if entry.hpContainer and entry.hpFill then
 				local humanoid = char:FindFirstChildOfClass("Humanoid")
 				local showHp = config.ShowHealth and humanoid ~= nil and humanoid.MaxHealth > 0
@@ -1956,7 +1797,6 @@ local Esp = (function()
 					end
 				end
 			end
-
 			if config.ShowHighlight then
 				table.insert(visibleCandidates, { entry = entry, dist = dist })
 			elseif entry.highlight then
@@ -1966,9 +1806,7 @@ local Esp = (function()
 		end
 
 		if config.ShowHighlight and #visibleCandidates > 0 then
-			table.sort(visibleCandidates, function(a, b)
-				return a.dist < b.dist
-			end)
+			table.sort(visibleCandidates, function(a, b) return a.dist < b.dist end)
 			for idx, item in ipairs(visibleCandidates) do
 				local entry = item.entry
 				local char = entry.character
@@ -1990,114 +1828,56 @@ local Esp = (function()
 	end
 
 	local function startLoop()
-		if renderConn or destroyed then
-			return
-		end
+		if renderConn or destroyed then return end
 		getEspFolder()
 		for _, plr in ipairs(Players:GetPlayers()) do
 			registerPlayer(plr)
 			local entry = entries[plr]
-			if entry then
-				bindCharacter(entry, plr.Character)
-			end
+			if entry then bindCharacter(entry, plr.Character) end
 		end
 		elapsedAcc = UPDATE_INTERVAL
 		renderConn = RunService.RenderStepped:Connect(function(dt: number)
 			elapsedAcc += dt
-			if elapsedAcc < UPDATE_INTERVAL then
-				return
-			end
+			if elapsedAcc < UPDATE_INTERVAL then return end
 			elapsedAcc = 0
 			updateAllEntries()
 		end)
 	end
 
 	local function stopLoop()
-		if renderConn then
-			renderConn:Disconnect()
-			renderConn = nil
-		end
-		for _, entry in pairs(entries) do
-			clearVisuals(entry)
-		end
-		if espFolder then
-			espFolder:Destroy()
-			espFolder = nil
-		end
+		if renderConn then renderConn:Disconnect(); renderConn = nil end
+		for _, entry in pairs(entries) do clearVisuals(entry) end
+		if espFolder then espFolder:Destroy(); espFolder = nil end
 	end
 
 	table.insert(globalConns, Players.PlayerAdded:Connect(registerPlayer))
 	table.insert(globalConns, Players.PlayerRemoving:Connect(unregisterPlayer))
 	table.insert(globalConns, workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
-		if config.Enabled then
-			stopLoop()
-			startLoop()
-		end
+		if config.Enabled then stopLoop(); startLoop() end
 	end))
 
 	function EspModule:SetEnabled(enabled: boolean)
-		if config.Enabled == enabled then
-			return
-		end
+		if config.Enabled == enabled then return end
 		config.Enabled = enabled
 		if enabled then startLoop() else stopLoop() end
 	end
-
-	function EspModule:SetShowHighlight(enabled: boolean)
-		config.ShowHighlight = enabled
-		if config.Enabled then updateAllEntries() end
-	end
-
-	function EspModule:SetShowNameDistance(enabled: boolean)
-		config.ShowNameDistance = enabled
-		if config.Enabled then updateAllEntries() end
-	end
-
-	function EspModule:SetShowHealth(enabled: boolean)
-		config.ShowHealth = enabled
-		if config.Enabled then updateAllEntries() end
-	end
-
-	function EspModule:SetTeamCheck(enabled: boolean)
-		config.TeamCheck = enabled
-		if config.Enabled then updateAllEntries() end
-	end
-
-	function EspModule:SetUseTeamColor(enabled: boolean)
-		config.UseTeamColor = enabled
-		if config.Enabled then updateAllEntries() end
-	end
-
-	function EspModule:SetColor(color: Color3)
-		config.Color = color
-		if config.Enabled then updateAllEntries() end
-	end
-
-	function EspModule:SetMaxDistance(distance: number)
-		config.MaxDistance = math.max(50, distance)
-		if config.Enabled then updateAllEntries() end
-	end
-
-	function EspModule:SetFillTransparency(transparency: number)
-		config.FillTransparency = math.clamp(transparency, 0, 1)
-		if config.Enabled then updateAllEntries() end
-	end
-
-	function EspModule:IsEnabled(): boolean
-		return config.Enabled
-	end
+	function EspModule:SetShowHighlight(enabled: boolean) config.ShowHighlight = enabled; if config.Enabled then updateAllEntries() end end
+	function EspModule:SetShowNameDistance(enabled: boolean) config.ShowNameDistance = enabled; if config.Enabled then updateAllEntries() end end
+	function EspModule:SetShowHealth(enabled: boolean) config.ShowHealth = enabled; if config.Enabled then updateAllEntries() end end
+	function EspModule:SetTeamCheck(enabled: boolean) config.TeamCheck = enabled; if config.Enabled then updateAllEntries() end end
+	function EspModule:SetUseTeamColor(enabled: boolean) config.UseTeamColor = enabled; if config.Enabled then updateAllEntries() end end
+	function EspModule:SetColor(color: Color3) config.Color = color; if config.Enabled then updateAllEntries() end end
+	function EspModule:SetMaxDistance(distance: number) config.MaxDistance = math.max(50, distance); if config.Enabled then updateAllEntries() end end
+	function EspModule:SetFillTransparency(transparency: number) config.FillTransparency = math.clamp(transparency, 0, 1); if config.Enabled then updateAllEntries() end end
+	function EspModule:IsEnabled(): boolean return config.Enabled end
 
 	function EspModule:Destroy()
 		destroyed = true
 		config.Enabled = false
 		stopLoop()
-		for _, conn in ipairs(globalConns) do
-			conn:Disconnect()
-		end
+		for _, conn in ipairs(globalConns) do conn:Disconnect() end
 		table.clear(globalConns)
-		for plr in pairs(entries) do
-			unregisterPlayer(plr)
-		end
+		for plr in pairs(entries) do unregisterPlayer(plr) end
 	end
 
 	return EspModule
@@ -2142,6 +1922,58 @@ local Automation = (function()
 	local craftLoopToken = 0
 	local notifyCallback: ((string, string, Color3?) -> ())? = nil
 
+	local researchLabMod: any = nil
+	local origResearchRun: any = nil
+	local assemblyBenchMod: any = nil
+	local origAssemblyRun: any = nil
+
+	local function sendNotice(title: string, msg: string, color: Color3?)
+		if notifyCallback then
+			notifyCallback(title, msg, color)
+		end
+	end
+
+	local function hookResearchLab()
+		if origResearchRun then return end
+		local mod = ReplicatedStorage:FindFirstChild("ResearchLab")
+		if mod and mod:IsA("ModuleScript") then
+			local ok, tbl = pcall(require, mod)
+			if ok and type(tbl) == "table" and type(tbl.run) == "function" then
+				researchLabMod = tbl
+				origResearchRun = tbl.run
+				tbl.run = function(args: any)
+					if not destroyed and researchConfig.AutoEnabled then
+						local r = if type(args) == "table" then args.research else nil
+						local rName = if type(r) == "table" then (r.name or r.id) else "Research"
+						sendNotice("Auto Research", ("Bỏ qua minigame: %s"):format(tostring(rName)), Color3.fromRGB(52, 211, 153))
+						return "done"
+					end
+					return origResearchRun(args)
+				end
+			end
+		end
+	end
+
+	local function hookAssemblyBench()
+		if origAssemblyRun then return end
+		local mod = ReplicatedStorage:FindFirstChild("AssemblyBench")
+		if mod and mod:IsA("ModuleScript") then
+			local ok, tbl = pcall(require, mod)
+			if ok and type(tbl) == "table" and type(tbl.run) == "function" then
+				assemblyBenchMod = tbl
+				origAssemblyRun = tbl.run
+				tbl.run = function(args: any)
+					if not destroyed and (craftConfig.FastAssemble or craftConfig.AutoEnabled) then
+						local resName = if type(args) == "table" then args.result else "Item"
+						sendNotice("Fast Craft", ("Bỏ qua minigame: %s"):format(tostring(resName)), Color3.fromRGB(52, 211, 153))
+						return "done"
+					end
+					return origAssemblyRun(args)
+				end
+			end
+		end
+	end
+
 	local function getGameData(): any
 		if not gameDataChecked then
 			gameDataChecked = true
@@ -2158,45 +1990,29 @@ local Automation = (function()
 
 	local function decodeAttrTable(attrName: string): { [string]: any }
 		local raw = LocalPlayer:GetAttribute(attrName)
-		if type(raw) ~= "string" or raw == "" then
-			return {}
-		end
-		local ok, decoded = pcall(function()
-			return HttpService:JSONDecode(raw)
-		end)
-		if ok and type(decoded) == "table" then
-			return decoded
-		end
+		if type(raw) ~= "string" or raw == "" then return {} end
+		local ok, decoded = pcall(function() return HttpService:JSONDecode(raw) end)
+		if ok and type(decoded) == "table" then return decoded end
 		return {}
 	end
 
 	local function initInventorySync()
-		if inventoryConn or destroyed then
-			return
-		end
+		if inventoryConn or destroyed then return end
 		local invSync = ReplicatedStorage:FindFirstChild("InventorySync")
 		if invSync and invSync:IsA("RemoteEvent") then
 			inventoryConn = invSync.OnClientEvent:Connect(function(payload: any)
-				if type(payload) == "table" then
-					inventory = payload
-				end
+				if type(payload) == "table" then inventory = payload end
 			end)
-			pcall(function()
-				invSync:FireServer()
-			end)
+			pcall(function() invSync:FireServer() end)
 		end
 	end
 
 	local function refreshStash(force: boolean?)
-		if not force and (os.clock() - lastStashRefresh < 2.5) then
-			return
-		end
+		if not force and (os.clock() - lastStashRefresh < 2.5) then return end
 		lastStashRefresh = os.clock()
 		local stashAction = ReplicatedStorage:FindFirstChild("StashAction")
 		if stashAction and stashAction:IsA("RemoteFunction") then
-			local ok, success, res = pcall(function()
-				return stashAction:InvokeServer("list")
-			end)
+			local ok, success, res = pcall(function() return stashAction:InvokeServer("list") end)
 			if ok and success and type(res) == "table" and type(res.stash) == "table" then
 				stash = res.stash
 			end
@@ -2205,12 +2021,6 @@ local Automation = (function()
 
 	local function totalOwned(itemId: string): number
 		return (inventory[itemId] or 0) + (stash[itemId] or 0)
-	end
-
-	local function sendNotice(title: string, msg: string, color: Color3?)
-		if notifyCallback then
-			notifyCallback(title, msg, color)
-		end
 	end
 
 	function AutomationModule:SetNotifyCallback(cb: (string, string, Color3?) -> ())
@@ -2228,47 +2038,27 @@ local Automation = (function()
 		qi: number,
 		parallelLab: boolean
 	): (boolean, string)
-		if type(entry) ~= "table" or not entry.id then
-			return false, "Dữ liệu không hợp lệ"
-		end
-		if known[entry.id] then
-			return false, "Đã nghiên cứu xong"
-		end
-		if researching.id == entry.id or researchingMore[entry.id] ~= nil then
-			return false, "Đang trong quá trình nghiên cứu"
-		end
-		if not parallelLab and researching.id ~= nil then
-			return false, "Đang có nghiên cứu khác chạy"
-		end
-		if not built.Workbench then
-			return false, "Chưa xây Workbench"
-		end
+		if type(entry) ~= "table" or not entry.id then return false, "Dữ liệu không hợp lệ" end
+		if known[entry.id] then return false, "Đã nghiên cứu xong" end
+		if researching.id == entry.id or researchingMore[entry.id] ~= nil then return false, "Đang trong quá trình nghiên cứu" end
+		if not parallelLab and researching.id ~= nil then return false, "Đang có nghiên cứu khác chạy" end
+		if not built.Workbench then return false, "Chưa xây Workbench" end
 
 		local reqLevel = entry.level or 1
-		if reqLevel > geniusCap then
-			return false, "Cần hạ Boss để mở giới hạn Level"
-		end
-		if reqLevel > geniusLevel then
-			return false, ("Cần Genius Level %d (hiện tại %d)"):format(reqLevel, geniusLevel)
-		end
+		if reqLevel > geniusCap then return false, "Cần hạ Boss để mở giới hạn Level" end
+		if reqLevel > geniusLevel then return false, ("Cần Genius Level %d (hiện tại %d)"):format(reqLevel, geniusLevel) end
 
 		for _, reqId in ipairs(entry.requires or {}) do
-			if not known[reqId] then
-				return false, ("Thiếu research tiên quyết: %s"):format(tostring(reqId))
-			end
+			if not known[reqId] then return false, ("Thiếu research tiên quyết: %s"):format(tostring(reqId)) end
 		end
 
 		local reqQi = entry.qi or 0
-		if qi < reqQi then
-			return false, ("Thiếu IQ (%d/%d)"):format(qi, reqQi)
-		end
+		if qi < reqQi then return false, ("Thiếu IQ (%d/%d)"):format(qi, reqQi) end
 
 		if researchConfig.CheckItems and type(entry.items) == "table" then
 			for _, cost in ipairs(entry.items) do
 				local have = totalOwned(cost.item)
-				if have < cost.count then
-					return false, ("Thiếu %s (%d/%d)"):format(tostring(cost.item), have, cost.count)
-				end
+				if have < cost.count then return false, ("Thiếu %s (%d/%d)"):format(tostring(cost.item), have, cost.count) end
 			end
 		end
 
@@ -2277,10 +2067,7 @@ local Automation = (function()
 
 	local function pickEligibleResearch(): any?
 		local gd = getGameData()
-		if not gd or type(gd.Research) ~= "table" then
-			return nil
-		end
-
+		if not gd or type(gd.Research) ~= "table" then return nil end
 		refreshStash(false)
 
 		local known = decodeAttrTable("Research")
@@ -2295,47 +2082,25 @@ local Automation = (function()
 
 		local candidates: { any } = {}
 		for _, entry in ipairs(gd.Research) do
-			local ok = isResearchEligible(
-				entry,
-				known,
-				built,
-				researching,
-				researchingMore,
-				geniusLevel,
-				geniusCap,
-				qi,
-				parallelLab
-			)
-			if ok then
+			if isResearchEligible(entry, known, built, researching, researchingMore, geniusLevel, geniusCap, qi, parallelLab) then
 				table.insert(candidates, entry)
 			end
 		end
-
-		if #candidates == 0 then
-			return nil
-		end
+		if #candidates == 0 then return nil end
 
 		table.sort(candidates, function(a: any, b: any)
 			local la = a.level or 1
 			local lb = b.level or 1
-			if la ~= lb then
-				return la < lb
-			end
+			if la ~= lb then return la < lb end
 			return (a.qi or 0) < (b.qi or 0)
 		end)
-
 		return candidates[1]
 	end
 
 	function AutomationModule:RunResearchOnce(targetId: string?): (boolean, string)
-		if researchBusy then
-			return false, "Đang xử lý yêu cầu Research..."
-		end
-
+		if researchBusy then return false, "Đang xử lý yêu cầu Research..." end
 		local gd = getGameData()
-		if not gd or type(gd.Research) ~= "table" then
-			return false, "Không tìm thấy GameData.Research"
-		end
+		if not gd or type(gd.Research) ~= "table" then return false, "Không tìm thấy GameData.Research" end
 
 		local progressAction = ReplicatedStorage:FindFirstChild("ProgressAction")
 		if not progressAction or not progressAction:IsA("RemoteFunction") then
@@ -2350,15 +2115,10 @@ local Automation = (function()
 			chosenEntry = gd.ResearchById and gd.ResearchById[targetId]
 			if not chosenEntry then
 				for _, r in ipairs(gd.Research) do
-					if r.id == targetId then
-						chosenEntry = r
-						break
-					end
+					if r.id == targetId then chosenEntry = r; break end
 				end
 			end
-			if not chosenEntry then
-				return false, "Không tìm thấy Research: " .. tostring(targetId)
-			end
+			if not chosenEntry then return false, "Không tìm thấy Research: " .. tostring(targetId) end
 
 			local known = decodeAttrTable("Research")
 			local built = decodeAttrTable("Built")
@@ -2370,32 +2130,17 @@ local Automation = (function()
 			local geniusCap = tonumber(LocalPlayer:GetAttribute("GeniusCap")) or 45
 			local geniusLevel = if gd.GeniusLevel then gd.GeniusLevel(totalQi) else 1
 
-			local eligible, reason = isResearchEligible(
-				chosenEntry,
-				known,
-				built,
-				researching,
-				researchingMore,
-				geniusLevel,
-				geniusCap,
-				qi,
-				parallelLab
-			)
-			if not eligible then
-				return false, reason
-			end
+			local eligible, reason = isResearchEligible(chosenEntry, known, built, researching, researchingMore, geniusLevel, geniusCap, qi, parallelLab)
+			if not eligible then return false, reason end
 		else
 			chosenEntry = pickEligibleResearch()
-			if not chosenEntry then
-				return false, "Không có Research nào đủ điều kiện hoặc slot đang bận"
-			end
+			if not chosenEntry then return false, "Không có Research nào đủ điều kiện hoặc slot đang bận" end
 		end
 
 		researchBusy = true
 		local okStart, started, tokenOrErr = pcall(function()
 			return progressAction:InvokeServer("labstart", chosenEntry.id)
 		end)
-
 		if not okStart or not started then
 			researchBusy = false
 			return false, tostring(tokenOrErr or "labstart thất bại")
@@ -2406,13 +2151,8 @@ local Automation = (function()
 		end)
 		researchBusy = false
 
-		if not okFinish then
-			return false, "Lỗi gọi ProgressAction(research): " .. tostring(doneOk)
-		end
-		if not doneOk then
-			return false, tostring(msg or "Server từ chối bắt đầu research")
-		end
-
+		if not okFinish then return false, "Lỗi gọi ProgressAction(research): " .. tostring(doneOk) end
+		if not doneOk then return false, tostring(msg or "Server từ chối bắt đầu research") end
 		return true, ("Đã bắt đầu nhanh: %s"):format(tostring(chosenEntry.name or chosenEntry.id))
 	end
 
@@ -2421,12 +2161,8 @@ local Automation = (function()
 		if not progressAction or not progressAction:IsA("RemoteFunction") then
 			return false, "Không tìm thấy ProgressAction"
 		end
-		local ok, res, msg = pcall(function()
-			return progressAction:InvokeServer("cancelresearch")
-		end)
-		if not ok then
-			return false, tostring(res)
-		end
+		local ok, res, msg = pcall(function() return progressAction:InvokeServer("cancelresearch") end)
+		if not ok then return false, tostring(res) end
 		return res == true, tostring(msg or (if res then "Đã hủy research" else "Không thể hủy"))
 	end
 
@@ -2434,34 +2170,31 @@ local Automation = (function()
 		researchConfig.AutoEnabled = enabled
 		researchLoopToken += 1
 		local myToken = researchLoopToken
-		if not enabled then
-			return
-		end
+		if not enabled then return end
 
 		initInventorySync()
+		hookResearchLab()
+
 		task.spawn(function()
+			local notifiedWaiting = false
 			while researchConfig.AutoEnabled and myToken == researchLoopToken and not destroyed do
 				local targetId = if researchConfig.AutoPickNext then nil else researchConfig.SelectedId
 				local ok, msg = self:RunResearchOnce(targetId)
 				if ok then
+					notifiedWaiting = false
 					sendNotice("Auto Research", msg, Color3.fromRGB(52, 211, 153))
+				elseif not notifiedWaiting and msg ~= "Đang có nghiên cứu khác chạy" and msg ~= "Đã nghiên cứu xong" then
+					notifiedWaiting = true
+					sendNotice("Auto Research", msg, Color3.fromRGB(251, 191, 36))
 				end
 				task.wait(researchConfig.Interval)
 			end
 		end)
 	end
 
-	function AutomationModule:SetResearchAutoPick(enabled: boolean)
-		researchConfig.AutoPickNext = enabled
-	end
-
-	function AutomationModule:SetResearchCheckItems(enabled: boolean)
-		researchConfig.CheckItems = enabled
-	end
-
-	function AutomationModule:SetSelectedResearch(researchId: string)
-		researchConfig.SelectedId = researchId
-	end
+	function AutomationModule:SetResearchAutoPick(enabled: boolean) researchConfig.AutoPickNext = enabled end
+	function AutomationModule:SetResearchCheckItems(enabled: boolean) researchConfig.CheckItems = enabled end
+	function AutomationModule:SetSelectedResearch(researchId: string) researchConfig.SelectedId = researchId end
 
 	function AutomationModule:GetResearchOptions(): ({ string }, { [string]: string })
 		local gd = getGameData()
@@ -2484,9 +2217,7 @@ local Automation = (function()
 
 	function AutomationModule:GetResearchStatusText(): string
 		local gd = getGameData()
-		if not gd or type(gd.Research) ~= "table" then
-			return "Chưa tải được GameData.Research"
-		end
+		if not gd or type(gd.Research) ~= "table" then return "Chưa tải được GameData.Research" end
 
 		local known = decodeAttrTable("Research")
 		local researching = decodeAttrTable("Researching")
@@ -2497,9 +2228,7 @@ local Automation = (function()
 		local doneCount = 0
 		local totalCount = #gd.Research
 		for _, r in ipairs(gd.Research) do
-			if known[r.id] then
-				doneCount += 1
-			end
+			if known[r.id] then doneCount += 1 end
 		end
 
 		local activeStr = "Không có"
@@ -2516,50 +2245,35 @@ local Automation = (function()
 
 	local function findRecipeById(recipeId: string): any?
 		local gd = getGameData()
-		if not gd or type(gd.Recipes) ~= "table" then
-			return nil
-		end
+		if not gd or type(gd.Recipes) ~= "table" then return nil end
 		for _, rec in ipairs(gd.Recipes) do
-			if rec.id == recipeId or rec.result == recipeId then
-				return rec
-			end
+			if rec.id == recipeId or rec.result == recipeId then return rec end
 		end
 		return nil
 	end
 
 	local function knowsRecipe(gd: any, recipe: any): boolean
 		local reqResearch = gd.RecipeResearch and gd.RecipeResearch[recipe.id]
-		if not reqResearch then
-			return true
-		end
-		local known = decodeAttrTable("Research")
-		return known[reqResearch] == true
+		if not reqResearch then return true end
+		return decodeAttrTable("Research")[reqResearch] == true
 	end
 
 	local function getAffordCount(recipe: any): number
-		if type(recipe.ingredients) ~= "table" or #recipe.ingredients == 0 then
-			return 50
-		end
+		if type(recipe.ingredients) ~= "table" or #recipe.ingredients == 0 then return 50 end
 		local maxMake = 50
 		for _, ing in ipairs(recipe.ingredients) do
 			local need = ing.count or 1
 			if need > 0 then
-				local have = totalOwned(ing.item)
-				maxMake = math.min(maxMake, math.floor(have / need))
+				maxMake = math.min(maxMake, math.floor(totalOwned(ing.item) / need))
 			end
 		end
 		return math.max(0, maxMake)
 	end
 
 	function AutomationModule:CraftOnce(targetRecipeId: string?): (boolean, string)
-		if craftBusy then
-			return false, "Đang xử lý craft..."
-		end
-
+		if craftBusy then return false, "Đang xử lý craft..." end
 		local gd = getGameData()
-		if not gd or type(gd.Recipes) ~= "table" then
-			return false, "Không tìm thấy GameData.Recipes"
-		end
+		if not gd or type(gd.Recipes) ~= "table" then return false, "Không tìm thấy GameData.Recipes" end
 
 		local craftItem = ReplicatedStorage:FindFirstChild("CraftItem")
 		if not craftItem or not craftItem:IsA("RemoteFunction") then
@@ -2571,9 +2285,7 @@ local Automation = (function()
 
 		local recId = if targetRecipeId and targetRecipeId ~= "" then targetRecipeId else craftConfig.SelectedId
 		local recipe = findRecipeById(recId)
-		if not recipe then
-			return false, "Chưa chọn công thức hợp lệ"
-		end
+		if not recipe then return false, "Chưa chọn công thức hợp lệ" end
 
 		if not knowsRecipe(gd, recipe) then
 			local reqId = gd.RecipeResearch[recipe.id]
@@ -2582,9 +2294,7 @@ local Automation = (function()
 		end
 
 		local afford = getAffordCount(recipe)
-		if afford <= 0 then
-			return false, "Không đủ nguyên liệu để craft"
-		end
+		if afford <= 0 then return false, "Không đủ nguyên liệu để craft" end
 
 		local finalQty = math.clamp(math.round(craftConfig.Quantity), 1, 50)
 		if craftConfig.AutoClampMax then
@@ -2612,12 +2322,8 @@ local Automation = (function()
 			end)
 			craftBusy = false
 
-			if not okFin then
-				return false, "Lỗi CraftFinish: " .. tostring(finOk)
-			end
-			if not finOk then
-				return false, tostring(finErr or "CraftFinish thất bại")
-			end
+			if not okFin then return false, "Lỗi CraftFinish: " .. tostring(finOk) end
+			if not finOk then return false, tostring(finErr or "CraftFinish thất bại") end
 			return true, ("Fast Assemble x%d %s"):format(finalQty, itemName)
 		else
 			local okInv, craftOk, craftErr = pcall(function()
@@ -2625,12 +2331,8 @@ local Automation = (function()
 			end)
 			craftBusy = false
 
-			if not okInv then
-				return false, "Lỗi CraftItem: " .. tostring(craftOk)
-			end
-			if not craftOk then
-				return false, tostring(craftErr or "CraftItem thất bại")
-			end
+			if not okInv then return false, "Lỗi CraftItem: " .. tostring(craftOk) end
+			if not craftOk then return false, tostring(craftErr or "CraftItem thất bại") end
 			return true, ("Đã craft x%d %s"):format(finalQty, itemName)
 		end
 	end
@@ -2639,11 +2341,11 @@ local Automation = (function()
 		craftConfig.AutoEnabled = enabled
 		craftLoopToken += 1
 		local myToken = craftLoopToken
-		if not enabled then
-			return
-		end
+		if not enabled then return end
 
 		initInventorySync()
+		hookAssemblyBench()
+
 		task.spawn(function()
 			local warnedOut = false
 			while craftConfig.AutoEnabled and myToken == craftLoopToken and not destroyed do
@@ -2659,25 +2361,14 @@ local Automation = (function()
 		end)
 	end
 
-	function AutomationModule:SetSelectedRecipe(recipeId: string)
-		craftConfig.SelectedId = recipeId
-	end
-
-	function AutomationModule:SetCraftQuantity(qty: number)
-		craftConfig.Quantity = math.clamp(math.round(qty), 1, 50)
-	end
-
+	function AutomationModule:SetSelectedRecipe(recipeId: string) craftConfig.SelectedId = recipeId end
+	function AutomationModule:SetCraftQuantity(qty: number) craftConfig.Quantity = math.clamp(math.round(qty), 1, 50) end
 	function AutomationModule:SetFastAssemble(enabled: boolean)
 		craftConfig.FastAssemble = enabled
+		if enabled then hookAssemblyBench() end
 	end
-
-	function AutomationModule:SetAutoClampMax(enabled: boolean)
-		craftConfig.AutoClampMax = enabled
-	end
-
-	function AutomationModule:SetCraftInterval(sec: number)
-		craftConfig.Interval = math.clamp(sec, 0.25, 5)
-	end
+	function AutomationModule:SetAutoClampMax(enabled: boolean) craftConfig.AutoClampMax = enabled end
+	function AutomationModule:SetCraftInterval(sec: number) craftConfig.Interval = math.clamp(sec, 0.25, 5) end
 
 	function AutomationModule:GetRecipeOptions(): ({ string }, { [string]: string })
 		local gd = getGameData()
@@ -2702,13 +2393,9 @@ local Automation = (function()
 
 	function AutomationModule:GetCraftStatusText(): string
 		local gd = getGameData()
-		if not gd or type(gd.Recipes) ~= "table" then
-			return "Chưa tải được GameData.Recipes"
-		end
+		if not gd or type(gd.Recipes) ~= "table" then return "Chưa tải được GameData.Recipes" end
 		local recipe = findRecipeById(craftConfig.SelectedId)
-		if not recipe then
-			return "Chưa chọn công thức"
-		end
+		if not recipe then return "Chưa chọn công thức" end
 
 		local itemMeta = gd.Items and gd.Items[recipe.result]
 		local display = if itemMeta and itemMeta.name then itemMeta.name else tostring(recipe.result or recipe.id)
@@ -2730,6 +2417,16 @@ local Automation = (function()
 		craftConfig.AutoEnabled = false
 		researchLoopToken += 1
 		craftLoopToken += 1
+		if researchLabMod and origResearchRun then
+			researchLabMod.run = origResearchRun
+			origResearchRun = nil
+			researchLabMod = nil
+		end
+		if assemblyBenchMod and origAssemblyRun then
+			assemblyBenchMod.run = origAssemblyRun
+			origAssemblyRun = nil
+			assemblyBenchMod = nil
+		end
 		if inventoryConn then
 			inventoryConn:Disconnect()
 			inventoryConn = nil
@@ -2822,11 +2519,7 @@ FixLagTab:CreateButton({
 			return
 		end
 		FixLag:RescanWorkspaceAsync()
-		Window:Notify({
-			Title = "Fix Lag",
-			Content = "Đang quét và tối ưu lại Workspace...",
-			Duration = 2,
-		})
+		Window:Notify({ Title = "Fix Lag", Content = "Đang quét và tối ưu lại Workspace...", Duration = 2 })
 	end,
 })
 
@@ -2836,49 +2529,35 @@ tglShadows = FixLagTab:CreateToggle({
 	Name = "Tắt Shadows & Post-FX",
 	Description = "Tắt GlobalShadows, Light.Shadows, Bloom/Blur/SunRays",
 	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		FixLag:SetShadowsAndPostFX(enabled)
-		syncMasterToggle()
-	end,
+	Callback = function(enabled: boolean) FixLag:SetShadowsAndPostFX(enabled); syncMasterToggle() end,
 })
 
 tglParticles = FixLagTab:CreateToggle({
 	Name = "Tắt Particles, Trails & Beams",
 	Description = "Ẩn ParticleEmitter, Trail, Beam, Smoke, Fire, Sparkles",
 	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		FixLag:SetParticlesAndTrails(enabled)
-		syncMasterToggle()
-	end,
+	Callback = function(enabled: boolean) FixLag:SetParticlesAndTrails(enabled); syncMasterToggle() end,
 })
 
 tglMaterials = FixLagTab:CreateToggle({
 	Name = "SmoothPlastic & Ẩn Textures/Decals",
 	Description = "Đổi vật liệu sang SmoothPlastic và ẩn Decal/Texture nặng",
 	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		FixLag:SetMaterialsAndTextures(enabled)
-		syncMasterToggle()
-	end,
+	Callback = function(enabled: boolean) FixLag:SetMaterialsAndTextures(enabled); syncMasterToggle() end,
 })
 
 tglTerrain = FixLagTab:CreateToggle({
 	Name = "Giảm hiệu ứng Nước / Terrain",
 	Description = "Tắt sóng nước, phản chiếu và độ trong suốt nước",
 	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		FixLag:SetLowTerrain(enabled)
-		syncMasterToggle()
-	end,
+	Callback = function(enabled: boolean) FixLag:SetLowTerrain(enabled); syncMasterToggle() end,
 })
 
 local tglSkipChars = FixLagTab:CreateToggle({
 	Name = "Giữ nguyên ngoại hình Nhân vật",
 	Description = "Không thay đổi material/texture trên nhân vật người chơi",
 	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		FixLag:SetSkipCharacters(enabled)
-	end,
+	Callback = function(enabled: boolean) FixLag:SetSkipCharacters(enabled) end,
 })
 
 -- TAB 2: ESP
@@ -2917,45 +2596,35 @@ tglEspHighlight = EspTab:CreateToggle({
 	Name = "Highlight (Nhìn xuyên tường)",
 	Description = "Tạo viền phát sáng xung quanh nhân vật (AlwaysOnTop)",
 	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Esp:SetShowHighlight(enabled)
-	end,
+	Callback = function(enabled: boolean) Esp:SetShowHighlight(enabled) end,
 })
 
 tglEspNameDist = EspTab:CreateToggle({
 	Name = "Hiện Tên & Khoảng cách",
 	Description = "Hiển thị DisplayName và khoảng cách (m) phía trên đầu",
 	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Esp:SetShowNameDistance(enabled)
-	end,
+	Callback = function(enabled: boolean) Esp:SetShowNameDistance(enabled) end,
 })
 
 tglEspHealth = EspTab:CreateToggle({
 	Name = "Hiện Thanh Máu (HP)",
 	Description = "Hiển thị thanh máu đổi màu theo % HP hiện tại",
 	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Esp:SetShowHealth(enabled)
-	end,
+	Callback = function(enabled: boolean) Esp:SetShowHealth(enabled) end,
 })
 
 tglEspTeamCheck = EspTab:CreateToggle({
 	Name = "Team Check (Ẩn đồng đội)",
 	Description = "Không hiển thị ESP với người chơi cùng Team",
 	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Esp:SetTeamCheck(enabled)
-	end,
+	Callback = function(enabled: boolean) Esp:SetTeamCheck(enabled) end,
 })
 
 tglEspTeamColor = EspTab:CreateToggle({
 	Name = "Dùng màu theo Team",
 	Description = "Tự động lấy màu TeamColor nếu người chơi có Team",
 	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Esp:SetUseTeamColor(enabled)
-	end,
+	Callback = function(enabled: boolean) Esp:SetUseTeamColor(enabled) end,
 })
 
 EspTab:CreateSection("Tùy chỉnh ESP")
@@ -2966,9 +2635,7 @@ EspTab:CreateDropdown({
 	CurrentOption = "Cyan",
 	Callback = function(option: string)
 		local picked = ESP_COLORS[option]
-		if picked then
-			Esp:SetColor(picked)
-		end
+		if picked then Esp:SetColor(picked) end
 	end,
 })
 
@@ -2978,9 +2645,7 @@ EspTab:CreateSlider({
 	Increment = 100,
 	Suffix = "m",
 	CurrentValue = 2000,
-	Callback = function(value: number)
-		Esp:SetMaxDistance(value)
-	end,
+	Callback = function(value: number) Esp:SetMaxDistance(value) end,
 })
 
 EspTab:CreateSlider({
@@ -2989,9 +2654,7 @@ EspTab:CreateSlider({
 	Increment = 0.05,
 	Suffix = "",
 	CurrentValue = 0.65,
-	Callback = function(value: number)
-		Esp:SetFillTransparency(value)
-	end,
+	Callback = function(value: number) Esp:SetFillTransparency(value) end,
 })
 
 -- TAB 3: AUTO RESEARCH NHANH
@@ -3007,7 +2670,7 @@ ResearchTab:CreateSection("Auto Research (Bỏ qua minigame)")
 
 local tglAutoResearch = ResearchTab:CreateToggle({
 	Name = "Bật Auto Research nhanh",
-	Description = "Tự động labstart -> research ngay khi còn slot và đủ IQ",
+	Description = "Tự bỏ qua minigame khi bấm Research ở Notebook & tự chạy Research",
 	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		Automation:SetAutoResearch(enabled)
@@ -3024,18 +2687,14 @@ local tglResearchAutoPick = ResearchTab:CreateToggle({
 	Name = "Tự chọn Research hợp lệ tiếp theo",
 	Description = "Tự quét từ Lv/IQ thấp lên cao; tắt nếu chỉ muốn chạy mục đã chọn",
 	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Automation:SetResearchAutoPick(enabled)
-	end,
+	Callback = function(enabled: boolean) Automation:SetResearchAutoPick(enabled) end,
 })
 
 local tglResearchCheckItems = ResearchTab:CreateToggle({
 	Name = "Kiểm tra đủ vật phẩm yêu cầu",
 	Description = "Kiểm tra Inventory + Stash nếu Research có tốn nguyên liệu",
 	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Automation:SetResearchCheckItems(enabled)
-	end,
+	Callback = function(enabled: boolean) Automation:SetResearchCheckItems(enabled) end,
 })
 
 local researchOpts, researchMap = Automation:GetResearchOptions()
@@ -3112,27 +2771,21 @@ CraftTab:CreateSlider({
 	Increment = 1,
 	Suffix = "x",
 	CurrentValue = 1,
-	Callback = function(value: number)
-		Automation:SetCraftQuantity(value)
-	end,
+	Callback = function(value: number) Automation:SetCraftQuantity(value) end,
 })
 
 local tglFastAssemble = CraftTab:CreateToggle({
 	Name = "Fast Assemble (Instant CraftFinish)",
 	Description = "Dùng assemble + CraftFinish('done') ngay lập tức, bỏ qua minigame",
 	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Automation:SetFastAssemble(enabled)
-	end,
+	Callback = function(enabled: boolean) Automation:SetFastAssemble(enabled) end,
 })
 
 local tglAutoClampMax = CraftTab:CreateToggle({
 	Name = "Tự kẹp số lượng theo nguyên liệu",
 	Description = "Tự giảm số lượng xuống mức tối đa đủ nguyên liệu nếu đặt cao hơn",
 	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Automation:SetAutoClampMax(enabled)
-	end,
+	Callback = function(enabled: boolean) Automation:SetAutoClampMax(enabled) end,
 })
 
 CraftTab:CreateSlider({
@@ -3141,9 +2794,7 @@ CraftTab:CreateSlider({
 	Increment = 0.25,
 	Suffix = "s",
 	CurrentValue = 0.5,
-	Callback = function(value: number)
-		Automation:SetCraftInterval(value)
-	end,
+	Callback = function(value: number) Automation:SetCraftInterval(value) end,
 })
 
 CraftTab:CreateSection("Thực thi")
@@ -3257,9 +2908,7 @@ local elapsed = 0
 monitorConn = RunService.RenderStepped:Connect(function(dt: number)
 	frameCount += 1
 	elapsed += dt
-	if elapsed < 0.5 then
-		return
-	end
+	if elapsed < 0.5 then return end
 	local fps = math.round(frameCount / elapsed)
 	frameCount = 0
 	elapsed = 0
