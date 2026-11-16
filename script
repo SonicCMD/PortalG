@@ -1,5 +1,5 @@
 --!strict
--- Bảng Điều Khiển Tối Giản (Nút BẬT/TẮT Đơn Giản)
+-- Bảng Điều Khiển & Tra Cứu Danh Sách Material (Chuẩn Mobile)
 -- Vị trí: StarterPlayer.StarterPlayerScripts
 
 local Players = game:GetService("Players")
@@ -22,7 +22,7 @@ local function GetSafeGuiParent(): Instance
 end
 
 ---------------------------------------------------------------------
--- 1. TẠO GIAO DIỆN & KHÓA CHỐNG ẨN
+-- 1. TẠO KHUNG GUI CHÍNH & KHÓA CHỐNG ẨN
 ---------------------------------------------------------------------
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "SimpleControlUI"
@@ -32,7 +32,7 @@ screenGui.IgnoreGuiInset = true
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = GetSafeGuiParent()
 
--- Chống game tự động ẩn menu khi vào minigame
+-- Chống game tự động ẩn menu khi minigame chạy
 screenGui:GetPropertyChangedSignal("Enabled"):Connect(function()
     if not screenGui.Enabled then
         task.defer(function() screenGui.Enabled = true end)
@@ -42,9 +42,9 @@ RunService.Heartbeat:Connect(function()
     if not screenGui.Enabled then screenGui.Enabled = true end
 end)
 
--- Khung bảng chữ nhật ngang đơn giản
+-- 1. BẢNG CARD MENU CHÍNH
 local card = Instance.new("Frame")
-card.Size = UDim2.new(0, 430, 0, 215)
+card.Size = UDim2.new(0, 440, 0, 225)
 card.AnchorPoint = Vector2.new(0.5, 0.5)
 card.Position = UDim2.new(0.5, 0, 0.5, 0)
 card.BackgroundColor3 = Color3.fromRGB(24, 25, 30)
@@ -52,7 +52,7 @@ card.BorderSizePixel = 1
 card.BorderColor3 = Color3.fromRGB(60, 64, 75)
 card.Parent = screenGui
 
--- Header đơn giản
+-- Header Menu
 local header = Instance.new("Frame")
 header.Size = UDim2.new(1, 0, 0, 32)
 header.BackgroundColor3 = Color3.fromRGB(32, 34, 42)
@@ -65,7 +65,7 @@ title.Font = Enum.Font.SourceSansBold
 title.TextSize = 14
 title.TextColor3 = Color3.fromRGB(240, 240, 240)
 title.Position = UDim2.new(0, 10, 0, 0)
-title.Size = UDim2.new(0.5, 0, 1, 0)
+title.Size = UDim2.new(0.45, 0, 1, 0)
 title.BackgroundTransparency = 1
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = header
@@ -75,7 +75,7 @@ fpsLabel.Text = "FPS: 60"
 fpsLabel.Font = Enum.Font.SourceSans
 fpsLabel.TextSize = 13
 fpsLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-fpsLabel.Position = UDim2.new(0.5, 0, 0, 0)
+fpsLabel.Position = UDim2.new(0.46, 0, 0, 0)
 fpsLabel.Size = UDim2.new(0.35, 0, 1, 0)
 fpsLabel.BackgroundTransparency = 1
 fpsLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -92,7 +92,7 @@ closeBtn.TextSize = 14
 closeBtn.BorderSizePixel = 0
 closeBtn.Parent = header
 
--- Khung danh sách chứa các nút
+-- Khung danh sách chứa các nút chức năng
 local content = Instance.new("Frame")
 content.Size = UDim2.new(1, -12, 1, -40)
 content.Position = UDim2.new(0, 6, 0, 36)
@@ -104,7 +104,76 @@ grid.CellSize = UDim2.new(0.485, 0, 0, 48)
 grid.CellPadding = UDim2.new(0.03, 0, 0, 6)
 grid.Parent = content
 
--- Nút mở lại khi đóng menu
+---------------------------------------------------------------------
+-- 2. BẢNG TRA CỨU DANH SÁCH MATERIAL (POPUP PHỤ)
+---------------------------------------------------------------------
+local matCard = Instance.new("Frame")
+matCard.Size = UDim2.new(0, 440, 0, 240)
+matCard.AnchorPoint = Vector2.new(0.5, 0.5)
+matCard.Position = UDim2.new(0.5, 0, 0.5, 0)
+matCard.BackgroundColor3 = Color3.fromRGB(20, 21, 26)
+matCard.BorderSizePixel = 1
+matCard.BorderColor3 = Color3.fromRGB(70, 75, 90)
+matCard.Visible = false
+matCard.Parent = screenGui
+
+local matHeader = Instance.new("Frame")
+matHeader.Size = UDim2.new(1, 0, 0, 32)
+matHeader.BackgroundColor3 = Color3.fromRGB(30, 32, 40)
+matHeader.BorderSizePixel = 0
+matHeader.Parent = matCard
+
+local matTitle = Instance.new("TextLabel")
+matTitle.Text = "📦 DANH SÁCH MATERIAL"
+matTitle.Font = Enum.Font.SourceSansBold
+matTitle.TextSize = 14
+matTitle.TextColor3 = Color3.fromRGB(255, 215, 100)
+matTitle.Position = UDim2.new(0, 10, 0, 0)
+matTitle.Size = UDim2.new(0.6, 0, 1, 0)
+matTitle.BackgroundTransparency = 1
+matTitle.TextXAlignment = Enum.TextXAlignment.Left
+matTitle.Parent = matHeader
+
+local matCloseBtn = Instance.new("TextButton")
+matCloseBtn.Size = UDim2.new(0, 32, 0, 32)
+matCloseBtn.Position = UDim2.new(1, -32, 0, 0)
+matCloseBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 58)
+matCloseBtn.Text = "X"
+matCloseBtn.TextColor3 = Color3.fromRGB(240, 240, 240)
+matCloseBtn.Font = Enum.Font.SourceSansBold
+matCloseBtn.TextSize = 14
+matCloseBtn.BorderSizePixel = 0
+matCloseBtn.Parent = matHeader
+
+-- Ô tìm kiếm vật liệu
+local searchBox = Instance.new("TextBox")
+searchBox.Size = UDim2.new(1, -16, 0, 24)
+searchBox.Position = UDim2.new(0, 8, 0, 36)
+searchBox.BackgroundColor3 = Color3.fromRGB(28, 30, 38)
+searchBox.PlaceholderText = "🔍 Nhập tên material cần tìm..."
+searchBox.Text = ""
+searchBox.TextColor3 = Color3.fromRGB(240, 240, 240)
+searchBox.Font = Enum.Font.SourceSans
+searchBox.TextSize = 12
+searchBox.BorderSizePixel = 1
+searchBox.BorderColor3 = Color3.fromRGB(50, 54, 66)
+searchBox.Parent = matCard
+
+-- Danh sách cuộn chứa các Material
+local matScroll = Instance.new("ScrollingFrame")
+matScroll.Size = UDim2.new(1, -16, 1, -68)
+matScroll.Position = UDim2.new(0, 8, 0, 64)
+matScroll.BackgroundTransparency = 1
+matScroll.BorderSizePixel = 0
+matScroll.ScrollBarThickness = 3
+matScroll.ScrollBarImageColor3 = Color3.fromRGB(80, 85, 100)
+matScroll.Parent = matCard
+
+local matListLayout = Instance.new("UIListLayout")
+matListLayout.Padding = UDim.new(0, 4)
+matListLayout.Parent = matScroll
+
+-- Nút nổi mở lại Menu
 local openMiniBtn = Instance.new("TextButton")
 openMiniBtn.Size = UDim2.new(0, 60, 0, 28)
 openMiniBtn.Position = UDim2.new(0, 10, 0.5, -14)
@@ -119,7 +188,88 @@ openMiniBtn.Visible = false
 openMiniBtn.Parent = screenGui
 
 ---------------------------------------------------------------------
--- 2. HỆ THỐNG XỬ LÝ CHỨC NĂNG
+-- 3. ĐỒNG BỘ DỮ LIỆU MATERIAL & INVENTORY
+---------------------------------------------------------------------
+local PlayerInventory = {}
+
+local invSync = ReplicatedStorage:FindFirstChild("InventorySync") :: RemoteEvent?
+if invSync then
+    invSync.OnClientEvent:Connect(function(data)
+        if typeof(data) == "table" then
+            PlayerInventory = data
+        end
+    end)
+    invSync:FireServer()
+end
+
+-- Hàm cập nhật và hiển thị danh sách Material
+local function RefreshMaterialList(filterText: string)
+    for _, child in ipairs(matScroll:GetChildren()) do
+        if child:IsA("Frame") then child:Destroy() end
+    end
+
+    local gameDataModule = ReplicatedStorage:FindFirstChild("GameData")
+    if not gameDataModule then return end
+    local ok, GameData = pcall(require, gameDataModule)
+    if not ok or not GameData or not GameData.Items then return end
+
+    local query = string.lower(filterText or "")
+    local totalCount = 0
+
+    for id, item in pairs(GameData.Items) do
+        -- Lọc ra các vật phẩm là nguyên liệu / vật liệu
+        if not item.gadget and not item.tool and not item.gear then
+            local matName = tostring(item.name or id)
+            local whereToFind = (GameData.WhereToFind and GameData.WhereToFind(id)) or item.desc or "Khai thác thế giới"
+
+            if query == "" or string.lower(matName):find(query, 1, true) or string.lower(tostring(whereToFind)):find(query, 1, true) then
+                totalCount += 1
+                local owned = PlayerInventory[id] or 0
+
+                local row = Instance.new("Frame")
+                row.Size = UDim2.new(1, -6, 0, 36)
+                row.BackgroundColor3 = Color3.fromRGB(28, 30, 38)
+                row.BorderSizePixel = 1
+                row.BorderColor3 = Color3.fromRGB(44, 48, 58)
+                row.Parent = matScroll
+
+                -- Tên Material & Số lượng
+                local nameLabel = Instance.new("TextLabel")
+                nameLabel.Text = string.format("%s  [Có: %d]", matName, owned)
+                nameLabel.Font = Enum.Font.SourceSansBold
+                nameLabel.TextSize = 12
+                nameLabel.TextColor3 = owned > 0 and Color3.fromRGB(120, 255, 160) or Color3.fromRGB(230, 230, 230)
+                nameLabel.Position = UDim2.new(0, 8, 0, 3)
+                nameLabel.Size = UDim2.new(1, -16, 0, 15)
+                nameLabel.BackgroundTransparency = 1
+                nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+                nameLabel.Parent = row
+
+                -- Nơi tìm thấy
+                local whereLabel = Instance.new("TextLabel")
+                whereLabel.Text = "Nơi tìm: " .. tostring(whereToFind)
+                whereLabel.Font = Enum.Font.SourceSans
+                whereLabel.TextSize = 11
+                whereLabel.TextColor3 = Color3.fromRGB(140, 150, 170)
+                whereLabel.Position = UDim2.new(0, 8, 0, 18)
+                whereLabel.Size = UDim2.new(1, -16, 0, 14)
+                whereLabel.BackgroundTransparency = 1
+                whereLabel.TextXAlignment = Enum.TextXAlignment.Left
+                whereLabel.TextTruncate = Enum.TextTruncate.AtEnd
+                whereLabel.Parent = row
+            end
+        end
+    end
+
+    matScroll.CanvasSize = UDim2.new(0, 0, 0, totalCount * 40)
+end
+
+searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    RefreshMaterialList(searchBox.Text)
+end)
+
+---------------------------------------------------------------------
+-- 4. CÁC TÍNH NĂNG ĐIỀU KHIỂN & FIX LAG
 ---------------------------------------------------------------------
 local States = {
     AutoSolve = false,
@@ -129,11 +279,9 @@ local States = {
     NoShadow = false,
 }
 
-local Cache = {
-    Materials = {} :: { [BasePart]: Enum.Material },
-}
+local Cache = { Materials = {} :: { [BasePart]: Enum.Material } }
 
--- Tự động giải minigame (Circuit 1-2-3)
+-- Tự giải minigame
 task.spawn(function()
     while true do
         if States.AutoSolve then
@@ -172,7 +320,6 @@ task.spawn(function()
     end
 end)
 
--- Tự động về Home khi ở Valhalla
 local function TeleportHome()
     local char = LocalPlayer.Character
     if not char then return end
@@ -201,16 +348,6 @@ local function TeleportHome()
     LocalPlayer:SetAttribute("InValhalla", false)
 end
 
-task.spawn(function()
-    while true do
-        if States.AutoHome and LocalPlayer:GetAttribute("InValhalla") == true then
-            TeleportHome()
-        end
-        task.wait(0.8)
-    end
-end)
-
--- Fix lag
 local function SetSmooth(enable: boolean)
     for _, desc in ipairs(workspace:GetDescendants()) do
         if desc:IsA("BasePart") and not (LocalPlayer.Character and desc:IsDescendantOf(LocalPlayer.Character)) then
@@ -238,14 +375,12 @@ local function SetLighting(disable: boolean)
     Lighting.GlobalShadows = not disable
     Lighting.FogEnd = disable and 1e6 or 100000
     for _, e in ipairs(Lighting:GetChildren()) do
-        if e:IsA("PostEffect") or e:IsA("Atmosphere") then
-            e.Enabled = not disable
-        end
+        if e:IsA("PostEffect") or e:IsA("Atmosphere") then e.Enabled = not disable end
     end
 end
 
 ---------------------------------------------------------------------
--- 3. HÀM TẠO NÚT BẬT / TẮT ĐƠN GIẢN
+-- 5. TẠO CÁC NÚT ĐIỀU KHIỂN BẬT / TẮT
 ---------------------------------------------------------------------
 local function CreateSimpleToggle(name: string, onToggle: (boolean) -> ())
     local box = Instance.new("Frame")
@@ -281,7 +416,7 @@ local function CreateSimpleToggle(name: string, onToggle: (boolean) -> ())
         isOn = not isOn
         if isOn then
             btn.Text = "[ BẬT ]"
-            btn.BackgroundColor3 = Color3.fromRGB(46, 125, 50) -- Màu xanh lá đơn giản
+            btn.BackgroundColor3 = Color3.fromRGB(46, 125, 50)
             btn.TextColor3 = Color3.fromRGB(255, 255, 255)
         else
             btn.Text = "[ TẮT ]"
@@ -292,44 +427,59 @@ local function CreateSimpleToggle(name: string, onToggle: (boolean) -> ())
     end)
 end
 
--- Tạo danh sách các nút
-CreateSimpleToggle("Tự Giải Minigame", function(state)
-    States.AutoSolve = state
+-- 1. Nút mở danh sách Material
+local matBox = Instance.new("Frame")
+matBox.BackgroundColor3 = Color3.fromRGB(30, 32, 40)
+matBox.BorderSizePixel = 1
+matBox.BorderColor3 = Color3.fromRGB(48, 52, 64)
+matBox.Parent = content
+
+local matBoxLabel = Instance.new("TextLabel")
+matBoxLabel.Text = "Tra Cứu Material"
+matBoxLabel.Font = Enum.Font.SourceSansBold
+matBoxLabel.TextSize = 13
+matBoxLabel.TextColor3 = Color3.fromRGB(255, 215, 100)
+matBoxLabel.Position = UDim2.new(0, 8, 0, 0)
+matBoxLabel.Size = UDim2.new(0.62, 0, 1, 0)
+matBoxLabel.BackgroundTransparency = 1
+matBoxLabel.TextXAlignment = Enum.TextXAlignment.Left
+matBoxLabel.Parent = matBox
+
+local openMatBtn = Instance.new("TextButton")
+openMatBtn.Size = UDim2.new(0, 58, 0, 26)
+openMatBtn.Position = UDim2.new(1, -66, 0.5, -13)
+openMatBtn.BackgroundColor3 = Color3.fromRGB(50, 70, 95)
+openMatBtn.Text = "XEM"
+openMatBtn.Font = Enum.Font.SourceSansBold
+openMatBtn.TextSize = 12
+openMatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+openMatBtn.BorderSizePixel = 0
+openMatBtn.Parent = matBox
+
+openMatBtn.MouseButton1Click:Connect(function()
+    card.Visible = false
+    matCard.Visible = true
+    RefreshMaterialList(searchBox.Text)
 end)
 
-CreateSimpleToggle("Tự Về Home (Valhalla)", function(state)
-    States.AutoHome = state
-    if state and LocalPlayer:GetAttribute("InValhalla") == true then
-        TeleportHome()
-    end
+matCloseBtn.MouseButton1Click:Connect(function()
+    matCard.Visible = false
+    card.Visible = true
 end)
 
-CreateSimpleToggle("Xóa Texture (Mượt)", function(state)
-    States.Smooth = state
-    SetSmooth(state)
-end)
-
-CreateSimpleToggle("Tắt Hạt & Laser (VFX)", function(state)
-    States.NoVFX = state
-    SetVFX(state)
-end)
-
-CreateSimpleToggle("Tắt Đổ Bóng & Sương", function(state)
-    States.NoShadow = state
-    SetLighting(state)
-end)
-
-CreateSimpleToggle("Dịch Chuyển Về Home Ngay", function(state)
-    TeleportHome()
-end)
+-- 2. Các nút tính năng BẬT / TẮT
+CreateSimpleToggle("Tự Giải Minigame", function(state) States.AutoSolve = state end)
+CreateSimpleToggle("Tự Về Home (Valhalla)", function(state) States.AutoHome = state end)
+CreateSimpleToggle("Xóa Texture (Mượt)", function(state) States.Smooth = state SetSmooth(state) end)
+CreateSimpleToggle("Tắt Hạt & Laser (VFX)", function(state) States.NoVFX = state SetVFX(state) end)
+CreateSimpleToggle("Tắt Đổ Bóng & Sương", function(state) States.NoShadow = state SetLighting(state) end)
 
 ---------------------------------------------------------------------
--- 4. KÉO THẢ & ẨN HIỆN
+-- 6. ĐIỀU HƯỚNG & KÉO THẢ
 ---------------------------------------------------------------------
-local centeredPos = UDim2.new(0.5, 0, 0.5, 0)
-
 closeBtn.MouseButton1Click:Connect(function()
     card.Visible = false
+    matCard.Visible = false
     openMiniBtn.Visible = true
 end)
 
@@ -338,27 +488,32 @@ openMiniBtn.MouseButton1Click:Connect(function()
     openMiniBtn.Visible = false
 end)
 
--- Kéo thả bảng menu
-local dragging, dragStart, startPos = false, Vector3.zero, UDim2.new()
-header.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = card.Position
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then dragging = false end
-        end)
-    end
-end)
+-- Hỗ trợ kéo thả
+local function EnableDragging(headerPart: GuiObject, mainPart: GuiObject)
+    local dragging, dragStart, startPos = false, Vector3.zero, UDim2.new()
+    headerPart.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = mainPart.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
 
-UserInputService.InputChanged:Connect(function(input)
-    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-        local delta = input.Position - dragStart
-        card.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-    end
-end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            mainPart.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+end
 
--- Cập nhật FPS
+EnableDragging(header, card)
+EnableDragging(matHeader, matCard)
+
+-- Vòng lặp đo FPS
 local frames, last = 0, os.clock()
 RunService.RenderStepped:Connect(function()
     frames += 1
