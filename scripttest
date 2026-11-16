@@ -2,12 +2,7 @@
 --[[
 	Rayfield Client Menu (Full Single-File LocalScript)
 	Đặt trong: StarterPlayer -> StarterPlayerScripts
-	Tính năng:
-	  1. Rayfield UI (hỗ trợ kéo thả, thu gọn, tìm kiếm trong Dropdown, RightShift & nút RF Menu)
-	  2. Fix Lag (tắt Shadows/Post-FX, Particles/Trails, SmoothPlastic/Ẩn Texture, Giảm nước - có hoàn tác)
-	  3. ESP (Highlight + BillboardGui tên, khoảng cách, thanh máu HP, Team Check, giới hạn 24 Highlight)
-	  4. Auto Research nhanh (ProgressAction: "labstart" -> "research", bỏ qua minigame ResearchLab)
-	  5. Craft Item nhanh (Fast Assemble: CraftItem "assemble" -> CraftFinish "done", hoặc Auto Craft)
+	Mặc định khi chạy: TẤT CẢ chức năng & nút gạt đều OFF (false).
 ]]
 
 local HttpService = game:GetService("HttpService")
@@ -1223,7 +1218,7 @@ local Rayfield = (function()
 end)()
 
 --====================================================
--- 2. FIX LAG CONTROLLER (Reversible Optimizer)
+-- 2. FIX LAG CONTROLLER (All OFF by default)
 --====================================================
 local FixLag = (function()
 	local FixLagModule = {}
@@ -1233,7 +1228,7 @@ local FixLag = (function()
 		ParticlesAndTrails = false,
 		MaterialsAndTextures = false,
 		LowTerrain = false,
-		SkipCharacters = true,
+		SkipCharacters = false,
 	}
 
 	local savedLighting: { [string]: any } = {}
@@ -1618,7 +1613,7 @@ local FixLag = (function()
 end)()
 
 --====================================================
--- 3. ESP CONTROLLER (Highlight + BillboardGui)
+-- 3. ESP CONTROLLER (All OFF by default)
 --====================================================
 local Esp = (function()
 	local MAX_HIGHLIGHTS = 24
@@ -1627,11 +1622,11 @@ local Esp = (function()
 
 	local config = {
 		Enabled = false,
-		ShowHighlight = true,
-		ShowNameDistance = true,
-		ShowHealth = true,
+		ShowHighlight = false,
+		ShowNameDistance = false,
+		ShowHealth = false,
 		TeamCheck = false,
-		UseTeamColor = true,
+		UseTeamColor = false,
 		Color = Color3.fromRGB(56, 189, 248),
 		MaxDistance = 2000,
 		FillTransparency = 0.65,
@@ -2109,7 +2104,7 @@ local Esp = (function()
 end)()
 
 --====================================================
--- 4. AUTO RESEARCH & FAST CRAFT MODULE
+-- 4. AUTO RESEARCH & FAST CRAFT MODULE (All OFF by default)
 --====================================================
 local Automation = (function()
 	local AutomationModule = {}
@@ -2128,8 +2123,8 @@ local Automation = (function()
 
 	local researchConfig = {
 		AutoEnabled = false,
-		AutoPickNext = true,
-		CheckItems = true,
+		AutoPickNext = false,
+		CheckItems = false,
 		SelectedId = "",
 		Interval = 1.2,
 	}
@@ -2138,8 +2133,8 @@ local Automation = (function()
 		AutoEnabled = false,
 		SelectedId = "",
 		Quantity = 1,
-		FastAssemble = true,
-		AutoClampMax = true,
+		FastAssemble = false,
+		AutoClampMax = false,
 		Interval = 0.5,
 	}
 
@@ -2191,8 +2186,6 @@ local Automation = (function()
 			end)
 		end
 	end
-
-	initInventorySync()
 
 	local function refreshStash(force: boolean?)
 		if not force and (os.clock() - lastStashRefresh < 2.5) then
@@ -2445,6 +2438,7 @@ local Automation = (function()
 			return
 		end
 
+		initInventorySync()
 		task.spawn(function()
 			while researchConfig.AutoEnabled and myToken == researchLoopToken and not destroyed do
 				local targetId = if researchConfig.AutoPickNext then nil else researchConfig.SelectedId
@@ -2649,6 +2643,7 @@ local Automation = (function()
 			return
 		end
 
+		initInventorySync()
 		task.spawn(function()
 			local warnedOut = false
 			while craftConfig.AutoEnabled and myToken == craftLoopToken and not destroyed do
@@ -2745,7 +2740,7 @@ local Automation = (function()
 end)()
 
 --====================================================
--- 5. KHỞI TẠO MENU & LIÊN KẾT CHỨC NĂNG
+-- 5. KHỞI TẠO MENU & LIÊN KẾT CHỨC NĂNG (ALL OFF)
 --====================================================
 local ESP_COLORS: { [string]: Color3 } = {
 	Cyan = Color3.fromRGB(56, 189, 248),
@@ -2877,10 +2872,10 @@ tglTerrain = FixLagTab:CreateToggle({
 	end,
 })
 
-FixLagTab:CreateToggle({
+local tglSkipChars = FixLagTab:CreateToggle({
 	Name = "Giữ nguyên ngoại hình Nhân vật",
 	Description = "Không thay đổi material/texture trên nhân vật người chơi",
-	CurrentValue = true,
+	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		FixLag:SetSkipCharacters(enabled)
 	end,
@@ -2891,15 +2886,25 @@ local EspTab = Window:CreateTab("ESP")
 
 EspTab:CreateSection("Điều khiển chính")
 
+local tglEspHighlight: any
+local tglEspNameDist: any
+local tglEspHealth: any
+local tglEspTeamCheck: any
+local tglEspTeamColor: any
+
 local tglEspMaster = EspTab:CreateToggle({
 	Name = "Bật Player ESP",
 	Description = "Hiển thị vị trí, tên, khoảng cách và máu người chơi",
 	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		Esp:SetEnabled(enabled)
+		local msg = if enabled then "Player ESP đã BẬT." else "Player ESP đã TẮT."
+		if enabled and not (tglEspHighlight:Get() or tglEspNameDist:Get() or tglEspHealth:Get()) then
+			msg = "Player ESP đã BẬT. Hãy bật thêm Highlight / Tên / Máu bên dưới."
+		end
 		Window:Notify({
 			Title = "ESP",
-			Content = if enabled then "Player ESP đã BẬT." else "Player ESP đã TẮT.",
+			Content = msg,
 			Duration = 2.5,
 			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
 		})
@@ -2908,34 +2913,34 @@ local tglEspMaster = EspTab:CreateToggle({
 
 EspTab:CreateSection("Thành phần hiển thị")
 
-EspTab:CreateToggle({
+tglEspHighlight = EspTab:CreateToggle({
 	Name = "Highlight (Nhìn xuyên tường)",
 	Description = "Tạo viền phát sáng xung quanh nhân vật (AlwaysOnTop)",
-	CurrentValue = true,
+	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		Esp:SetShowHighlight(enabled)
 	end,
 })
 
-EspTab:CreateToggle({
+tglEspNameDist = EspTab:CreateToggle({
 	Name = "Hiện Tên & Khoảng cách",
 	Description = "Hiển thị DisplayName và khoảng cách (m) phía trên đầu",
-	CurrentValue = true,
+	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		Esp:SetShowNameDistance(enabled)
 	end,
 })
 
-EspTab:CreateToggle({
+tglEspHealth = EspTab:CreateToggle({
 	Name = "Hiện Thanh Máu (HP)",
 	Description = "Hiển thị thanh máu đổi màu theo % HP hiện tại",
-	CurrentValue = true,
+	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		Esp:SetShowHealth(enabled)
 	end,
 })
 
-EspTab:CreateToggle({
+tglEspTeamCheck = EspTab:CreateToggle({
 	Name = "Team Check (Ẩn đồng đội)",
 	Description = "Không hiển thị ESP với người chơi cùng Team",
 	CurrentValue = false,
@@ -2944,10 +2949,10 @@ EspTab:CreateToggle({
 	end,
 })
 
-EspTab:CreateToggle({
+tglEspTeamColor = EspTab:CreateToggle({
 	Name = "Dùng màu theo Team",
 	Description = "Tự động lấy màu TeamColor nếu người chơi có Team",
-	CurrentValue = true,
+	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		Esp:SetUseTeamColor(enabled)
 	end,
@@ -3015,19 +3020,19 @@ local tglAutoResearch = ResearchTab:CreateToggle({
 	end,
 })
 
-ResearchTab:CreateToggle({
+local tglResearchAutoPick = ResearchTab:CreateToggle({
 	Name = "Tự chọn Research hợp lệ tiếp theo",
 	Description = "Tự quét từ Lv/IQ thấp lên cao; tắt nếu chỉ muốn chạy mục đã chọn",
-	CurrentValue = true,
+	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		Automation:SetResearchAutoPick(enabled)
 	end,
 })
 
-ResearchTab:CreateToggle({
+local tglResearchCheckItems = ResearchTab:CreateToggle({
 	Name = "Kiểm tra đủ vật phẩm yêu cầu",
 	Description = "Kiểm tra Inventory + Stash nếu Research có tốn nguyên liệu",
-	CurrentValue = true,
+	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		Automation:SetResearchCheckItems(enabled)
 	end,
@@ -3112,19 +3117,19 @@ CraftTab:CreateSlider({
 	end,
 })
 
-CraftTab:CreateToggle({
+local tglFastAssemble = CraftTab:CreateToggle({
 	Name = "Fast Assemble (Instant CraftFinish)",
 	Description = "Dùng assemble + CraftFinish('done') ngay lập tức, bỏ qua minigame",
-	CurrentValue = true,
+	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		Automation:SetFastAssemble(enabled)
 	end,
 })
 
-CraftTab:CreateToggle({
+local tglAutoClampMax = CraftTab:CreateToggle({
 	Name = "Tự kẹp số lượng theo nguyên liệu",
 	Description = "Tự giảm số lượng xuống mức tối đa đủ nguyên liệu nếu đặt cao hơn",
-	CurrentValue = true,
+	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		Automation:SetAutoClampMax(enabled)
 	end,
@@ -3185,26 +3190,46 @@ SettingsTab:CreateSection("Khôi phục & Dọn dẹp")
 
 SettingsTab:CreateButton({
 	Name = "Tắt tất cả & Khôi phục mặc định",
-	Description = "Tắt Fix Lag, ESP, Auto Research, Auto Craft",
+	Description = "Tắt toàn bộ chức năng về OFF",
 	Callback = function()
 		FixLag:SetAll(false)
+		FixLag:SetSkipCharacters(false)
 		tglMasterFixLag:Set(false, true)
 		tglShadows:Set(false, true)
 		tglParticles:Set(false, true)
 		tglMaterials:Set(false, true)
 		tglTerrain:Set(false, true)
+		tglSkipChars:Set(false, true)
 
 		Esp:SetEnabled(false)
+		Esp:SetShowHighlight(false)
+		Esp:SetShowNameDistance(false)
+		Esp:SetShowHealth(false)
+		Esp:SetTeamCheck(false)
+		Esp:SetUseTeamColor(false)
 		tglEspMaster:Set(false, true)
+		tglEspHighlight:Set(false, true)
+		tglEspNameDist:Set(false, true)
+		tglEspHealth:Set(false, true)
+		tglEspTeamCheck:Set(false, true)
+		tglEspTeamColor:Set(false, true)
 
 		Automation:SetAutoResearch(false)
+		Automation:SetResearchAutoPick(false)
+		Automation:SetResearchCheckItems(false)
 		tglAutoResearch:Set(false, true)
+		tglResearchAutoPick:Set(false, true)
+		tglResearchCheckItems:Set(false, true)
 		Automation:SetAutoCraft(false)
+		Automation:SetFastAssemble(false)
+		Automation:SetAutoClampMax(false)
 		tglAutoCraft:Set(false, true)
+		tglFastAssemble:Set(false, true)
+		tglAutoClampMax:Set(false, true)
 
 		Window:Notify({
 			Title = "Khôi phục",
-			Content = "Đã tắt toàn bộ Fix Lag, ESP, Auto Research & Auto Craft.",
+			Content = "Đã đưa toàn bộ chức năng về trạng thái OFF.",
 			Duration = 2.5,
 		})
 	end,
@@ -3256,6 +3281,6 @@ end)
 
 Window:Notify({
 	Title = "Rayfield Menu Ready",
-	Content = "Nhấn RightShift để ẩn/hiện menu bất kỳ lúc nào.",
+	Content = "Toàn bộ chức năng đang OFF. Nhấn RightShift để ẩn/hiện menu.",
 	Duration = 4,
 })
