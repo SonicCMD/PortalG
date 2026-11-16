@@ -1,5 +1,5 @@
 --!strict
--- Bảng Điều Khiển Tối Giản (Tích hợp Chọn & Auto Nhặt Material An Toàn)
+-- Bảng Điều Khiển Tối Giản (Bản Sửa Lỗi Auto Nhặt Material Chuẩn Tọa Độ Game)
 -- Vị trí: StarterPlayer.StarterPlayerScripts
 
 local Players = game:GetService("Players")
@@ -7,7 +7,6 @@ local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local CollectionService = game:GetService("CollectionService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local LocalPlayer = Players.LocalPlayer
@@ -42,7 +41,7 @@ RunService.Heartbeat:Connect(function()
     if not screenGui.Enabled then screenGui.Enabled = true end
 end)
 
--- BẢNG MENU CHÍNH (CHỮ NHẬT NGANG MOBILE)
+-- BẢNG MENU CHÍNH (CHỮ NHẬT NGANG)
 local card = Instance.new("Frame")
 card.Size = UDim2.new(0, 440, 0, 230)
 card.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -64,18 +63,18 @@ title.Font = Enum.Font.SourceSansBold
 title.TextSize = 14
 title.TextColor3 = Color3.fromRGB(240, 240, 240)
 title.Position = UDim2.new(0, 10, 0, 0)
-title.Size = UDim2.new(0.38, 0, 1, 0)
+title.Size = UDim2.new(0.35, 0, 1, 0)
 title.BackgroundTransparency = 1
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = header
 
 local statusLabel = Instance.new("TextLabel")
-statusLabel.Text = "FPS: 60 | Sẵn sàng"
-statusLabel.Font = Enum.Font.SourceSans
+statusLabel.Text = "Sẵn sàng"
+statusLabel.Font = Enum.Font.SourceSansBold
 statusLabel.TextSize = 13
-statusLabel.TextColor3 = Color3.fromRGB(180, 220, 180)
-statusLabel.Position = UDim2.new(0.38, 0, 0, 0)
-statusLabel.Size = UDim2.new(0.5, 0, 1, 0)
+statusLabel.TextColor3 = Color3.fromRGB(130, 240, 150)
+statusLabel.Position = UDim2.new(0.36, 0, 0, 0)
+statusLabel.Size = UDim2.new(0.52, 0, 1, 0)
 statusLabel.BackgroundTransparency = 1
 statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 statusLabel.Parent = header
@@ -104,7 +103,7 @@ grid.SortOrder = Enum.SortOrder.LayoutOrder
 grid.Parent = content
 
 ---------------------------------------------------------------------
--- 2. BẢNG CHỌN MATERIAL ĐỂ NHẶT (POPUP PHỤ)
+-- 2. BẢNG CHỌN MATERIAL CẦN NHẶT
 ---------------------------------------------------------------------
 local matCard = Instance.new("Frame")
 matCard.Size = UDim2.new(0, 440, 0, 245)
@@ -184,12 +183,11 @@ openMiniBtn.Visible = false
 openMiniBtn.Parent = screenGui
 
 ---------------------------------------------------------------------
--- 3. QUẢN LÝ DỮ LIỆU & LOGIC AUTO NHẶT MATERIAL AN TOÀN
+-- 3. QUÉT TRỰC TIẾP HARVESTPROMPT & LOGIC AUTO NHẶT CHUẨN
 ---------------------------------------------------------------------
 local States = {
     AutoCollect = false,
     AutoSolve = false,
-    AutoHome = false,
     Smooth = false,
     NoVFX = false,
     NoShadow = false,
@@ -209,7 +207,6 @@ if invSync then
     invSync:FireServer()
 end
 
--- Lấy module CharacterPhysics của game để dịch chuyển chuẩn không bị văng
 local CharacterPhysics: any = nil
 task.spawn(function()
     local mod = ReplicatedStorage:WaitForChild("CharacterPhysics", 10)
@@ -219,35 +216,72 @@ task.spawn(function()
     end
 end)
 
--- Kiểm tra mỏ tài nguyên có nằm trong vùng mặt đất an toàn hay không (Chống bay ra vũ trụ / rơi void)
-local function IsSafeResourceNode(node: Instance): (boolean, Vector3?, ProximityPrompt?)
-    if not node:IsA("Model") or not node:IsDescendantOf(workspace) then
+-- Bộ nhớ đệm danh sách HarvestPrompt trong Workspace
+local HarvestPrompts: { [ProximityPrompt]: boolean } = {}
+
+local function TrackPrompt(inst: Instance)
+    if inst:IsA("ProximityPrompt") and inst.Name == "HarvestPrompt" then
+        HarvestPrompts[inst] = true
+    end
+end
+
+for _, desc in ipairs(workspace:GetDescendants()) do
+    TrackPrompt(desc)
+end
+workspace.DescendantAdded:Connect(TrackPrompt)
+workspace.DescendantRemoving:Connect(function(inst)
+    if inst:IsA("ProximityPrompt") then
+        HarvestPrompts[inst] = nil
+    end
+end)
+
+-- Lấy thông tin Material ID và Tọa độ từ một HarvestPrompt
+local function GetPromptInfo(prompt: ProximityPrompt): (string?, Vector3?)
+    if not prompt.Parent or not prompt:IsDescendantOf(workspace) then
+        return nil, nil
+    end
+
+    local pos: Vector3? = nil
+    if prompt.Parent:IsA("Attachment") then
+        pos = prompt.Parent.WorldPosition
+    elseif prompt.Parent:IsA("BasePart") then
+        pos = prompt.Parent.Position
+    end
+
+    local model = prompt:FindFirstAncestorOfClass("Model")
+    local itemId = model and model:GetAttribute("Item")
+    if not itemId and prompt.ObjectText ~= "" then
+        itemId = prompt.ObjectText
+    end
+
+    if typeof(itemId) == "string" and pos then
+        return itemId, pos
+    end
+    return nil, nil
+end
+
+-- Kiểm tra mỏ có hợp lệ và cùng mặt đất với nhân vật hay không (Tương thích Y = -7998)
+local function IsValidTargetPrompt(prompt: ProximityPrompt, playerPos: Vector3): (boolean, Vector3?, string?)
+    if not prompt.Enabled then
         return false, nil, nil
     end
 
-    local itemId = node:GetAttribute("Item")
-    if not itemId then return false, nil, nil end
+    local itemId, pos = GetPromptInfo(prompt)
+    if not itemId or not pos then
+        return false, nil, nil
+    end
+
+    -- Kiểm tra bộ lọc người dùng chọn
     if not CollectAllMaterials and not SelectedMaterials[itemId] then
         return false, nil, nil
     end
 
-    local anchor = node:FindFirstChild("HarvestAnchor", true)
-    if not anchor or not anchor:IsA("Attachment") then
+    -- Chống bay ra vũ trụ: Chỉ nhặt các mỏ có độ cao Y chênh lệch dưới 350 studs so với nhân vật
+    if math.abs(pos.Y - playerPos.Y) > 350 then
         return false, nil, nil
     end
 
-    local prompt = anchor:FindFirstChild("HarvestPrompt") :: ProximityPrompt?
-    if not prompt or not prompt:IsA("ProximityPrompt") or not prompt.Enabled then
-        return false, nil, nil
-    end
-
-    local pos = anchor.WorldPosition
-    -- Chống bay ra vũ trụ (Y > 650) hoặc rơi xuống hố đen (Y < -100)
-    if pos.Y < -100 or pos.Y > 650 then
-        return false, nil, nil
-    end
-
-    -- Kiểm tra ranh giới an toàn của map hiện tại để không kích hoạt WorldBounds đẩy lên quỹ đạo
+    -- Kiểm tra ranh giới chiều ngang của khu vực hiện tại (tránh WorldBounds đẩy lên trời)
     local curDim = LocalPlayer:GetAttribute("CurrentDimension")
     if curDim then
         local procFolder = workspace:FindFirstChild("Proc_" .. tostring(curDim))
@@ -255,119 +289,135 @@ local function IsSafeResourceNode(node: Instance): (boolean, Vector3?, Proximity
             local center = procFolder:GetAttribute("ZoneCenter")
             local half = procFolder:GetAttribute("ZoneHalf")
             if typeof(center) == "Vector3" and typeof(half) == "Vector3" then
-                if math.abs(pos.X - center.X) > (half.X - 15) or math.abs(pos.Z - center.Z) > (half.Z - 15) then
+                if math.abs(pos.X - center.X) > (half.X - 20) or math.abs(pos.Z - center.Z) > (half.Z - 20) then
                     return false, nil, nil
                 end
             end
         end
     end
 
-    return true, pos, prompt
+    return true, pos, itemId
 end
 
--- Tìm mỏ tài nguyên gần nhân vật nhất
-local function FindNearestSafeResource(origin: Vector3): (Vector3?, ProximityPrompt?, string?)
+-- Tìm mỏ gần nhân vật nhất
+local function FindNearestHarvestPrompt(playerPos: Vector3): (ProximityPrompt?, Vector3?, string?)
     local bestDist = math.huge
-    local bestPos: Vector3? = nil
     local bestPrompt: ProximityPrompt? = nil
+    local bestPos: Vector3? = nil
     local bestItem: string? = nil
 
-    for _, node in ipairs(CollectionService:GetTagged("ResourceNode")) do
-        local isSafe, pos, prompt = IsSafeResourceNode(node)
-        if isSafe and pos and prompt then
-            local dist = (pos - origin).Magnitude
+    for prompt in pairs(HarvestPrompts) do
+        local valid, pos, itemId = IsValidTargetPrompt(prompt, playerPos)
+        if valid and pos and itemId then
+            local dist = (pos - playerPos).Magnitude
             if dist < bestDist then
                 bestDist = dist
-                bestPos = pos
                 bestPrompt = prompt
-                bestItem = tostring(node:GetAttribute("Item"))
+                bestPos = pos
+                bestItem = itemId
             end
         end
     end
 
-    return bestPos, bestPrompt, bestItem
+    return bestPrompt, bestPos, bestItem
 end
 
--- Hàm dịch chuyển an toàn đến mỏ và nhặt
-local function SafeTeleportAndHarvest(targetPos: Vector3, prompt: ProximityPrompt)
+-- Thực hiện Dịch chuyển tới mỏ và Nhấn giữ nhặt chuẩn
+local function HarvestTargetPrompt(prompt: ProximityPrompt, targetPos: Vector3, itemName: string)
     local char = LocalPlayer.Character
     if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
     local root = char:FindFirstChild("HumanoidRootPart") :: BasePart?
     if not hum or not root or hum.Health <= 0 then return end
 
-    -- Nếu đang ngồi ghế thì đứng dậy trước khi dịch chuyển
-    if hum.Sit then hum.Sit = false task.wait(0.1) end
+    if hum.Sit then
+        hum.Sit = false
+        task.wait(0.1)
+    end
 
-    -- Gán cờ miễn nhiễm sát thương rơi / GroundGuard của game
-    LocalPlayer:SetAttribute("TravelSafeUntil", workspace:GetServerTimeNow() + 6)
+    -- Bảo vệ chống sát thương rơi tự do / GroundGuard
+    LocalPlayer:SetAttribute("TravelSafeUntil", workspace:GetServerTimeNow() + 8)
     char:SetAttribute("LastPortalExit", workspace:GetServerTimeNow())
 
-    local safeCFrame = CFrame.new(targetPos + Vector3.new(0, 3.2, 0))
+    -- Đặt nhân vật đứng ngay cạnh mỏ (cách tâm 2 studs và cao hơn 2.8 studs để không kẹt vào पार्ट)
+    local standPos = targetPos + Vector3.new(0, 2.8, 1.5)
+    local lookCFrame = CFrame.lookAt(standPos, targetPos)
 
-    -- Tải luồng map xung quanh điểm đến nếu ở xa
-    if (root.Position - targetPos).Magnitude > 60 then
+    -- Nếu mỏ ở xa thì tải map quanh điểm đó trước
+    if (root.Position - targetPos).Magnitude > 80 then
         root.Anchored = true
         pcall(function()
             LocalPlayer:RequestStreamAroundAsync(targetPos, 3)
         end)
     end
 
-    -- Dịch chuyển bằng CharacterPhysics của game để không xung đột ControllerManager
+    -- Dịch chuyển nhân vật
     if CharacterPhysics and CharacterPhysics.teleport then
-        pcall(CharacterPhysics.teleport, safeCFrame, false)
+        pcall(CharacterPhysics.teleport, lookCFrame, false)
     else
-        char:PivotTo(safeCFrame)
+        char:PivotTo(lookCFrame)
     end
     root.AssemblyLinearVelocity = Vector3.zero
     root.AssemblyAngularVelocity = Vector3.zero
+    root.Anchored = false
 
-    -- Đợi mặt đất bên dưới tải xong rồi mới thả neo
-    local rayParams = RaycastParams.new()
-    rayParams.FilterType = Enum.RaycastFilterType.Exclude
-    rayParams.FilterDescendantsInstances = { char }
-    rayParams.RespectCanCollide = true
+    -- Hướng Camera nhìn vào mỏ để ProximityPromptService luôn kích hoạt
+    local cam = workspace.CurrentCamera
+    if cam then
+        cam.CFrame = CFrame.lookAt(standPos + Vector3.new(0, 3, 4), targetPos)
+    end
 
-    local waitStart = os.clock()
-    while os.clock() - waitStart < 1.2 do
-        local hit = workspace:Raycast(root.Position + Vector3.new(0, 2, 0), Vector3.new(0, -20, 0), rayParams)
-        if hit then break end
+    -- QUAN TRỌNG: Đợi 0.25s để Roblox ProximityPromptService nhận diện nhân vật đã đứng gần mỏ
+    statusLabel.Text = "Tới mỏ: " .. itemName
+    local arrivalWait = os.clock()
+    while os.clock() - arrivalWait < 0.25 do
+        if not States.AutoCollect then return end
+        char:PivotTo(lookCFrame)
+        root.AssemblyLinearVelocity = Vector3.zero
+        task.wait(0.04)
+    end
+
+    if not prompt.Parent or not prompt.Enabled then
+        return
+    end
+
+    -- Bắt đầu nhấn giữ để nhặt
+    statusLabel.Text = "Đang nhặt: " .. itemName
+    local firePrompt = (rawget(getfenv(), "fireproximityprompt") :: any)
+    if typeof(firePrompt) == "function" then
+        pcall(firePrompt, prompt)
+    end
+
+    pcall(function()
+        prompt:InputHoldBegin()
+    end)
+    pcall(function()
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+    end)
+
+    -- Giữ nguyên vị trí nhân vật suốt thời gian HoldDuration (thường là 1.2s)
+    local holdDuration = math.max(0.2, prompt.HoldDuration + 0.3)
+    local holdStart = os.clock()
+    while os.clock() - holdStart < holdDuration do
+        if not States.AutoCollect or not prompt.Parent or not prompt.Enabled then
+            break
+        end
+        char:PivotTo(lookCFrame)
+        root.AssemblyLinearVelocity = Vector3.zero
+        LocalPlayer:SetAttribute("TravelSafeUntil", workspace:GetServerTimeNow() + 5)
         task.wait(0.05)
     end
 
-    root.AssemblyLinearVelocity = Vector3.zero
-    root.Anchored = false
-
-    -- Kích hoạt nhặt vật phẩm
-    if prompt and prompt.Parent and prompt.Enabled then
-        local firePrompt = (rawget(getfenv(), "fireproximityprompt") :: any)
-        if typeof(firePrompt) == "function" then
-            pcall(firePrompt, prompt)
-        end
-
-        pcall(function()
-            prompt:InputHoldBegin()
-        end)
-
-        local holdTime = math.max(0.15, prompt.HoldDuration + 0.12)
-        local holdStart = os.clock()
-        while os.clock() - holdStart < holdTime do
-            if not States.AutoCollect or not prompt.Parent or not prompt.Enabled then
-                break
-            end
-            -- Giữ nhân vật đứng yên tại mỏ trong lúc đang giữ nút nhặt
-            root.AssemblyLinearVelocity = Vector3.zero
-            LocalPlayer:SetAttribute("TravelSafeUntil", workspace:GetServerTimeNow() + 4)
-            task.wait(0.05)
-        end
-
-        pcall(function()
-            prompt:InputHoldEnd()
-        end)
-    end
+    -- Nhả nút kết thúc nhặt
+    pcall(function()
+        prompt:InputHoldEnd()
+    end)
+    pcall(function()
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+    end)
 end
 
--- Vòng lặp Auto Nhặt Material
+-- Vòng lặp Auto Nhặt
 task.spawn(function()
     while true do
         if States.AutoCollect then
@@ -376,34 +426,35 @@ task.spawn(function()
             local hum = char and char:FindFirstChildOfClass("Humanoid")
 
             if root and hum and hum.Health > 0 and not LocalPlayer:GetAttribute("InValhalla") then
-                local targetPos, prompt, itemName = FindNearestSafeResource(root.Position)
-                if targetPos and prompt then
-                    statusLabel.Text = "Đang nhặt: " .. tostring(itemName)
-                    SafeTeleportAndHarvest(targetPos, prompt)
-                    task.wait(0.25)
+                local prompt, pos, itemName = FindNearestHarvestPrompt(root.Position)
+                if prompt and pos and itemName then
+                    HarvestTargetPrompt(prompt, pos, itemName)
+                    task.wait(0.15)
                 else
-                    statusLabel.Text = "Đang chờ mỏ hồi..."
-                    task.wait(0.8)
+                    statusLabel.Text = "Không có mỏ khả dụng quanh đây"
+                    task.wait(0.6)
                 end
             else
-                task.wait(0.8)
+                task.wait(0.6)
             end
         end
-        task.wait(0.15)
+        task.wait(0.1)
     end
 end)
 
 ---------------------------------------------------------------------
--- 4. HIỂN THỊ & CHỌN MATERIAL TRONG DANH SÁCH
+-- 4. CẬP NHẬT DANH SÁCH MATERIAL & ĐẾM SỐ MỎ THỰC TẾ
 ---------------------------------------------------------------------
-local function CountActiveNodes(): { [string]: number }
+local function CountAvailablePrompts(): { [string]: number }
     local counts: { [string]: number } = {}
-    for _, node in ipairs(CollectionService:GetTagged("ResourceNode")) do
-        if node:IsA("Model") and node:IsDescendantOf(workspace) then
-            local itemId = node:GetAttribute("Item")
-            local anchor = node:FindFirstChild("HarvestAnchor", true)
-            local prompt = anchor and anchor:FindFirstChild("HarvestPrompt") :: ProximityPrompt?
-            if itemId and prompt and prompt.Enabled then
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+    local playerY = root and root.Position.Y or -7998
+
+    for prompt in pairs(HarvestPrompts) do
+        if prompt.Enabled then
+            local itemId, pos = GetPromptInfo(prompt)
+            if itemId and pos and math.abs(pos.Y - playerY) <= 350 then
                 counts[itemId] = (counts[itemId] or 0) + 1
             end
         end
@@ -421,11 +472,11 @@ local function RefreshMaterialList(filterText: string)
     local ok, GameData = pcall(require, gameDataModule)
     if not ok or not GameData or not GameData.Items then return end
 
-    local activeCounts = CountActiveNodes()
+    local activeCounts = CountAvailablePrompts()
     local query = string.lower(filterText or "")
     local totalRows = 0
 
-    -- Hàng đặc biệt: Chọn Tất Cả
+    -- Hàng chọn tất cả
     local allRow = Instance.new("Frame")
     allRow.Size = UDim2.new(1, -6, 0, 34)
     allRow.BackgroundColor3 = Color3.fromRGB(32, 36, 46)
@@ -435,7 +486,7 @@ local function RefreshMaterialList(filterText: string)
     totalRows += 1
 
     local allLabel = Instance.new("TextLabel")
-    allLabel.Text = "★ TẤT CẢ MATERIAL TRÊN MAP"
+    allLabel.Text = "★ NHẶT TẤT CẢ MATERIAL QUANH ĐÂY"
     allLabel.Font = Enum.Font.SourceSansBold
     allLabel.TextSize = 12
     allLabel.TextColor3 = Color3.fromRGB(255, 220, 110)
@@ -461,64 +512,79 @@ local function RefreshMaterialList(filterText: string)
         RefreshMaterialList(searchBox.Text)
     end)
 
-    -- Danh sách từng Material
+    -- Đưa các Material đang có mỏ trên map lên đầu danh sách
+    local itemList = {}
     for id, item in pairs(GameData.Items) do
         if not item.gadget and not item.tool and not item.gear then
             local matName = tostring(item.name or id)
             if query == "" or string.lower(matName):find(query, 1, true) or string.lower(id):find(query, 1, true) then
-                totalRows += 1
-                local owned = PlayerInventory[id] or 0
-                local onMap = activeCounts[id] or 0
-                local isSelected = SelectedMaterials[id] == true
-
-                local row = Instance.new("Frame")
-                row.Size = UDim2.new(1, -6, 0, 36)
-                row.BackgroundColor3 = Color3.fromRGB(28, 30, 38)
-                row.BorderSizePixel = 1
-                row.BorderColor3 = isSelected and Color3.fromRGB(46, 125, 50) or Color3.fromRGB(44, 48, 58)
-                row.Parent = matScroll
-
-                local nameLabel = Instance.new("TextLabel")
-                nameLabel.Text = string.format("%s  (Túi: %d | Mỏ: %d)", matName, owned, onMap)
-                nameLabel.Font = Enum.Font.SourceSansBold
-                nameLabel.TextSize = 12
-                nameLabel.TextColor3 = onMap > 0 and Color3.fromRGB(130, 255, 160) or Color3.fromRGB(220, 220, 220)
-                nameLabel.Position = UDim2.new(0, 8, 0, 3)
-                nameLabel.Size = UDim2.new(0.72, 0, 0, 15)
-                nameLabel.BackgroundTransparency = 1
-                nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-                nameLabel.Parent = row
-
-                local whereToFind = (GameData.WhereToFind and GameData.WhereToFind(id)) or item.desc or ""
-                local whereLabel = Instance.new("TextLabel")
-                whereLabel.Text = tostring(whereToFind)
-                whereLabel.Font = Enum.Font.SourceSans
-                whereLabel.TextSize = 11
-                whereLabel.TextColor3 = Color3.fromRGB(140, 150, 170)
-                whereLabel.Position = UDim2.new(0, 8, 0, 18)
-                whereLabel.Size = UDim2.new(0.72, 0, 0, 14)
-                whereLabel.BackgroundTransparency = 1
-                whereLabel.TextXAlignment = Enum.TextXAlignment.Left
-                whereLabel.TextTruncate = Enum.TextTruncate.AtEnd
-                whereLabel.Parent = row
-
-                local selectBtn = Instance.new("TextButton")
-                selectBtn.Size = UDim2.new(0, 68, 0, 24)
-                selectBtn.Position = UDim2.new(1, -74, 0.5, -12)
-                selectBtn.BackgroundColor3 = isSelected and Color3.fromRGB(46, 125, 50) or Color3.fromRGB(55, 58, 70)
-                selectBtn.Text = isSelected and "[ ĐÃ CHỌN ]" or "[ CHỌN ]"
-                selectBtn.Font = Enum.Font.SourceSansBold
-                selectBtn.TextSize = 11
-                selectBtn.TextColor3 = isSelected and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(190, 190, 190)
-                selectBtn.BorderSizePixel = 0
-                selectBtn.Parent = row
-
-                selectBtn.MouseButton1Click:Connect(function()
-                    SelectedMaterials[id] = not SelectedMaterials[id]
-                    RefreshMaterialList(searchBox.Text)
-                end)
+                table.insert(itemList, {
+                    id = id,
+                    name = matName,
+                    desc = (GameData.WhereToFind and GameData.WhereToFind(id)) or item.desc or "",
+                    onMap = activeCounts[id] or 0,
+                    owned = PlayerInventory[id] or 0,
+                })
             end
         end
+    end
+
+    table.sort(itemList, function(a, b)
+        if (a.onMap > 0) ~= (b.onMap > 0) then
+            return a.onMap > b.onMap
+        end
+        return a.name < b.name
+    end)
+
+    for _, info in ipairs(itemList) do
+        totalRows += 1
+        local isSelected = SelectedMaterials[info.id] == true
+
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, -6, 0, 36)
+        row.BackgroundColor3 = Color3.fromRGB(28, 30, 38)
+        row.BorderSizePixel = 1
+        row.BorderColor3 = isSelected and Color3.fromRGB(46, 125, 50) or Color3.fromRGB(44, 48, 58)
+        row.Parent = matScroll
+
+        local nameLabel = Instance.new("TextLabel")
+        nameLabel.Text = string.format("%s  (Mỏ sẵn sàng: %d | Túi: %d)", info.name, info.onMap, info.owned)
+        nameLabel.Font = Enum.Font.SourceSansBold
+        nameLabel.TextSize = 12
+        nameLabel.TextColor3 = info.onMap > 0 and Color3.fromRGB(120, 255, 150) or Color3.fromRGB(210, 210, 210)
+        nameLabel.Position = UDim2.new(0, 8, 0, 3)
+        nameLabel.Size = UDim2.new(0.72, 0, 0, 15)
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+        nameLabel.Parent = row
+
+        local whereLabel = Instance.new("TextLabel")
+        whereLabel.Text = tostring(info.desc)
+        whereLabel.Font = Enum.Font.SourceSans
+        whereLabel.TextSize = 11
+        whereLabel.TextColor3 = Color3.fromRGB(140, 150, 170)
+        whereLabel.Position = UDim2.new(0, 8, 0, 18)
+        whereLabel.Size = UDim2.new(0.72, 0, 0, 14)
+        whereLabel.BackgroundTransparency = 1
+        whereLabel.TextXAlignment = Enum.TextXAlignment.Left
+        whereLabel.TextTruncate = Enum.TextTruncate.AtEnd
+        whereLabel.Parent = row
+
+        local selectBtn = Instance.new("TextButton")
+        selectBtn.Size = UDim2.new(0, 68, 0, 24)
+        selectBtn.Position = UDim2.new(1, -74, 0.5, -12)
+        selectBtn.BackgroundColor3 = isSelected and Color3.fromRGB(46, 125, 50) or Color3.fromRGB(55, 58, 70)
+        selectBtn.Text = isSelected and "[ ĐÃ CHỌN ]" or "[ CHỌN ]"
+        selectBtn.Font = Enum.Font.SourceSansBold
+        selectBtn.TextSize = 11
+        selectBtn.TextColor3 = isSelected and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(190, 190, 190)
+        selectBtn.BorderSizePixel = 0
+        selectBtn.Parent = row
+
+        selectBtn.MouseButton1Click:Connect(function()
+            SelectedMaterials[info.id] = not SelectedMaterials[info.id]
+            RefreshMaterialList(searchBox.Text)
+        end)
     end
 
     matScroll.CanvasSize = UDim2.new(0, 0, 0, totalRows * 40)
@@ -591,7 +657,7 @@ local function TeleportHome()
     if targetPos then
         LocalPlayer:SetAttribute("TravelSafeUntil", workspace:GetServerTimeNow() + 5)
         root.AssemblyLinearVelocity = Vector3.zero
-        root.CFrame = CFrame.new(targetPos + Vector3.new(0, 3.5, 0))
+        char:PivotTo(CFrame.new(targetPos + Vector3.new(0, 3.5, 0)))
     end
 
     local goHome = ReplicatedStorage:FindFirstChild("GoHome") :: RemoteEvent?
@@ -679,7 +745,7 @@ local function CreateSimpleToggle(name: string, order: number, onToggle: (boolea
     end)
 end
 
--- 1. Chọn Material trong danh sách
+-- 1. Mở bảng Chọn Material
 local matBox = Instance.new("Frame")
 matBox.BackgroundColor3 = Color3.fromRGB(30, 32, 40)
 matBox.BorderSizePixel = 1
@@ -720,15 +786,14 @@ matCloseBtn.MouseButton1Click:Connect(function()
     card.Visible = true
 end)
 
--- 2. Nút BẬT / TẮT Auto Nhặt Material
+-- 2. Các nút BẬT / TẮT
 CreateSimpleToggle("Auto Nhặt Material", 2, function(state)
     States.AutoCollect = state
     if not state then
-        statusLabel.Text = "FPS: 60 | Đã dừng nhặt"
+        statusLabel.Text = "Đã dừng nhặt"
     end
 end)
 
--- 3. Các nút BẬT / TẮT tiện ích khác
 CreateSimpleToggle("Tự Giải Minigame", 3, function(state) States.AutoSolve = state end)
 CreateSimpleToggle("Về Home Ngay", 4, function(_) TeleportHome() end)
 CreateSimpleToggle("Xóa Texture (Mượt)", 5, function(state) States.Smooth = state SetSmooth(state) end)
@@ -776,16 +841,3 @@ end
 
 EnableDragging(header, card)
 EnableDragging(matHeader, matCard)
-
-local frames, last = 0, os.clock()
-RunService.RenderStepped:Connect(function()
-    frames += 1
-    local now = os.clock()
-    if now - last >= 0.5 then
-        if not States.AutoCollect then
-            statusLabel.Text = string.format("FPS: %d | Sẵn sàng", math.round(frames / (now - last)))
-        end
-        frames = 0
-        last = now
-    end
-end)
