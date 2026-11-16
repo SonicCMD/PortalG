@@ -1,6 +1,6 @@
 --[[
 	Rayfield Client Menu (Single-File DeltaX Mobile & Client Script)
-	Features: Material Scanner + Auto Fly & Collect (Noclip) | Player ESP | Auto Research (3-Minigame Solver) | Fast Craft | Settings
+	Features: Material Scanner + Auto Fly & Collect (Noclip) | Player ESP | Auto Research (3-Minigame Solver) | Fast Craft | Home (Garage) Teleport | Settings
 ]]
 
 if not game:IsLoaded() then
@@ -1932,6 +1932,9 @@ local skippedNodes = {}
 local lastCollectMsg = "Disabled"
 local lastSummaryText = "Scanner is off"
 local notifyCallback = nil
+local beforeTeleportCallback = nil
+local teleportInProgress = false
+local lastHomeMsg = "Ready"
 local elapsedAcc = 0
 
 local function resolveFirePromptFn()
@@ -1962,6 +1965,10 @@ end
 
 function Material:SetNotifyCallback(cb: (string, string, Color3?) -> ())
 	notifyCallback = cb
+end
+
+function Material:SetBeforeTeleportCallback(cb: () -> ())
+	beforeTeleportCallback = cb
 end
 
 local function getGameData(): any
@@ -3056,6 +3063,506 @@ function Material:GetMaterialOptions(): ({ string }, { [string]: string })
 	end
 
 	return options, labelToId
+end
+
+local function findLocalPlayerBase(): Model?
+	local candidates: { Model } = {}
+	local seen: { [Instance]: boolean } = {}
+	for _, inst in ipairs(CollectionService:GetTagged("PlayerBase")) do
+		if inst:IsA("Model") and inst:IsDescendantOf(workspace) and not seen[inst] then
+			seen[inst] = true
+			table.insert(candidates, inst)
+		end
+	end
+	for _, child in ipairs(workspace:GetChildren()) do
+		if child:IsA("Model") and not seen[child] and (child.Name:sub(1, 10) == "SmithHouse" or CollectionService:HasTag(child, "PlayerBase")) then
+			seen[child] = true
+			table.insert(candidates, child)
+		end
+	end
+
+	local uid = LocalPlayer.UserId
+	for _, m in ipairs(candidates) do
+		if m:GetAttribute("OwnerId") == uid then
+			return m
+		end
+	end
+
+	local partnerId = LocalPlayer:GetAttribute("PartnerHostId")
+	if partnerId ~= nil then
+		for _, m in ipairs(candidates) do
+			if m:GetAttribute("OwnerId") == partnerId then
+				return m
+			end
+		end
+	end
+
+	local uidToken = "," .. tostring(uid) .. ","
+	for _, m in ipairs(candidates) do
+		local members = m:GetAttribute("MemberIds")
+		if type(members) == "string" and string.find("," .. members .. ",", uidToken, 1, true) then
+			return m
+		end
+	end
+
+	local homePos = LocalPlayer:GetAttribute("HomePos")
+	if typeof(homePos) == "Vector3" then
+		for _, m in ipairs(candidates) do
+			local offset = m:GetAttribute("Offset")
+			if typeof(offset) == "Vector3" and (Vector3.new(139, 0, 82) + offset - homePos).Magnitude < 100 then
+				return m
+			end
+			local okPivot, cf = pcall(function()
+				return m:GetPivot()
+			end)
+			if okPivot and cf then
+				local flatDist = Vector3.new(cf.Position.X - homePos.X, 0, cf.Position.Z - homePos.Z).Magnitude
+				if flatDist < 160 then
+					return m
+				end
+			end
+		end
+	elseif #candidates == 1 then
+		return candidates[1]
+	end
+
+	return nil
+end
+
+local function isSafeGarageFloorPoint(house: Model, garage: Instance, floorY: number, cx: number, cz: number): (boolean, Vector3?)
+	local downParams = RaycastParams.new()
+	downParams.FilterType = Enum.RaycastFilterType.Include
+	downParams.FilterDescendantsInstances = { garage }
+	downParams.RespectCanCollide = true
+
+	local downHit = workspace:Raycast(Vector3.new(cx, floorY + 6.5, cz), Vector3.new(0, -10, 0), downParams)
+	if not downHit or not downHit.Instance then
+		return false, nil
+	end
+	if downHit.Instance.Name ~= "Floor" then
+		return false, nil
+	end
+	if math.abs(downHit.Position.Y - floorY) > 1.2 then
+		return false, nil
+	end
+
+	local houseParams = RaycastParams.new()
+	houseParams.FilterType = Enum.RaycastFilterType.Include
+	houseParams.FilterDescendantsInstances = { house }
+	houseParams.RespectCanCollide = true
+
+	local upHit = workspace:Raycast(downHit.Position + Vector3.new(0, 0.5, 0), Vector3.new(0, 6.2, 0), houseParams)
+	if upHit then
+		return false, nil
+	end
+
+	local feelDirs = {
+		Vector3.new(1.35, 0, 0),
+		Vector3.new(-1.35, 0, 0),
+		Vector3.new(0, 0, 1.35),
+		Vector3.new(0, 0, -1.35),
+	}
+	for _, hOff in ipairs({ 1.8, 3.4 }) do
+		local origin = downHit.Position + Vector3.new(0, hOff, 0)
+		for _, dir in ipairs(feelDirs) do
+			local sideHit = workspace:Raycast(origin, dir, houseParams)
+			if sideHit and sideHit.Instance and sideHit.Instance.Name ~= "Floor" then
+				return false, nil
+			end
+		end
+	end
+
+	return true, downHit.Position
+end
+
+local function getCharacterScale(): number
+	local char = LocalPlayer.Character
+	if not char then
+		return 1
+	end
+	local okScale, s = pcall(function()
+		return char:GetScale()
+	end)
+	if okScale and type(s) == "number" and s > 0 then
+		return math.clamp(s, 0.6, 2.2)
+	end
+	return 1
+end
+
+local function findGarageSpot(house: Model?): (Vector3?, Vector3?, string)
+	local scale = getCharacterScale()
+	if not house then
+		return nil, nil, "Unknown"
+	end
+
+	local garage = house:FindFirstChild("Garage") or house:FindFirstChild("Garage", true)
+	if not garage then
+		local hp = LocalPlayer:GetAttribute("HomePos")
+		if typeof(hp) == "Vector3" then
+			return hp + Vector3.new(0, 4 * scale, 0), nil, "Home Position"
+		end
+		local okPivot, cf = pcall(function()
+			return house:GetPivot()
+		end)
+		if okPivot and cf then
+			return cf.Position + Vector3.new(0, 5 * scale, 0), nil, "Home Base"
+		end
+		return nil, nil, "Unknown"
+	end
+
+	local floorParts: { BasePart } = {}
+	for _, ch in ipairs(garage:GetChildren()) do
+		if ch:IsA("BasePart") and ch.Name == "Floor" and ch.CanCollide then
+			table.insert(floorParts, ch)
+		end
+	end
+	if #floorParts == 0 then
+		for _, d in ipairs(garage:GetDescendants()) do
+			if d:IsA("BasePart") and d.Name == "Floor" and d.CanCollide then
+				table.insert(floorParts, d)
+			end
+		end
+	end
+
+	local workbench = garage:FindFirstChild("GarageWorkbench", true) or garage:FindFirstChild("GarageTerminal", true)
+	local lookPos: Vector3? = nil
+	if workbench then
+		local okW, wcf = pcall(function()
+			return if workbench:IsA("BasePart") then workbench.CFrame else (workbench :: Model):GetPivot()
+		end)
+		if okW and wcf then
+			lookPos = wcf.Position
+		end
+	end
+
+	if #floorParts > 0 then
+		local minX, maxX = math.huge, -math.huge
+		local minZ, maxZ = math.huge, -math.huge
+		local sumY = 0
+		local largestFloor: BasePart = floorParts[1]
+		local largestArea = 0
+
+		for _, fp in ipairs(floorParts) do
+			local p = fp.Position
+			local sx, sz = fp.Size.X, fp.Size.Z
+			minX = math.min(minX, p.X - sx * 0.5)
+			maxX = math.max(maxX, p.X + sx * 0.5)
+			minZ = math.min(minZ, p.Z - sz * 0.5)
+			maxZ = math.max(maxZ, p.Z + sz * 0.5)
+			sumY += p.Y
+			local area = sx * sz
+			if area > largestArea then
+				largestArea = area
+				largestFloor = fp
+			end
+		end
+
+		local floorY = sumY / #floorParts
+		local centerX = (minX + maxX) * 0.5
+		local centerZ = (minZ + maxZ) * 0.5
+		local anchorX = if lookPos then (centerX * 0.65 + lookPos.X * 0.35) else centerX
+		local anchorZ = if lookPos then (centerZ * 0.65 + lookPos.Z * 0.35) else centerZ
+
+		local pts: { { x: number, z: number, score: number } } = {}
+		local function pushPt(px: number, pz: number)
+			local dx = px - anchorX
+			local dz = pz - anchorZ
+			table.insert(pts, { x = px, z = pz, score = dx * dx + dz * dz })
+		end
+
+		for _, fp in ipairs(floorParts) do
+			if fp.Size.X >= 2.5 and fp.Size.Z >= 2.5 then
+				pushPt(fp.Position.X, fp.Position.Z)
+			end
+		end
+		for gx = math.floor(minX) + 2, math.ceil(maxX) - 2, 3 do
+			for gz = math.floor(minZ) + 2, math.ceil(maxZ) - 2, 3 do
+				pushPt(gx, gz)
+			end
+		end
+		table.sort(pts, function(a, b)
+			return a.score < b.score
+		end)
+
+		for _, pt in ipairs(pts) do
+			local safe, hitPos = isSafeGarageFloorPoint(house, garage, floorY, pt.x, pt.z)
+			if safe and hitPos then
+				local standPos = hitPos + Vector3.new(0, 3.2 * scale, 0)
+				return standPos, lookPos, "Garage Interior"
+			end
+		end
+
+		local fallbackPos = largestFloor.Position + Vector3.new(0, largestFloor.Size.Y * 0.5 + 3.4 * scale, 0)
+		return fallbackPos, lookPos, "Garage Floor"
+	end
+
+	local okG, gcf = pcall(function()
+		return if garage:IsA("BasePart") then garage.CFrame else (garage :: Model):GetPivot()
+	end)
+	if okG and gcf then
+		return gcf.Position + Vector3.new(0, 3.4 * scale, 0), lookPos, "Garage"
+	end
+	return nil, nil, "Unknown"
+end
+
+local function pivotCharacterSafely(destPos: Vector3, lookAtPos: Vector3?): boolean
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local root = getRootPart()
+	if not char or not hum or not root or hum.Health <= 0 then
+		return false
+	end
+
+	local cam = workspace.CurrentCamera
+	local relCam: CFrame? = nil
+	if cam then
+		relCam = root.CFrame:ToObjectSpace(cam.CFrame)
+	end
+
+	local flatLook = false
+	local destCF: CFrame
+	if lookAtPos then
+		local flatTarget = Vector3.new(lookAtPos.X, destPos.Y, lookAtPos.Z)
+		if (flatTarget - destPos).Magnitude > 1.2 then
+			destCF = CFrame.lookAt(destPos, flatTarget)
+			flatLook = true
+		end
+	end
+	if not flatLook then
+		destCF = CFrame.new(destPos) * (root.CFrame - root.CFrame.Position)
+	end
+
+	hum.Sit = false
+	hum.PlatformStand = false
+	root.Anchored = false
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+
+	char:PivotTo(destCF)
+
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+	if cam and relCam then
+		cam.CFrame = root.CFrame * relCam
+	end
+	pcall(function()
+		hum:ChangeState(Enum.HumanoidStateType.Running)
+	end)
+	return true
+end
+
+function Material:GetHomeStatusText(): string
+	local curDim = tostring(LocalPlayer:GetAttribute("CurrentDimension") or "C137")
+	local homeDimAttr = LocalPlayer:GetAttribute("HomeDimension")
+	local homeDim = if homeDimAttr ~= nil then tostring(homeDimAttr) else curDim
+
+	local distText = "Not found"
+	local root = getRootPart()
+	local house = findLocalPlayerBase()
+	local targetPos: Vector3? = nil
+	if house then
+		local garage = house:FindFirstChild("Garage") or house:FindFirstChild("Garage", true)
+		if garage then
+			local okG, gcf = pcall(function()
+				return if garage:IsA("BasePart") then garage.CFrame else (garage :: Model):GetPivot()
+			end)
+			if okG and gcf then
+				targetPos = gcf.Position
+			end
+		end
+	end
+	if not targetPos then
+		local hp = LocalPlayer:GetAttribute("HomePos")
+		if typeof(hp) == "Vector3" then
+			targetPos = hp
+		end
+	end
+
+	if homeDimAttr ~= nil and curDim ~= homeDim then
+		distText = "Other Dimension"
+	elseif root and targetPos then
+		local dist = math.floor((targetPos - root.Position).Magnitude)
+		if dist <= 22 then
+			distText = ("Inside / At Garage (%d m)"):format(dist)
+		else
+			distText = ("%d m away"):format(dist)
+		end
+	end
+
+	return ("Home Dim: %s | Current: %s | Garage: %s\nStatus: %s"):format(homeDim, curDim, distText, lastHomeMsg)
+end
+
+function Material:TeleportToHome(useServerOnly: boolean?): (boolean, string)
+	if destroyed then
+		return false, "Menu unloaded"
+	end
+	if teleportInProgress then
+		return false, "Teleport already in progress"
+	end
+	teleportInProgress = true
+
+	local finalOk = false
+	local finalMsg = "Teleport failed"
+
+	local runOk, runErr = pcall(function()
+		if config.AutoCollect then
+			config.AutoCollect = false
+			autoLoopToken += 1
+			lastCollectMsg = "Disabled (Teleported Home)"
+			if beforeTeleportCallback then
+				pcall(beforeTeleportCallback)
+			end
+			refreshLoopState()
+		end
+		stopFlightSession()
+
+		local char = LocalPlayer.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local root = getRootPart()
+		if not char or not hum or not root or hum.Health <= 0 then
+			finalOk = false
+			finalMsg = "Character not ready"
+			lastHomeMsg = finalMsg
+			sendNotice("Teleport to Home", finalMsg, Color3.fromRGB(248, 113, 113))
+			return
+		end
+
+		if hum.Sit or hum.SeatPart then
+			hum.Sit = false
+			task.wait(0.08)
+		end
+
+		local curDim = LocalPlayer:GetAttribute("CurrentDimension")
+		local homeDim = LocalPlayer:GetAttribute("HomeDimension")
+		local homePos = LocalPlayer:GetAttribute("HomePos")
+		local inOrbit = LocalPlayer:GetAttribute("InOrbit") == true
+		local inOtherDim = (homeDim ~= nil and curDim ~= nil and curDim ~= homeDim) or inOrbit
+
+		if useServerOnly == true or inOtherDim then
+			local goHome = ReplicatedStorage:FindFirstChild("GoHome")
+			if goHome and goHome:IsA("RemoteEvent") then
+				pcall(function()
+					goHome:FireServer("start")
+				end)
+				if useServerOnly == true then
+					lastHomeMsg = "Server GoHome triggered"
+					finalOk = true
+					finalMsg = lastHomeMsg
+					sendNotice("Server Go Home", "Sent official GoHome request to server.", Color3.fromRGB(56, 189, 248))
+					return
+				end
+
+				lastHomeMsg = "Returning to Home dimension via GoHome..."
+				sendNotice("Teleport to Home", lastHomeMsg, Color3.fromRGB(56, 189, 248))
+
+				local waitStart = os.clock()
+				while not destroyed and os.clock() - waitStart < 8.5 do
+					task.wait(0.2)
+					local nowDim = LocalPlayer:GetAttribute("CurrentDimension")
+					local nowOrbit = LocalPlayer:GetAttribute("InOrbit") == true
+					if (homeDim == nil or nowDim == homeDim) and not nowOrbit and findLocalPlayerBase() then
+						break
+					end
+				end
+			elseif useServerOnly == true then
+				finalOk = false
+				finalMsg = "GoHome remote not found"
+				lastHomeMsg = finalMsg
+				sendNotice("Server Go Home", finalMsg, Color3.fromRGB(248, 113, 113))
+				return
+			end
+		end
+
+		local stillOtherDim = (homeDim ~= nil and LocalPlayer:GetAttribute("CurrentDimension") ~= nil and LocalPlayer:GetAttribute("CurrentDimension") ~= homeDim)
+			or (LocalPlayer:GetAttribute("InOrbit") == true)
+		local house = findLocalPlayerBase()
+		if stillOtherDim and not house then
+			finalOk = false
+			finalMsg = "GoHome sent; waiting for Home dimension to load"
+			lastHomeMsg = finalMsg
+			sendNotice("Teleport to Home", finalMsg, Color3.fromRGB(250, 204, 21))
+			return
+		end
+
+		if not house and typeof(homePos) == "Vector3" then
+			lastHomeMsg = "Streaming Home / Garage..."
+			pcall(function()
+				LocalPlayer:RequestStreamAroundAsync(homePos, 5)
+			end)
+			pivotCharacterSafely(homePos + Vector3.new(0, 6, 0), nil)
+			root = getRootPart()
+			if root then
+				root.Anchored = true
+				local streamStart = os.clock()
+				while not destroyed and os.clock() - streamStart < 1.8 do
+					house = findLocalPlayerBase()
+					if house and (house:FindFirstChild("Garage") or house:FindFirstChild("Garage", true)) then
+						break
+					end
+					task.wait(0.15)
+				end
+				if root.Parent then
+					root.Anchored = false
+				end
+			end
+		end
+
+		local destPos, lookPos, spotLabel = findGarageSpot(house)
+		if not destPos and typeof(homePos) == "Vector3" then
+			local scale = getCharacterScale()
+			destPos = homePos + Vector3.new(0, 4 * scale, 0)
+			spotLabel = "Home Position"
+		end
+
+		if not destPos then
+			finalOk = false
+			finalMsg = "Home / Garage not found in workspace"
+			lastHomeMsg = finalMsg
+			sendNotice("Teleport to Home", finalMsg, Color3.fromRGB(248, 113, 113))
+			return
+		end
+
+		pcall(function()
+			LocalPlayer:RequestStreamAroundAsync(destPos, 3)
+		end)
+		local moved = pivotCharacterSafely(destPos, lookPos)
+		if not moved then
+			finalOk = false
+			finalMsg = "Failed to move character"
+			lastHomeMsg = finalMsg
+			sendNotice("Teleport to Home", finalMsg, Color3.fromRGB(248, 113, 113))
+			return
+		end
+
+		RunService.Heartbeat:Wait()
+		local rAfter = getRootPart()
+		local cAfter = LocalPlayer.Character
+		local hAfter = cAfter and cAfter:FindFirstChildOfClass("Humanoid")
+		if rAfter then
+			rAfter.Anchored = false
+			rAfter.AssemblyLinearVelocity = Vector3.zero
+			rAfter.AssemblyAngularVelocity = Vector3.zero
+		end
+		if hAfter then
+			hAfter.PlatformStand = false
+		end
+
+		lastHomeMsg = "Teleported to " .. spotLabel
+		finalOk = true
+		finalMsg = lastHomeMsg
+		sendNotice("Teleport to Home", "Arrived at " .. spotLabel .. ".", Color3.fromRGB(52, 211, 153))
+	end)
+
+	teleportInProgress = false
+	if not runOk then
+		local rRecover = getRootPart()
+		if rRecover then
+			rRecover.Anchored = false
+		end
+		lastHomeMsg = "Error: " .. tostring(runErr)
+		return false, lastHomeMsg
+	end
+	return finalOk, finalMsg
 end
 
 function Material:GetStatusText(): string
@@ -4393,7 +4900,7 @@ local ESP_COLORS: { [string]: Color3 } = {
 
 local Window = Rayfield:CreateWindow({
 	Name = "Rayfield Client Menu",
-	Subtitle = "StarterPlayerScripts • Material, ESP, Research & Craft",
+	Subtitle = "StarterPlayerScripts • Material, ESP, Research, Craft & Home",
 	ToggleKey = Enum.KeyCode.RightShift,
 	DisplayOrder = 500,
 })
@@ -4748,8 +5255,43 @@ CraftTab:CreateButton({
 	end,
 })
 
+Material:SetBeforeTeleportCallback(function()
+	tglMatAutoCollect:Set(false, true)
+end)
+
 --====================================================
--- TAB 5: SETTINGS
+-- TAB 5: HOME / TELEPORT
+--====================================================
+local HomeTab = Window:CreateTab("Home")
+
+HomeTab:CreateSection("Home & Garage")
+local homeStatus = HomeTab:CreateParagraph({
+	Title = "Garage Location",
+	Content = Material:GetHomeStatusText(),
+})
+
+HomeTab:CreateSection("Teleport Actions")
+
+HomeTab:CreateButton({
+	Name = "Teleport to Home (Garage)",
+	Description = "Teleport onto a clear spot on your Garage floor (uses GoHome across dimensions)",
+	Callback = function()
+		Material:TeleportToHome(false)
+		homeStatus:Set({ Content = Material:GetHomeStatusText() })
+	end,
+})
+
+HomeTab:CreateButton({
+	Name = "Server Go Home (GoHome)",
+	Description = "Trigger PortalG's official GoHome return sequence",
+	Callback = function()
+		Material:TeleportToHome(true)
+		homeStatus:Set({ Content = Material:GetHomeStatusText() })
+	end,
+})
+
+--====================================================
+-- TAB 6: SETTINGS
 --====================================================
 local SettingsTab = Window:CreateTab("Settings")
 
@@ -4849,6 +5391,9 @@ monitorConn = RunService.RenderStepped:Connect(function(dt: number)
 	})
 	craftStatus:Set({
 		Content = Automation:GetCraftStatusText(),
+	})
+	homeStatus:Set({
+		Content = Material:GetHomeStatusText(),
 	})
 end)
 
