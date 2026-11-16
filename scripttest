@@ -1252,418 +1252,898 @@ local Rayfield = (function()
 end)()
 
 --====================================================
--- 2. FIX LAG MODULE
+-- 2. MATERIAL SCANNER & AUTO COLLECT MODULE
 --====================================================
-local FixLag = (function()
-	local Lighting = game:GetService("Lighting")
+local Material = (function()
+	local CollectionService = game:GetService("CollectionService")
+	local PathfindingService = game:GetService("PathfindingService")
 	local Players = game:GetService("Players")
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
 	local RunService = game:GetService("RunService")
 
-	local FixLag = {}
+	local LocalPlayer = Players.LocalPlayer
+
+	local Material = {}
+
+	local MAX_HIGHLIGHTS = 16
+	local VISUAL_INTERVAL = 0.12
+
+	local WILD_BIOMES: { [string]: string } = {
+		MagmaShard = "volcano",
+		FrostGem = "snow",
+		DeepQuartz = "caves",
+	}
+
+	local BIOME_LABELS: { [string]: string } = {
+		volcano = "Volcanic Lands",
+		snow = "Snow Mountains",
+		caves = "Red Canyons / Caves",
+	}
 
 	local config = {
-		ShadowsAndPostFX = false,
-		ParticlesAndTrails = false,
-		MaterialsAndTextures = false,
-		LowTerrain = false,
-		SkipCharacters = false,
+		ScanEsp = false,
+		ShowBeam = false,
+		AutoCollect = false,
+		SelectedItem = "ALL",
+		MaxDistance = 3000,
 	}
 
-	local savedLighting: { [string]: any } = {}
-	local savedTerrain: { [string]: any } = {}
-	local savedPostFx = setmetatable({}, { __mode = "k" }) :: { [Instance]: boolean }
-	local savedLightShadows = setmetatable({}, { __mode = "k" }) :: { [Instance]: boolean }
-	local savedParticles = setmetatable({}, { __mode = "k" }) :: { [Instance]: boolean }
-	local savedPartProps = setmetatable({}, { __mode = "k" }) :: { [BasePart]: { Material: Enum.Material, CastShadow: boolean } }
-	local savedDecalTransp = setmetatable({}, { __mode = "k" }) :: { [Decal]: number }
-	local savedSurfaceAppearance: { [SurfaceAppearance]: Instance } = {}
-
-	local workspaceConn: RBXScriptConnection? = nil
-	local lightingConn: RBXScriptConnection? = nil
-	local scanToken = 0
+	local cachedGameData: any = nil
+	local gameDataChecked = false
 	local destroyed = false
+	local collectedCount = 0
 
-	local PARTICLE_CLASSES = {
-		ParticleEmitter = true,
-		Trail = true,
-		Beam = true,
-		Smoke = true,
-		Fire = true,
-		Sparkles = true,
+	type NodeInfo = {
+		node: Instance,
+		itemId: string,
+		name: string,
+		color: Color3,
+		anchorPart: BasePart?,
+		prompt: ProximityPrompt?,
+		pos: Vector3,
+		dist: number,
 	}
 
-	local function isProtectedInstance(inst: Instance): boolean
+	local visualFolder: Folder? = nil
+	local nodeVisuals: { [Instance]: { bb: BillboardGui, lbl: TextLabel, hl: Highlight? } } = {}
+	local biomeVisual: { bb: BillboardGui, part: Part, lbl: TextLabel }? = nil
+	local beamObj: Beam? = nil
+	local beamA0: Attachment? = nil
+	local beamA1: Attachment? = nil
+	local beamTargetPart: Part? = nil
+
+	local renderConn: RBXScriptConnection? = nil
+	local autoLoopToken = 0
+	local skippedNodes: { [Instance]: number } = {}
+	local lastCollectMsg = "Chưa bật"
+	local lastSummaryText = "Chưa bật dò quét"
+	local notifyCallback: ((string, string, Color3?) -> ())? = nil
+	local elapsedAcc = 0
+
+	local function sendNotice(title: string, msg: string, color: Color3?)
+		if notifyCallback then
+			notifyCallback(title, msg, color)
+		end
+	end
+
+	function Material:SetNotifyCallback(cb: (string, string, Color3?) -> ())
+		notifyCallback = cb
+	end
+
+	local function getGameData(): any
+		if not gameDataChecked then
+			gameDataChecked = true
+			local mod = ReplicatedStorage:FindFirstChild("GameData") or ReplicatedStorage:WaitForChild("GameData", 3)
+			if mod and mod:IsA("ModuleScript") then
+				local ok, data = pcall(require, mod)
+				if ok and type(data) == "table" then
+					cachedGameData = data
+				end
+			end
+		end
+		return cachedGameData
+	end
+
+	local function getItemMeta(itemId: string): (string, Color3)
+		local gd = getGameData()
+		local meta = gd and gd.Items and gd.Items[itemId]
+		if type(meta) == "table" then
+			return tostring(meta.name or itemId), meta.color or Color3.fromRGB(56, 189, 248)
+		end
+		return itemId, Color3.fromRGB(56, 189, 248)
+	end
+
+	local function getRootPart(): BasePart?
+		local char = LocalPlayer.Character
+		if not char then
+			return nil
+		end
+		local hrp = char:FindFirstChild("HumanoidRootPart")
+		if hrp and hrp:IsA("BasePart") then
+			return hrp
+		end
+		return nil
+	end
+
+	local function resolveNodePartAndPrompt(node: Instance): (BasePart?, ProximityPrompt?, Vector3?)
+		local prompt = node:FindFirstChild("HarvestPrompt", true)
+		local validPrompt: ProximityPrompt? = if prompt and prompt:IsA("ProximityPrompt") then prompt else nil
+
+		if node:IsA("BasePart") then
+			return node, validPrompt, node.Position
+		end
+
+		local anchor = node:FindFirstChild("HarvestAnchor", true)
+		if anchor then
+			if anchor:IsA("Attachment") and anchor.Parent and anchor.Parent:IsA("BasePart") then
+				return anchor.Parent, validPrompt, anchor.WorldPosition
+			elseif anchor:IsA("BasePart") then
+				return anchor, validPrompt, anchor.Position
+			end
+		end
+
+		if validPrompt and validPrompt.Parent then
+			if validPrompt.Parent:IsA("Attachment") and validPrompt.Parent.Parent and validPrompt.Parent.Parent:IsA("BasePart") then
+				return validPrompt.Parent.Parent, validPrompt, validPrompt.Parent.WorldPosition
+			elseif validPrompt.Parent:IsA("BasePart") then
+				return validPrompt.Parent, validPrompt, validPrompt.Parent.Position
+			end
+		end
+
+		if node:IsA("Model") then
+			local part = node.PrimaryPart or node:FindFirstChildWhichIsA("BasePart", true)
+			if part then
+				return part, validPrompt, part.Position
+			end
+		end
+
+		return nil, validPrompt, nil
+	end
+
+	local function findNearestBiomeTarget(biomeKey: string, originPos: Vector3): (Vector3?, number?)
+		local curDim = tostring(LocalPlayer:GetAttribute("CurrentDimension") or "C137")
+		local proc = workspace:FindFirstChild("Proc_" .. curDim)
+		if not proc then
+			return nil, nil
+		end
+
+		local bestPos: Vector3? = nil
+		local bestDist: number? = nil
+
+		for i = 1, 4 do
+			local attr = proc:GetAttribute(("Biome_%s_%d"):format(biomeKey, i))
+			if typeof(attr) ~= "Vector3" and i == 1 then
+				attr = proc:GetAttribute("Biome_" .. biomeKey)
+			end
+			if typeof(attr) == "Vector3" then
+				local delta = attr - originPos
+				local dx = (delta.X + 6000) % 12000 - 6000
+				local dz = (delta.Z + 6000) % 12000 - 6000
+				local dist = math.sqrt(dx * dx + dz * dz)
+				if not bestDist or dist < bestDist then
+					bestDist = dist
+					bestPos = Vector3.new(originPos.X + dx, originPos.Y + 4, originPos.Z + dz)
+				end
+			end
+		end
+
+		return bestPos, bestDist
+	end
+
+	local function scanMatchingNodes(includeSkipped: boolean): ({ NodeInfo }, { [string]: number })
+		local root = getRootPart()
+		local origin = if root then root.Position else nil
+		if not origin then
+			local cam = workspace.CurrentCamera
+			origin = if cam then cam.CFrame.Position else Vector3.zero
+		end
+
+		local results: { NodeInfo } = {}
+		local countsByName: { [string]: number } = {}
+		local now = os.clock()
+
+		for _, node in ipairs(CollectionService:GetTagged("ResourceNode")) do
+			if not node:IsDescendantOf(workspace) then
+				continue
+			end
+
+			local itemId = tostring(node:GetAttribute("Item") or "")
+			if itemId == "" then
+				continue
+			end
+			if not includeSkipped and skippedNodes[node] and skippedNodes[node] > now then
+				continue
+			end
+
+			local anchorPart, prompt, pos = resolveNodePartAndPrompt(node)
+			if not pos then
+				continue
+			end
+			if prompt and not prompt.Enabled then
+				continue
+			end
+
+			local dist = (pos - (origin :: Vector3)).Magnitude
+			if dist > config.MaxDistance then
+				continue
+			end
+
+			local itemName, itemColor = getItemMeta(itemId)
+			countsByName[itemName] = (countsByName[itemName] or 0) + 1
+
+			if config.SelectedItem == "ALL" or config.SelectedItem == itemId then
+				table.insert(results, {
+					node = node,
+					itemId = itemId,
+					name = itemName,
+					color = itemColor,
+					anchorPart = anchorPart,
+					prompt = prompt,
+					pos = pos,
+					dist = dist,
+				})
+			end
+		end
+
+		table.sort(results, function(a, b)
+			return a.dist < b.dist
+		end)
+
+		return results, countsByName
+	end
+
+	local function getVisualFolder(): Folder?
 		local cam = workspace.CurrentCamera
-		if cam and inst:IsDescendantOf(cam) then
+		if not cam then
+			return nil
+		end
+		if visualFolder and visualFolder.Parent == cam then
+			return visualFolder
+		end
+		if visualFolder then
+			visualFolder:Destroy()
+		end
+		local folder = Instance.new("Folder")
+		folder.Name = "RayfieldMaterialESP"
+		folder.Parent = cam
+		visualFolder = folder
+		return folder
+	end
+
+	local function clearBeam()
+		if beamObj then
+			beamObj:Destroy()
+			beamObj = nil
+		end
+		if beamA0 then
+			beamA0:Destroy()
+			beamA0 = nil
+		end
+		if beamA1 then
+			beamA1:Destroy()
+			beamA1 = nil
+		end
+		if beamTargetPart then
+			beamTargetPart:Destroy()
+			beamTargetPart = nil
+		end
+	end
+
+	local function clearBiomeVisual()
+		if biomeVisual then
+			biomeVisual.bb:Destroy()
+			biomeVisual.part:Destroy()
+			biomeVisual = nil
+		end
+	end
+
+	local function clearAllVisuals()
+		for _, vis in pairs(nodeVisuals) do
+			vis.bb:Destroy()
+			if vis.hl then
+				vis.hl:Destroy()
+			end
+		end
+		table.clear(nodeVisuals)
+		clearBiomeVisual()
+		clearBeam()
+		if visualFolder then
+			visualFolder:Destroy()
+			visualFolder = nil
+		end
+	end
+
+	local function updateBeam(targetPos: Vector3?, color: Color3?)
+		if not config.ShowBeam or not targetPos then
+			clearBeam()
+			return
+		end
+		local root = getRootPart()
+		local folder = getVisualFolder()
+		if not root or not folder then
+			clearBeam()
+			return
+		end
+
+		if not beamA0 or beamA0.Parent ~= root then
+			if beamA0 then
+				beamA0:Destroy()
+			end
+			local a0 = Instance.new("Attachment")
+			a0.Name = "RF_MatBeamStart"
+			a0.Parent = root
+			beamA0 = a0
+		end
+
+		if not beamTargetPart or beamTargetPart.Parent ~= folder then
+			local p = Instance.new("Part")
+			p.Name = "RF_MatBeamTarget"
+			p.Anchored = true
+			p.CanCollide = false
+			p.CanQuery = false
+			p.CanTouch = false
+			p.Transparency = 1
+			p.Size = Vector3.new(0.2, 0.2, 0.2)
+			p.Parent = folder
+			beamTargetPart = p
+
+			local a1 = Instance.new("Attachment")
+			a1.Parent = p
+			beamA1 = a1
+		end
+
+		if beamTargetPart then
+			beamTargetPart.CFrame = CFrame.new(targetPos)
+		end
+
+		if not beamObj or not beamObj.Parent then
+			local b = Instance.new("Beam")
+			b.Name = "RF_MatGuideBeam"
+			b.FaceCamera = true
+			b.Width0 = 0.22
+			b.Width1 = 0.36
+			b.LightEmission = 1
+			b.LightInfluence = 0
+			b.Transparency = NumberSequence.new(0.15)
+			b.Parent = folder
+			beamObj = b
+		end
+
+		if beamObj and beamA0 and beamA1 then
+			beamObj.Attachment0 = beamA0
+			beamObj.Attachment1 = beamA1
+			beamObj.Color = ColorSequence.new(color or Color3.fromRGB(56, 189, 248))
+		end
+	end
+
+	local function updateVisuals()
+		if not (config.ScanEsp or config.ShowBeam) then
+			clearAllVisuals()
+			return
+		end
+
+		local folder = getVisualFolder()
+		if not folder then
+			return
+		end
+
+		local matches, countsByName = scanMatchingNodes(true)
+		local root = getRootPart()
+		local originPos = if root then root.Position else Vector3.zero
+
+		local topParts: { string } = {}
+		for k, c in pairs(countsByName) do
+			table.insert(topParts, ("%s x%d"):format(k, c))
+		end
+		table.sort(topParts)
+		local shownList = {}
+		for i = 1, math.min(4, #topParts) do
+			table.insert(shownList, topParts[i])
+		end
+
+		local nearestInfo = matches[1]
+		if nearestInfo then
+			lastSummaryText = ("Khả dụng: %d | Gần nhất: %s (%.0fm)\nTrong vùng: %s"):format(
+				#matches,
+				nearestInfo.name,
+				nearestInfo.dist,
+				if #shownList > 0 then table.concat(shownList, ", ") else "Không có"
+			)
+		else
+			lastSummaryText = ("Không thấy %s quanh %.0fm"):format(
+				if config.SelectedItem == "ALL" then "material nào" else (getItemMeta(config.SelectedItem)),
+				config.MaxDistance
+			)
+		end
+
+		local activeSet: { [Instance]: boolean } = {}
+		for _, info in ipairs(matches) do
+			activeSet[info.node] = true
+		end
+		for node, vis in pairs(nodeVisuals) do
+			if not activeSet[node] or not node.Parent then
+				vis.bb:Destroy()
+				if vis.hl then
+					vis.hl:Destroy()
+				end
+				nodeVisuals[node] = nil
+			end
+		end
+
+		if config.ScanEsp then
+			for idx, info in ipairs(matches) do
+				local vis = nodeVisuals[info.node]
+				local adornee: Instance = info.anchorPart or info.node
+				if not vis then
+					local bb = Instance.new("BillboardGui")
+					bb.Name = "MatMarker_" .. info.itemId
+					bb.AlwaysOnTop = true
+					bb.LightInfluence = 0
+					bb.Size = UDim2.fromOffset(170, 34)
+					bb.StudsOffsetWorldSpace = Vector3.new(0, 3.2, 0)
+					bb.MaxDistance = config.MaxDistance
+					bb.Adornee = adornee
+					bb.Parent = folder
+
+					local lbl = Instance.new("TextLabel")
+					lbl.Size = UDim2.fromScale(1, 1)
+					lbl.BackgroundTransparency = 1
+					lbl.Font = Enum.Font.GothamBold
+					lbl.TextSize = 13
+					lbl.TextStrokeColor3 = Color3.new(0, 0, 0)
+					lbl.TextStrokeTransparency = 0.25
+					lbl.TextColor3 = info.color
+					lbl.Parent = bb
+
+					vis = { bb = bb, lbl = lbl, hl = nil }
+					nodeVisuals[info.node] = vis
+				end
+
+				vis.bb.Adornee = adornee
+				vis.bb.MaxDistance = config.MaxDistance
+				vis.lbl.TextColor3 = info.color
+				vis.lbl.Text = ("%s [%.0fm]"):format(info.name, info.dist)
+
+				if idx <= MAX_HIGHLIGHTS and info.node:IsA("Model") then
+					if not vis.hl or not vis.hl.Parent then
+						local hl = Instance.new("Highlight")
+						hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+						hl.FillColor = info.color
+						hl.OutlineColor = Color3.new(1, 1, 1)
+						hl.FillTransparency = 0.6
+						hl.OutlineTransparency = 0.15
+						hl.Adornee = info.node
+						hl.Parent = folder
+						vis.hl = hl
+					else
+						vis.hl.FillColor = info.color
+					end
+				elseif vis.hl then
+					vis.hl:Destroy()
+					vis.hl = nil
+				end
+			end
+		else
+			for node, vis in pairs(nodeVisuals) do
+				vis.bb:Destroy()
+				if vis.hl then
+					vis.hl:Destroy()
+				end
+				nodeVisuals[node] = nil
+			end
+		end
+
+		local biomeTargetPos: Vector3? = nil
+		local biomeColor: Color3? = nil
+		local biomeKey = WILD_BIOMES[config.SelectedItem]
+		if not nearestInfo and biomeKey then
+			local bPos, bDist = findNearestBiomeTarget(biomeKey, originPos)
+			if bPos and bDist then
+				biomeTargetPos = bPos
+				local itemName, col = getItemMeta(config.SelectedItem)
+				biomeColor = col
+				lastSummaryText = ("Chưa có node %s đã load.\nHướng dẫn đường tới %s: %.0fm"):format(
+					itemName,
+					BIOME_LABELS[biomeKey] or biomeKey,
+					bDist
+				)
+
+				if config.ScanEsp then
+					if not biomeVisual or not biomeVisual.part.Parent then
+						local p = Instance.new("Part")
+						p.Name = "BiomeBeaconAnchor"
+						p.Anchored = true
+						p.CanCollide = false
+						p.CanQuery = false
+						p.CanTouch = false
+						p.Transparency = 1
+						p.Size = Vector3.new(1, 1, 1)
+						p.Parent = folder
+
+						local bb = Instance.new("BillboardGui")
+						bb.AlwaysOnTop = true
+						bb.Size = UDim2.fromOffset(220, 40)
+						bb.Adornee = p
+						bb.Parent = folder
+
+						local lbl = Instance.new("TextLabel")
+						lbl.Size = UDim2.fromScale(1, 1)
+						lbl.BackgroundTransparency = 1
+						lbl.Font = Enum.Font.GothamBold
+						lbl.TextSize = 14
+						lbl.TextStrokeTransparency = 0.25
+						lbl.Parent = bb
+
+						biomeVisual = { bb = bb, part = p, lbl = lbl }
+					end
+					if biomeVisual then
+						biomeVisual.part.CFrame = CFrame.new(bPos)
+						biomeVisual.lbl.TextColor3 = col
+						biomeVisual.lbl.Text = ("[%s • %.0fm]"):format(BIOME_LABELS[biomeKey] or biomeKey, bDist)
+					end
+				else
+					clearBiomeVisual()
+				end
+			else
+				clearBiomeVisual()
+				local gd = getGameData()
+				local meta = gd and gd.Items and gd.Items[config.SelectedItem]
+				if meta and (meta.dim or meta.planet) then
+					lastSummaryText = ("%s ở %s (hãy dịch chuyển tới đó để dò node)."):format(
+						tostring(meta.name or config.SelectedItem),
+						tostring(meta.dim or meta.planet)
+					)
+				end
+			end
+		else
+			clearBiomeVisual()
+		end
+
+		if nearestInfo then
+			updateBeam(nearestInfo.pos, nearestInfo.color)
+		elseif biomeTargetPos then
+			updateBeam(biomeTargetPos, biomeColor)
+		else
+			updateBeam(nil, nil)
+		end
+	end
+
+	local function refreshLoopState()
+		local needsVisualLoop = (config.ScanEsp or config.ShowBeam) and not destroyed
+		if needsVisualLoop and not renderConn then
+			elapsedAcc = VISUAL_INTERVAL
+			renderConn = RunService.RenderStepped:Connect(function(dt: number)
+				elapsedAcc += dt
+				if elapsedAcc < VISUAL_INTERVAL then
+					return
+				end
+				elapsedAcc = 0
+				updateVisuals()
+			end)
+		elseif not needsVisualLoop and renderConn then
+			renderConn:Disconnect()
+			renderConn = nil
+			clearAllVisuals()
+		end
+	end
+
+	local function moveTowardsTarget(targetPos: Vector3, stopDist: number, token: number, targetNode: Instance?): boolean
+		local char = LocalPlayer.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local root = getRootPart()
+		if not hum or not root or hum.Health <= 0 then
+			return false
+		end
+
+		if (root.Position - targetPos).Magnitude <= stopDist then
 			return true
 		end
-		if config.SkipCharacters then
-			for _, plr in ipairs(Players:GetPlayers()) do
-				local char = plr.Character
-				if char and (inst == char or inst:IsDescendantOf(char)) then
+
+		local waypoints: { PathWaypoint }? = nil
+		if (root.Position - targetPos).Magnitude > 30 then
+			local path = PathfindingService:CreatePath({
+				AgentRadius = 2.5,
+				AgentHeight = 5,
+				AgentCanJump = true,
+				WaypointSpacing = 8,
+			})
+			local okPath = pcall(function()
+				path:ComputeAsync(root.Position, targetPos)
+			end)
+			if okPath and path.Status == Enum.PathStatus.Success then
+				waypoints = path:GetWaypoints()
+			end
+		end
+
+		local function walkToPoint(pt: Vector3, reachDist: number, maxWait: number): boolean
+			local deadline = os.clock() + maxWait
+			local lastPos = root.Position
+			local stuckSince = os.clock()
+
+			hum:MoveTo(pt)
+			while config.AutoCollect and token == autoLoopToken and not destroyed do
+				if not root.Parent or not hum.Parent or hum.Health <= 0 then
+					return false
+				end
+				if targetNode and (not targetNode.Parent) then
+					return false
+				end
+				local curDist = (root.Position - pt).Magnitude
+				if curDist <= reachDist then
+					return true
+				end
+				if os.clock() > deadline then
+					return false
+				end
+				if (root.Position - lastPos).Magnitude > 1.2 then
+					lastPos = root.Position
+					stuckSince = os.clock()
+				elseif os.clock() - stuckSince > 1.1 then
+					hum.Jump = true
+					hum:MoveTo(pt)
+					if os.clock() - stuckSince > 3.2 then
+						return false
+					end
+				end
+				task.wait(0.1)
+			end
+			return false
+		end
+
+		if waypoints and #waypoints > 1 then
+			for i = 2, #waypoints do
+				if not config.AutoCollect or token ~= autoLoopToken or destroyed then
+					return false
+				end
+				local wp = waypoints[i]
+				if wp.Action == Enum.PathWaypointAction.Jump then
+					hum.Jump = true
+				end
+				local isLast = (i == #waypoints)
+				local okStep = walkToPoint(wp.Position, if isLast then stopDist else 4.5, 4)
+				if not okStep then
+					return false
+				end
+				if (root.Position - targetPos).Magnitude <= stopDist then
 					return true
 				end
 			end
-		end
-		return false
-	end
-
-	local function applyPostFxItem(inst: Instance)
-		if not config.ShadowsAndPostFX then
-			return
-		end
-		if inst:IsA("PostEffect") then
-			if savedPostFx[inst] == nil then
-				savedPostFx[inst] = inst.Enabled
-			end
-			inst.Enabled = false
-		elseif inst:IsA("Light") then
-			if savedLightShadows[inst] == nil then
-				savedLightShadows[inst] = inst.Shadows
-			end
-			inst.Shadows = false
-		end
-	end
-
-	local function applyParticleItem(inst: Instance)
-		if not config.ParticlesAndTrails then
-			return
-		end
-		if PARTICLE_CLASSES[inst.ClassName] then
-			if isProtectedInstance(inst) then
-				return
-			end
-			local anyInst = inst :: any
-			if savedParticles[inst] == nil then
-				savedParticles[inst] = anyInst.Enabled
-			end
-			anyInst.Enabled = false
-		end
-	end
-
-	local function applyMaterialItem(inst: Instance)
-		if not config.MaterialsAndTextures then
-			return
-		end
-		if isProtectedInstance(inst) then
-			return
-		end
-
-		if inst:IsA("BasePart") and not inst:IsA("Terrain") then
-			if savedPartProps[inst] == nil then
-				savedPartProps[inst] = {
-					Material = inst.Material,
-					CastShadow = inst.CastShadow,
-				}
-			end
-			inst.Material = Enum.Material.SmoothPlastic
-			inst.CastShadow = false
-		elseif inst:IsA("Decal") then
-			if savedDecalTransp[inst] == nil then
-				savedDecalTransp[inst] = inst.Transparency
-			end
-			inst.Transparency = 1
-		elseif inst:IsA("SurfaceAppearance") then
-			local parent = inst.Parent
-			if parent and savedSurfaceAppearance[inst] == nil then
-				local ok = pcall(function()
-					inst.Parent = nil
-				end)
-				if ok then
-					savedSurfaceAppearance[inst] = parent
-				end
-			end
-		end
-	end
-
-	local function processInstance(inst: Instance)
-		applyPostFxItem(inst)
-		applyParticleItem(inst)
-		applyMaterialItem(inst)
-	end
-
-	local function applyLightingAndPostFX()
-		if config.ShadowsAndPostFX then
-			if savedLighting.GlobalShadows == nil then
-				savedLighting.GlobalShadows = Lighting.GlobalShadows
-				savedLighting.EnvironmentDiffuseScale = Lighting.EnvironmentDiffuseScale
-				savedLighting.EnvironmentSpecularScale = Lighting.EnvironmentSpecularScale
-				pcall(function()
-					savedLighting.ShadowSoftness = Lighting.ShadowSoftness
-				end)
-			end
-			Lighting.GlobalShadows = false
-			Lighting.EnvironmentDiffuseScale = 0
-			Lighting.EnvironmentSpecularScale = 0
-			pcall(function()
-				Lighting.ShadowSoftness = 0
-			end)
-
-			for _, child in ipairs(Lighting:GetDescendants()) do
-				applyPostFxItem(child)
-			end
-			local cam = workspace.CurrentCamera
-			if cam then
-				for _, child in ipairs(cam:GetChildren()) do
-					if child:IsA("PostEffect") then
-						applyPostFxItem(child)
-					end
-				end
-			end
+			return (root.Position - targetPos).Magnitude <= (stopDist + 2)
 		else
-			if savedLighting.GlobalShadows ~= nil then
-				Lighting.GlobalShadows = savedLighting.GlobalShadows
-				Lighting.EnvironmentDiffuseScale = savedLighting.EnvironmentDiffuseScale
-				Lighting.EnvironmentSpecularScale = savedLighting.EnvironmentSpecularScale
-				if savedLighting.ShadowSoftness ~= nil then
-					pcall(function()
-						Lighting.ShadowSoftness = savedLighting.ShadowSoftness
-					end)
-				end
-				table.clear(savedLighting)
-			end
-
-			for inst, origEnabled in pairs(savedPostFx) do
-				if inst.Parent then
-					pcall(function()
-						(inst :: PostEffect).Enabled = origEnabled
-					end)
-				end
-			end
-			table.clear(savedPostFx)
-
-			for inst, origShadow in pairs(savedLightShadows) do
-				if inst.Parent then
-					pcall(function()
-						(inst :: Light).Shadows = origShadow
-					end)
-				end
-			end
-			table.clear(savedLightShadows)
+			return walkToPoint(targetPos, stopDist, 6)
 		end
 	end
 
-	local function applyTerrain()
-		local terrain = workspace.Terrain
-		if not terrain then
-			return
+	local function triggerPromptSafe(prompt: ProximityPrompt, token: number): boolean
+		if not prompt.Parent or not prompt.Enabled then
+			return false
 		end
-		if config.LowTerrain then
-			if savedTerrain.WaterWaveSize == nil then
-				savedTerrain.WaterWaveSize = terrain.WaterWaveSize
-				savedTerrain.WaterWaveSpeed = terrain.WaterWaveSpeed
-				savedTerrain.WaterReflectance = terrain.WaterReflectance
-				savedTerrain.WaterTransparency = terrain.WaterTransparency
-				pcall(function()
-					savedTerrain.Decoration = (terrain :: any).Decoration
-				end)
+		local triggered = false
+		local conn = prompt.Triggered:Connect(function()
+			triggered = true
+		end)
+
+		pcall(function()
+			prompt:InputHoldBegin()
+		end)
+
+		local holdDur = math.max(0.08, prompt.HoldDuration + 0.12)
+		local endWait = os.clock() + holdDur
+		while os.clock() < endWait do
+			if destroyed or not config.AutoCollect or token ~= autoLoopToken or not prompt.Parent or not prompt.Enabled then
+				break
 			end
-			terrain.WaterWaveSize = 0
-			terrain.WaterWaveSpeed = 0
-			terrain.WaterReflectance = 0
-			terrain.WaterTransparency = 0
-			pcall(function()
-				(terrain :: any).Decoration = false
-			end)
+			task.wait(0.05)
+		end
+
+		pcall(function()
+			prompt:InputHoldEnd()
+		end)
+		task.wait(0.15)
+		conn:Disconnect()
+		return triggered or not prompt.Enabled
+	end
+
+	function Material:ScanNow(): string
+		local matches, countsByName = scanMatchingNodes(true)
+		local first = matches[1]
+		if first then
+			lastSummaryText = ("Tìm thấy %d mục • Gần nhất: %s (%.0fm)"):format(#matches, first.name, first.dist)
+			return lastSummaryText
+		end
+		local root = getRootPart()
+		local biomeKey = WILD_BIOMES[config.SelectedItem]
+		if root and biomeKey then
+			local _, bDist = findNearestBiomeTarget(biomeKey, root.Position)
+			if bDist then
+				lastSummaryText = ("Hướng %s cách %.0fm"):format(BIOME_LABELS[biomeKey] or biomeKey, bDist)
+				return lastSummaryText
+			end
+		end
+		local countTypes = 0
+		for _ in pairs(countsByName) do
+			countTypes += 1
+		end
+		if countTypes > 0 then
+			lastSummaryText = ("Không thấy %s quanh đây (có %d loại khác gần bạn)."):format(getItemMeta(config.SelectedItem), countTypes)
 		else
-			if savedTerrain.WaterWaveSize ~= nil then
-				terrain.WaterWaveSize = savedTerrain.WaterWaveSize
-				terrain.WaterWaveSpeed = savedTerrain.WaterWaveSpeed
-				terrain.WaterReflectance = savedTerrain.WaterReflectance
-				terrain.WaterTransparency = savedTerrain.WaterTransparency
-				if savedTerrain.Decoration ~= nil then
-					pcall(function()
-						(terrain :: any).Decoration = savedTerrain.Decoration
-					end)
-				end
-				table.clear(savedTerrain)
-			end
+			lastSummaryText = "Chưa thấy material nào trong bán kính đã đặt."
 		end
+		return lastSummaryText
 	end
 
-	local function restoreParticles()
-		for inst, origEnabled in pairs(savedParticles) do
-			if inst.Parent then
-				pcall(function()
-					(inst :: any).Enabled = origEnabled
-				end)
-			end
-		end
-		table.clear(savedParticles)
+	function Material:SetScanEsp(enabled: boolean)
+		config.ScanEsp = enabled
+		refreshLoopState()
 	end
 
-	local function restoreMaterialsAndTextures()
-		for part, props in pairs(savedPartProps) do
-			if part.Parent then
-				pcall(function()
-					part.Material = props.Material
-					part.CastShadow = props.CastShadow
-				end)
-			end
-		end
-		table.clear(savedPartProps)
-
-		for decal, origTransp in pairs(savedDecalTransp) do
-			if decal.Parent then
-				pcall(function()
-					decal.Transparency = origTransp
-				end)
-			end
-		end
-		table.clear(savedDecalTransp)
-
-		for sa, origParent in pairs(savedSurfaceAppearance) do
-			if origParent.Parent then
-				pcall(function()
-					sa.Parent = origParent
-				end)
-			end
-		end
-		table.clear(savedSurfaceAppearance)
+	function Material:SetShowBeam(enabled: boolean)
+		config.ShowBeam = enabled
+		refreshLoopState()
 	end
 
-	local function refreshListeners()
-		local needsWorkspaceWatch = config.ShadowsAndPostFX or config.ParticlesAndTrails or config.MaterialsAndTextures
-
-		if needsWorkspaceWatch and not workspaceConn and not destroyed then
-			workspaceConn = workspace.DescendantAdded:Connect(function(inst: Instance)
-				processInstance(inst)
-			end)
-		elseif not needsWorkspaceWatch and workspaceConn then
-			workspaceConn:Disconnect()
-			workspaceConn = nil
-		end
-
-		if config.ShadowsAndPostFX and not lightingConn and not destroyed then
-			lightingConn = Lighting.DescendantAdded:Connect(function(inst: Instance)
-				applyPostFxItem(inst)
-			end)
-		elseif not config.ShadowsAndPostFX and lightingConn then
-			lightingConn:Disconnect()
-			lightingConn = nil
-		end
-	end
-
-	function FixLag:RescanWorkspaceAsync()
-		if destroyed then
-			return
-		end
-		if not (config.ShadowsAndPostFX or config.ParticlesAndTrails or config.MaterialsAndTextures) then
+	function Material:SetAutoCollect(enabled: boolean)
+		config.AutoCollect = enabled
+		autoLoopToken += 1
+		local myToken = autoLoopToken
+		if not enabled then
+			lastCollectMsg = "Đã tắt"
 			return
 		end
 
-		scanToken += 1
-		local myToken = scanToken
+		table.clear(skippedNodes)
+		lastCollectMsg = "Đang dò tìm..."
 
 		task.spawn(function()
-			local descendants = workspace:GetDescendants()
-			local count = 0
-			for _, inst in ipairs(descendants) do
-				if myToken ~= scanToken or destroyed then
-					return
+			while config.AutoCollect and myToken == autoLoopToken and not destroyed do
+				local matches = scanMatchingNodes(false)
+				local target = matches[1]
+				if not target then
+					local root = getRootPart()
+					local biomeKey = WILD_BIOMES[config.SelectedItem]
+					if root and biomeKey then
+						local bPos, bDist = findNearestBiomeTarget(biomeKey, root.Position)
+						if bPos and bDist then
+							lastCollectMsg = ("Đang tiến về %s (%.0fm)..."):format(BIOME_LABELS[biomeKey] or biomeKey, bDist)
+							local stepDir = (bPos - root.Position) * Vector3.new(1, 0, 1)
+							local hopDist = math.min(60, stepDir.Magnitude)
+							if hopDist > 5 then
+								local hopPos = root.Position + stepDir.Unit * hopDist
+								moveTowardsTarget(hopPos, 8, myToken, nil)
+							end
+							task.wait(0.2)
+							continue
+						end
+					end
+					lastCollectMsg = "Đang chờ material spawn quanh đây..."
+					task.wait(0.8)
+					continue
 				end
-				processInstance(inst)
-				count += 1
-				if count >= 350 then
-					count = 0
-					RunService.Heartbeat:Wait()
+
+				lastCollectMsg = ("Đang tới: %s (%.0fm)"):format(target.name, target.dist)
+				local reachDist = if target.prompt then math.max(5.5, target.prompt.MaxActivationDistance - 2) else 6.5
+				local reached = moveTowardsTarget(target.pos, reachDist, myToken, target.node)
+				if not config.AutoCollect or myToken ~= autoLoopToken or destroyed then
+					break
 				end
+
+				if reached and target.prompt and target.prompt.Parent and target.prompt.Enabled then
+					lastCollectMsg = ("Đang nhặt: %s..."):format(target.name)
+					local okPick = triggerPromptSafe(target.prompt, myToken)
+					if okPick then
+						collectedCount += 1
+						lastCollectMsg = ("Đã nhặt %s (tổng: %d)"):format(target.name, collectedCount)
+					else
+						skippedNodes[target.node] = os.clock() + 8
+					end
+				else
+					skippedNodes[target.node] = os.clock() + 10
+					lastCollectMsg = ("Bỏ qua node bị kẹt: %s"):format(target.name)
+				end
+				task.wait(0.2)
 			end
 		end)
 	end
 
-	function FixLag:SetShadowsAndPostFX(enabled: boolean)
-		config.ShadowsAndPostFX = enabled
-		applyLightingAndPostFX()
-		refreshListeners()
-		if enabled then
-			self:RescanWorkspaceAsync()
+	function Material:SetSelectedItem(itemId: string)
+		config.SelectedItem = itemId
+		table.clear(skippedNodes)
+		if config.ScanEsp or config.ShowBeam then
+			updateVisuals()
 		end
 	end
 
-	function FixLag:SetParticlesAndTrails(enabled: boolean)
-		config.ParticlesAndTrails = enabled
-		if not enabled then
-			restoreParticles()
-		end
-		refreshListeners()
-		if enabled then
-			self:RescanWorkspaceAsync()
+	function Material:SetMaxDistance(dist: number)
+		config.MaxDistance = math.max(100, dist)
+		if config.ScanEsp or config.ShowBeam then
+			updateVisuals()
 		end
 	end
 
-	function FixLag:SetMaterialsAndTextures(enabled: boolean)
-		config.MaterialsAndTextures = enabled
-		if not enabled then
-			restoreMaterialsAndTextures()
+	function Material:GetMaterialOptions(): ({ string }, { [string]: string })
+		local options: { string } = { "Tất cả Material [ALL]" }
+		local labelToId: { [string]: string } = {
+			["Tất cả Material [ALL]"] = "ALL",
+		}
+		local addedIds: { [string]: boolean } = {}
+
+		local function pushItem(id: string, display: string?)
+			if addedIds[id] then
+				return
+			end
+			addedIds[id] = true
+			local itemName = display or getItemMeta(id)
+			local label = ("%s [%s]"):format(itemName, id)
+			table.insert(options, label)
+			labelToId[label] = id
 		end
-		refreshListeners()
-		if enabled then
-			self:RescanWorkspaceAsync()
+
+		local priority = {
+			"Scrap",
+			"Electronics",
+			"BottledWater",
+			"Beer",
+			"MagmaShard",
+			"FrostGem",
+			"DeepQuartz",
+			"UnstableOrganicFluid",
+			"PlutonicQuarks",
+			"PureCesium",
+			"GreenCrystals",
+			"Antimatter",
+			"FroopyGoo",
+			"KalaxianCrystal",
+			"GearParts",
+			"MoonRock",
+			"RedOre",
+			"CryoIce",
+		}
+		for _, id in ipairs(priority) do
+			pushItem(id)
 		end
+
+		local gd = getGameData()
+		if gd and type(gd.Items) == "table" then
+			local extra: { { id: string, name: string } } = {}
+			for id, meta in pairs(gd.Items) do
+				if type(meta) == "table" and not addedIds[id] and not meta.gadget and not meta.gear and not meta.tool and id ~= "PortalFluid" then
+					table.insert(extra, { id = id, name = tostring(meta.name or id) })
+				end
+			end
+			table.sort(extra, function(a, b)
+				return a.name < b.name
+			end)
+			for _, entry in ipairs(extra) do
+				pushItem(entry.id, entry.name)
+			end
+		end
+
+		return options, labelToId
 	end
 
-	function FixLag:SetLowTerrain(enabled: boolean)
-		config.LowTerrain = enabled
-		applyTerrain()
+	function Material:GetStatusText(): string
+		if not (config.ScanEsp or config.ShowBeam or config.AutoCollect) then
+			local _, countsByName = scanMatchingNodes(true)
+			local totalAvail = 0
+			for _, c in pairs(countsByName) do
+				totalAvail += c
+			end
+			return ("Quanh bạn: %d material sẵn sàng | Đã nhặt: %d\nTrạng thái: Đang TẮT"):format(totalAvail, collectedCount)
+		end
+		return ("%s\nAuto nhặt: %s (đã nhặt: %d)"):format(lastSummaryText, lastCollectMsg, collectedCount)
 	end
 
-	function FixLag:SetSkipCharacters(enabled: boolean)
-		if config.SkipCharacters == enabled then
-			return
-		end
-		config.SkipCharacters = enabled
-		if config.ParticlesAndTrails then
-			restoreParticles()
-		end
-		if config.MaterialsAndTextures then
-			restoreMaterialsAndTextures()
-		end
-		self:RescanWorkspaceAsync()
-	end
-
-	function FixLag:SetAll(enabled: boolean)
-		config.ShadowsAndPostFX = enabled
-		config.ParticlesAndTrails = enabled
-		config.MaterialsAndTextures = enabled
-		config.LowTerrain = enabled
-
-		applyLightingAndPostFX()
-		applyTerrain()
-		if not enabled then
-			scanToken += 1
-			restoreParticles()
-			restoreMaterialsAndTextures()
-		end
-		refreshListeners()
-		if enabled then
-			self:RescanWorkspaceAsync()
-		end
-	end
-
-	function FixLag:GetActiveCount(): number
-		local n = 0
-		if config.ShadowsAndPostFX then n += 1 end
-		if config.ParticlesAndTrails then n += 1 end
-		if config.MaterialsAndTextures then n += 1 end
-		if config.LowTerrain then n += 1 end
-		return n
-	end
-
-	function FixLag:Destroy()
+	function Material:Destroy()
 		destroyed = true
-		self:SetAll(false)
-		if workspaceConn then
-			workspaceConn:Disconnect()
-			workspaceConn = nil
-		end
-		if lightingConn then
-			lightingConn:Disconnect()
-			lightingConn = nil
-		end
+		config.ScanEsp = false
+		config.ShowBeam = false
+		config.AutoCollect = false
+		autoLoopToken += 1
+		refreshLoopState()
+		clearAllVisuals()
 	end
 
-	return FixLag
+	return Material
 end)()
 
 --====================================================
@@ -2161,7 +2641,7 @@ local Esp = (function()
 end)()
 
 --====================================================
--- 4. AUTOMATION MODULE (AUTO RESEARCH & FAST CRAFT)
+-- 4. AUTOMATION MODULE (AUTO RESEARCH 3 BƯỚC & FAST CRAFT)
 --====================================================
 local Automation = (function()
 	local HttpService = game:GetService("HttpService")
@@ -2191,7 +2671,7 @@ local Automation = (function()
 	local researchConfig = {
 		AutoEnabled = false,
 		Interval = 1.2,
-		ConfirmDelay = 9,
+		ConfirmDelay = 11.5,
 	}
 
 	local lastResearchMsg = "Chưa chạy"
@@ -2234,16 +2714,25 @@ local Automation = (function()
 		if targetSec <= 0 then
 			return true
 		end
+		local jitter = if targetSec >= 5 then (math.random(15, 45) / 100) else 0
+		local effectiveTarget = targetSec + jitter
+
 		while not destroyed do
 			if requireAutoEnabled and not researchConfig.AutoEnabled then
 				return false
 			end
 			local elapsed = os.clock() - startClock
-			local remain = targetSec - elapsed
+			local remain = effectiveTarget - elapsed
 			if remain <= 0 then
 				return true
 			end
-			lastResearchMsg = ("Đang thí nghiệm %s (còn %.1fs)"):format(labelName, remain)
+			local progress = math.clamp(elapsed / effectiveTarget, 0, 1)
+			local stepLabel = if progress < 0.32
+				then "Bước 1/3 (Quét điểm)"
+				elseif progress < 0.64 then "Bước 2/3 (Nối mạch)"
+				elseif progress < 0.92 then "Bước 3/3 (Cân chỉnh/Pha)"
+				else "Hoàn tất thí nghiệm"
+			lastResearchMsg = ("%s - %s (còn %.1fs)"):format(stepLabel, labelName, remain)
 			task.wait(math.min(0.25, remain))
 		end
 		return false
@@ -2282,7 +2771,7 @@ local Automation = (function()
 						notebookLabBusy = true
 						local r = if type(args) == "table" then args.research else nil
 						local rName = tostring(if type(r) == "table" then (r.name or r.id) else "Research")
-						local waitSec = math.max(researchConfig.ConfirmDelay, learnedMinDelay, 9)
+						local waitSec = math.max(researchConfig.ConfirmDelay, learnedMinDelay, 11.5)
 						local okWait = waitExperimentWindow(waitSec, rName, os.clock(), true)
 						notebookLabBusy = false
 						if not okWait then
@@ -2986,7 +3475,6 @@ end)()
 -- 5. CONTROLLER CHÍNH (TẤT CẢ TOGGLE MẶC ĐỊNH = OFF)
 --====================================================
 local RunService = game:GetService("RunService")
-local Stats = game:GetService("Stats")
 
 local ESP_COLORS: { [string]: Color3 } = {
 	Cyan = Color3.fromRGB(56, 189, 248),
@@ -2999,7 +3487,7 @@ local ESP_COLORS: { [string]: Color3 } = {
 
 local Window = Rayfield:CreateWindow({
 	Name = "Rayfield Client Menu",
-	Subtitle = "StarterPlayerScripts • Fix Lag, ESP, Research & Craft",
+	Subtitle = "StarterPlayerScripts • Material, ESP, Research & Craft",
 	ToggleKey = Enum.KeyCode.RightShift,
 	DisplayOrder = 500,
 })
@@ -3013,95 +3501,103 @@ Automation:SetNotifyCallback(function(title: string, content: string, color: Col
 	})
 end)
 
--- TAB 1: FIX LAG
-local FixLagTab = Window:CreateTab("Fix Lag")
+Material:SetNotifyCallback(function(title: string, content: string, color: Color3?)
+	Window:Notify({
+		Title = title,
+		Content = content,
+		Duration = 2.5,
+		Color = color,
+	})
+end)
 
-FixLagTab:CreateSection("Giám sát hiệu năng")
-local perfStatus = FixLagTab:CreateParagraph({
-	Title = "Trạng thái Client",
-	Content = "FPS: -- | Memory: -- MB | Tối ưu đang bật: 0/4",
+-- TAB 1: AUTO DÒ QUÉT & TÌM KIẾM MATERIAL
+local MaterialTab = Window:CreateTab("Material")
+
+MaterialTab:CreateSection("Trạng thái Dò Quét")
+local materialStatus = MaterialTab:CreateParagraph({
+	Title = "Radar Material",
+	Content = Material:GetStatusText(),
 })
 
-FixLagTab:CreateSection("Tối ưu nhanh")
+MaterialTab:CreateSection("Bộ lọc & Tìm kiếm")
 
-local tglShadows: any
-local tglParticles: any
-local tglMaterials: any
-local tglTerrain: any
-local tglMasterFixLag: any
-
-local function syncMasterToggle()
-	local allOn = tglShadows:Get() and tglParticles:Get() and tglMaterials:Get() and tglTerrain:Get()
-	tglMasterFixLag:Set(allOn, true)
+local matOpts, matMap = Material:GetMaterialOptions()
+if matOpts[1] and matMap[matOpts[1]] then
+	Material:SetSelectedItem(matMap[matOpts[1]])
 end
 
-tglMasterFixLag = FixLagTab:CreateToggle({
-	Name = "Bật tất cả Fix Lag",
-	Description = "Tối ưu toàn diện (Lighting, Shadows, Particles, Materials, Terrain)",
+MaterialTab:CreateDropdown({
+	Name = "Chọn Material cần tìm",
+	Options = matOpts,
+	CurrentOption = matOpts[1],
+	Callback = function(option: string)
+		local itemId = matMap[option] or "ALL"
+		Material:SetSelectedItem(itemId)
+		materialStatus:Set({ Content = Material:GetStatusText() })
+	end,
+})
+
+MaterialTab:CreateSlider({
+	Name = "Bán kính dò quét",
+	Range = { 200, 8000 },
+	Increment = 200,
+	Suffix = "m",
+	CurrentValue = 3000,
+	Callback = function(value: number)
+		Material:SetMaxDistance(value)
+	end,
+})
+
+local tglMatScanEsp = MaterialTab:CreateToggle({
+	Name = "Bật Dò Quét Material (ESP)",
+	Description = "Đánh dấu vị trí & khoảng cách các Material sẵn sàng thu thập",
 	CurrentValue = false,
 	Callback = function(enabled: boolean)
-		FixLag:SetAll(enabled)
-		tglShadows:Set(enabled, true)
-		tglParticles:Set(enabled, true)
-		tglMaterials:Set(enabled, true)
-		tglTerrain:Set(enabled, true)
+		Material:SetScanEsp(enabled)
 		Window:Notify({
-			Title = "Fix Lag",
-			Content = if enabled then "Đã bật toàn bộ tối ưu FPS." else "Đã khôi phục đồ họa mặc định.",
-			Duration = 2.5,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(56, 189, 248),
+			Title = "Material Radar",
+			Content = if enabled then "Đã BẬT Dò Quét Material." else "Đã TẮT Dò Quét Material.",
+			Duration = 2,
+			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
 		})
 	end,
 })
 
-FixLagTab:CreateSection("Tùy chỉnh chi tiết")
-
-tglShadows = FixLagTab:CreateToggle({
-	Name = "Tắt Shadows & Post-FX",
-	Description = "Tắt GlobalShadows, Light.Shadows, Bloom/Blur/SunRays",
+local tglMatBeam = MaterialTab:CreateToggle({
+	Name = "Tia dẫn đường tới Material gần nhất",
+	Description = "Vẽ tia sáng chỉ hướng tới Material hoặc vùng Wild Lands gần nhất",
 	CurrentValue = false,
 	Callback = function(enabled: boolean)
-		FixLag:SetShadowsAndPostFX(enabled)
-		syncMasterToggle()
+		Material:SetShowBeam(enabled)
 	end,
 })
 
-tglParticles = FixLagTab:CreateToggle({
-	Name = "Tắt Particles, Trails & Beams",
-	Description = "Ẩn ParticleEmitter, Trail, Beam, Smoke, Fire, Sparkles",
+local tglMatAutoCollect = MaterialTab:CreateToggle({
+	Name = "Auto Tìm kiếm & Tự nhặt Material",
+	Description = "Tự tìm đường chạy tới Material gần nhất và thu thập",
 	CurrentValue = false,
 	Callback = function(enabled: boolean)
-		FixLag:SetParticlesAndTrails(enabled)
-		syncMasterToggle()
+		Material:SetAutoCollect(enabled)
+		Window:Notify({
+			Title = "Auto Material",
+			Content = if enabled then "Đã BẬT Auto Tìm & Nhặt Material." else "Đã TẮT Auto Nhặt Material.",
+			Duration = 2.5,
+			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
+		})
 	end,
 })
 
-tglMaterials = FixLagTab:CreateToggle({
-	Name = "SmoothPlastic & Ẩn Textures/Decals",
-	Description = "Đổi vật liệu sang SmoothPlastic và ẩn Decal/Texture nặng",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		FixLag:SetMaterialsAndTextures(enabled)
-		syncMasterToggle()
-	end,
-})
-
-tglTerrain = FixLagTab:CreateToggle({
-	Name = "Giảm hiệu ứng Nước / Terrain",
-	Description = "Tắt sóng nước, phản chiếu và độ trong suốt nước",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		FixLag:SetLowTerrain(enabled)
-		syncMasterToggle()
-	end,
-})
-
-local tglSkipChars = FixLagTab:CreateToggle({
-	Name = "Giữ nguyên ngoại hình Nhân vật",
-	Description = "Không thay đổi material/texture trên nhân vật người chơi",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		FixLag:SetSkipCharacters(enabled)
+MaterialTab:CreateButton({
+	Name = "Quét nhanh ngay",
+	Description = "Cập nhật danh sách & khoảng cách Material xung quanh",
+	Callback = function()
+		local summary = Material:ScanNow()
+		materialStatus:Set({ Content = Material:GetStatusText() })
+		Window:Notify({
+			Title = "Quét Material",
+			Content = summary,
+			Duration = 3,
+		})
 	end,
 })
 
@@ -3210,13 +3706,13 @@ ResearchTab:CreateSection("Auto Research")
 
 local tglAutoResearch = ResearchTab:CreateToggle({
 	Name = "Bật Auto Research nhanh",
-	Description = "Tự quét & nghiên cứu lần lượt từ Lv/IQ thấp lên cao, bỏ qua minigame",
+	Description = "Mô phỏng 3 bước tự nhiên (không quá nhanh) để tránh bị Cancel",
 	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		Automation:SetAutoResearch(enabled)
 		Window:Notify({
 			Title = "Auto Research",
-			Content = if enabled then "Đã BẬT Auto Research nhanh." else "Đã TẮT Auto Research.",
+			Content = if enabled then "Đã BẬT Auto Research (nhịp 3 bước an toàn)." else "Đã TẮT Auto Research.",
 			Duration = 2.5,
 			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
 		})
@@ -3224,11 +3720,11 @@ local tglAutoResearch = ResearchTab:CreateToggle({
 })
 
 ResearchTab:CreateSlider({
-	Name = "Độ trễ xác nhận Research",
+	Name = "Thời gian hoàn tất 3 bước",
 	Range = { 0, 20 },
 	Increment = 0.5,
 	Suffix = "s",
-	CurrentValue = 9,
+	CurrentValue = 11.5,
 	Callback = function(value: number)
 		Automation:SetResearchConfirmDelay(value)
 	end,
@@ -3325,16 +3821,14 @@ SettingsTab:CreateSection("Khôi phục & Dọn dẹp")
 
 SettingsTab:CreateButton({
 	Name = "Tắt tất cả & Khôi phục mặc định",
-	Description = "Tắt Fix Lag, ESP, Auto Research, Auto Craft",
+	Description = "Tắt Material, ESP, Auto Research, Auto Craft",
 	Callback = function()
-		FixLag:SetAll(false)
-		FixLag:SetSkipCharacters(false)
-		tglMasterFixLag:Set(false, true)
-		tglShadows:Set(false, true)
-		tglParticles:Set(false, true)
-		tglMaterials:Set(false, true)
-		tglTerrain:Set(false, true)
-		tglSkipChars:Set(false, true)
+		Material:SetScanEsp(false)
+		Material:SetShowBeam(false)
+		Material:SetAutoCollect(false)
+		tglMatScanEsp:Set(false, true)
+		tglMatBeam:Set(false, true)
+		tglMatAutoCollect:Set(false, true)
 
 		Esp:SetEnabled(false)
 		Esp:SetShowHighlight(false)
@@ -3356,7 +3850,7 @@ SettingsTab:CreateButton({
 
 		Window:Notify({
 			Title = "Khôi phục",
-			Content = "Đã tắt toàn bộ Fix Lag, ESP, Auto Research & Auto Craft.",
+			Content = "Đã tắt toàn bộ Material, ESP, Auto Research & Auto Craft.",
 			Duration = 2.5,
 		})
 	end,
@@ -3366,37 +3860,29 @@ local monitorConn: RBXScriptConnection? = nil
 
 SettingsTab:CreateButton({
 	Name = "Đóng hoàn toàn Menu",
-	Description = "Dọn dẹp toàn bộ UI, Fix Lag, ESP và Automation trong phiên chơi này",
+	Description = "Dọn dẹp toàn bộ UI, Material, ESP và Automation trong phiên chơi này",
 	Callback = function()
 		if monitorConn then
 			monitorConn:Disconnect()
 			monitorConn = nil
 		end
-		FixLag:Destroy()
+		Material:Destroy()
 		Esp:Destroy()
 		Automation:Destroy()
 		Window:Destroy()
 	end,
 })
 
-local frameCount = 0
 local elapsed = 0
 monitorConn = RunService.RenderStepped:Connect(function(dt: number)
-	frameCount += 1
 	elapsed += dt
 	if elapsed < 0.25 then
 		return
 	end
-	local fps = math.round(frameCount / elapsed)
-	frameCount = 0
 	elapsed = 0
 
-	local memMb = math.round(Stats:GetTotalMemoryUsageMb())
-	local activeCount = FixLag:GetActiveCount()
-	local espState = if Esp:IsEnabled() then "BẬT" else "TẮT"
-
-	perfStatus:Set({
-		Content = ("FPS: %d | RAM: %d MB | Fix Lag: %d/4 | ESP: %s"):format(fps, memMb, activeCount, espState),
+	materialStatus:Set({
+		Content = Material:GetStatusText(),
 	})
 	researchStatus:Set({
 		Content = Automation:GetResearchStatusText(),
