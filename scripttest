@@ -1,4 +1,4 @@
--- Rayfield Menu + Material + ESP + Auto Research + Fast Craft + Combat/Guardian/Mission (Low-End Optimized DeltaX & PC Bundle)
+-- Rayfield Menu + Material + ESP + Auto Research + Fast Craft + Combat/Guardian/Mission (Instant Teleport Loot & Low-End Bundle)
 local __modules = {}
 local __cache = {}
 local function __req(name)
@@ -2024,14 +2024,17 @@ end
 __modules["MaterialModule"] = function()
 --[[
 	MaterialModule
-	Auto scan, ESP/guide beam visualization, and Auto Fly + Collect for Materials in PortalG.
+	Auto scan, ESP/guide beam visualization, and Instant Teleport + Anti-Hang Auto Loot for Materials in PortalG.
 	Uses CollectionService("ResourceNode"), GameData.Items, Biome attributes, and ProximityPrompt.
-	Compatible with Roblox Studio and DeltaX Mobile.
+	Includes Fly / Walk fallbacks, GroundGuard/PromptUI anti-lock guards, and self-healing recovery.
+	Compatible with Roblox Studio, DeltaX Mobile, and weak PC executors.
 ]]
 
 local CollectionService = game:GetService("CollectionService")
+local HttpService = game:GetService("HttpService")
 local PathfindingService = game:GetService("PathfindingService")
 local Players = game:GetService("Players")
+local ProximityPromptService = game:GetService("ProximityPromptService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
@@ -2091,8 +2094,9 @@ local config = {
 	AutoCollect = false,
 	SelectedItem = "ALL",
 	MaxDistance = 3000,
-	MoveMode = "FlyNoclip", -- "FlyNoclip" | "FlySolid" | "Walk"
+	MoveMode = "Teleport", -- "Teleport" | "FlyNoclip" | "FlySolid" | "Walk"
 	FlySpeed = 90,
+	LootDelay = 0.05,
 }
 
 local cachedGameData = nil
@@ -2114,6 +2118,18 @@ local flyActive = false
 local savedCollide = {}
 local autoLoopToken = 0
 local skippedNodes = {}
+local nodeFailCounts: { [Instance]: number } = {}
+local activeHeldPrompt: ProximityPrompt? = nil
+local consecutiveLootFails = 0
+local holdNeedsRealHold = false
+local lootAnchoredSelf = false
+local bagCacheRaw = ""
+local bagCacheTbl: { [string]: number } = {}
+local sharedLootParams = RaycastParams.new()
+sharedLootParams.FilterType = Enum.RaycastFilterType.Exclude
+sharedLootParams.RespectCanCollide = true
+sharedLootParams.IgnoreWater = true
+
 local lastCollectMsg = "Disabled"
 local lastSummaryText = "Scanner is off"
 local notifyCallback = nil
@@ -2129,7 +2145,7 @@ local missionSafeFilter = false
 local teleportForceToken = 0
 local worldInfoChecked = false
 local cachedWorldInfo: any = nil
-local nodeInfoCache: { [Instance]: { anchorPart: BasePart?, prompt: ProximityPrompt?, isAttach: boolean?, attachObj: Attachment? } } = {}
+local nodeInfoCache: { [Instance]: { anchorPart: BasePart?, prompt: ProximityPrompt?, isAttach: boolean?, attachObj: Attachment?, cachedAt: number? } } = {}
 local charPartsCache: { BasePart } = {}
 local charCachedRef: Model? = nil
 local cachedOffAvail = 0
@@ -2275,11 +2291,13 @@ local function getRootPart(): BasePart?
 end
 
 local function resolveNodePartAndPrompt(node: Instance): (BasePart?, ProximityPrompt?, Vector3?)
+	local now = os.clock()
 	local cached = nodeInfoCache[node]
 	if cached then
 		local p = cached.prompt
 		local a = cached.anchorPart
-		if (p == nil or p.Parent ~= nil) and (a == nil or a.Parent ~= nil) then
+		local promptStillFresh = (p ~= nil and p.Parent ~= nil) or (p == nil and (now - (cached.cachedAt or 0)) < 0.35)
+		if promptStillFresh and (a == nil or a.Parent ~= nil) then
 			if cached.isAttach and cached.attachObj and cached.attachObj.Parent then
 				return a, p, cached.attachObj.WorldPosition
 			elseif a then
@@ -2289,21 +2307,21 @@ local function resolveNodePartAndPrompt(node: Instance): (BasePart?, ProximityPr
 		nodeInfoCache[node] = nil
 	end
 
-	local prompt = node:FindFirstChild("HarvestPrompt", true)
+	local prompt = node:FindFirstChild("HarvestPrompt", true) or node:FindFirstChildWhichIsA("ProximityPrompt", true)
 	local validPrompt: ProximityPrompt? = if prompt and prompt:IsA("ProximityPrompt") then prompt else nil
 
 	if node:IsA("BasePart") then
-		nodeInfoCache[node] = { anchorPart = node, prompt = validPrompt }
+		nodeInfoCache[node] = { anchorPart = node, prompt = validPrompt, cachedAt = now }
 		return node, validPrompt, node.Position
 	end
 
 	local anchor = node:FindFirstChild("HarvestAnchor", true)
 	if anchor then
 		if anchor:IsA("Attachment") and anchor.Parent and anchor.Parent:IsA("BasePart") then
-			nodeInfoCache[node] = { anchorPart = anchor.Parent, prompt = validPrompt, isAttach = true, attachObj = anchor }
+			nodeInfoCache[node] = { anchorPart = anchor.Parent, prompt = validPrompt, isAttach = true, attachObj = anchor, cachedAt = now }
 			return anchor.Parent, validPrompt, anchor.WorldPosition
 		elseif anchor:IsA("BasePart") then
-			nodeInfoCache[node] = { anchorPart = anchor, prompt = validPrompt }
+			nodeInfoCache[node] = { anchorPart = anchor, prompt = validPrompt, cachedAt = now }
 			return anchor, validPrompt, anchor.Position
 		end
 	end
@@ -2311,10 +2329,10 @@ local function resolveNodePartAndPrompt(node: Instance): (BasePart?, ProximityPr
 	if validPrompt and validPrompt.Parent then
 		if validPrompt.Parent:IsA("Attachment") and validPrompt.Parent.Parent and validPrompt.Parent.Parent:IsA("BasePart") then
 			local att = validPrompt.Parent
-			nodeInfoCache[node] = { anchorPart = att.Parent, prompt = validPrompt, isAttach = true, attachObj = att }
+			nodeInfoCache[node] = { anchorPart = att.Parent, prompt = validPrompt, isAttach = true, attachObj = att, cachedAt = now }
 			return att.Parent, validPrompt, att.WorldPosition
 		elseif validPrompt.Parent:IsA("BasePart") then
-			nodeInfoCache[node] = { anchorPart = validPrompt.Parent, prompt = validPrompt }
+			nodeInfoCache[node] = { anchorPart = validPrompt.Parent, prompt = validPrompt, cachedAt = now }
 			return validPrompt.Parent, validPrompt, validPrompt.Parent.Position
 		end
 	end
@@ -2322,7 +2340,7 @@ local function resolveNodePartAndPrompt(node: Instance): (BasePart?, ProximityPr
 	if node:IsA("Model") then
 		local part = node.PrimaryPart or node:FindFirstChildWhichIsA("BasePart", true)
 		if part then
-			nodeInfoCache[node] = { anchorPart = part, prompt = validPrompt }
+			nodeInfoCache[node] = { anchorPart = part, prompt = validPrompt, cachedAt = now }
 			return part, validPrompt, part.Position
 		end
 	end
@@ -2868,17 +2886,99 @@ local function startFlightSession(): boolean
 	return true
 end
 
+local function endActivePromptHold()
+	local pr = activeHeldPrompt
+	activeHeldPrompt = nil
+	if pr and pr.Parent then
+		pcall(function()
+			pr:InputHoldEnd()
+		end)
+	end
+end
+
+local function releaseLootPhysics()
+	endActivePromptHold()
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local root = getRootPart()
+	if char then
+		pcall(function()
+			if char:GetAttribute("FallRagdoll") then char:SetAttribute("FallRagdoll", nil) end
+			if char:GetAttribute("LocalLimp") then char:SetAttribute("LocalLimp", nil) end
+		end)
+	end
+	if root then
+		if lootAnchoredSelf or root.Anchored then
+			root.Anchored = false
+		end
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+	end
+	lootAnchoredSelf = false
+	if hum and hum.Parent then
+		if hum.PlatformStand then
+			hum.PlatformStand = false
+		end
+		if hum.Health > 0 then
+			local st = hum:GetState()
+			if st == Enum.HumanoidStateType.Physics or st == Enum.HumanoidStateType.Ragdoll or st == Enum.HumanoidStateType.FallingDown then
+				pcall(function()
+					hum:ChangeState(Enum.HumanoidStateType.Running)
+				end)
+			end
+		end
+	end
+end
+
+local function recoverFromLootHang(reason: string?)
+	releaseLootPhysics()
+	pcall(function()
+		local char = LocalPlayer.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if not (hum and hum.SeatPart) then
+			ProximityPromptService.Enabled = false
+			RunService.Heartbeat:Wait()
+			ProximityPromptService.Enabled = true
+		end
+	end)
+	lastCollectMsg = reason or "Resetting prompt & physics state..."
+	task.wait(0.18)
+end
+
+local function getBagCountForItem(itemId: string): number
+	if itemId == "" then
+		return 0
+	end
+	local raw = LocalPlayer:GetAttribute("Bag")
+	if type(raw) ~= "string" or raw == "" then
+		return 0
+	end
+	if raw ~= bagCacheRaw then
+		bagCacheRaw = raw
+		local ok, dec = pcall(function()
+			return HttpService:JSONDecode(raw)
+		end)
+		bagCacheTbl = if ok and type(dec) == "table" then dec else {}
+	end
+	return tonumber(bagCacheTbl[itemId]) or 0
+end
+
 local function stopFlightSession()
 	local wasFlying = flyActive
 	flyActive = false
 	setNoclipEnabled(false)
+	endActivePromptHold()
 	local char = LocalPlayer.Character
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
 	local root = getRootPart()
 	if root then
+		if lootAnchoredSelf then
+			root.Anchored = false
+		end
 		root.AssemblyLinearVelocity = Vector3.zero
 		root.AssemblyAngularVelocity = Vector3.zero
 	end
+	lootAnchoredSelf = false
 	if wasFlying and hum and hum.Parent then
 		hum.PlatformStand = false
 		if hum.Health > 0 then
@@ -3084,14 +3184,220 @@ local function moveTowardsTarget(targetPos: Vector3, stopDist: number, token: nu
 	end
 end
 
-local function fireOrHoldPrompt(prompt: ProximityPrompt, shouldContinue: () -> boolean, acceptDisabledAsSuccess: boolean?): boolean
+local function computeSafeLootStandPos(targetPos: Vector3, targetNode: Instance?): Vector3
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local scale = if char then math.clamp(char:GetScale(), 0.7, 2.5) else 1
+	local filterList = {}
+	if char then table.insert(filterList, char) end
+	if targetNode then table.insert(filterList, targetNode) end
+	sharedLootParams.FilterDescendantsInstances = filterList
+
+	local offsets = {
+		Vector3.new(0, 0, -3.4),
+		Vector3.new(0, 0, 3.4),
+		Vector3.new(3.4, 0, 0),
+		Vector3.new(-3.4, 0, 0),
+		Vector3.zero,
+	}
+	for _, off in ipairs(offsets) do
+		local probe = targetPos + off
+		local downHit = workspace:Raycast(probe + Vector3.new(0, 12, 0), Vector3.new(0, -24, 0), sharedLootParams)
+		if downHit and downHit.Instance and downHit.Normal.Y >= 0.55 then
+			local cand = downHit.Position + Vector3.new(0, 3.05 * scale, 0)
+			if (cand - targetPos).Magnitude <= 8.5 then
+				local upHit = workspace:Raycast(downHit.Position + Vector3.new(0, 0.6, 0), Vector3.new(0, 5.2 * scale, 0), sharedLootParams)
+				if not upHit then
+					return cand
+				end
+			end
+		end
+	end
+	if hum and hum.Health > 0 then
+		return targetPos + Vector3.new(0, 2.4 * scale, 0)
+	end
+	return targetPos + Vector3.new(0, 2.4, 0)
+end
+
+local function teleportToLootNode(targetPos: Vector3, token: number, targetNode: Instance?, targetPrompt: ProximityPrompt?): (boolean, string)
+	if destroyed or not config.AutoCollect or token ~= autoLoopToken or config.MoveMode ~= "Teleport" then
+		return false, "stopped"
+	end
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local root = getRootPart()
+	if not char or not hum or not root or hum.Health <= 0 then
+		return false, "dead"
+	end
+	if targetNode and not targetNode.Parent then
+		return false, "gone"
+	end
+	if targetPrompt and (not targetPrompt.Parent or not targetPrompt.Enabled) then
+		return false, "disabled"
+	end
+	local allowSpace = (LocalPlayer:GetAttribute("InOrbit") == true)
+	local safeOk = isPositionSafeForDimension(targetPos, allowSpace)
+	if not safeOk then
+		return false, "unsafe"
+	end
+
+	-- Fast path: if already well inside prompt range, no teleport wait needed
+	local maxAct = if targetPrompt then (targetPrompt.MaxActivationDistance or 10) else 10
+	local curDist = (targetPos - root.Position).Magnitude
+	if curDist <= math.max(5.5, math.min(maxAct - 1.5, 9)) then
+		hum.Sit = false
+		hum.PlatformStand = false
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+		return true, "reached"
+	end
+
+	-- Non-blocking pre-stream burst for far jumps (>110 studs) with 0.35s timeout cap
+	if curDist > 110 then
+		local streamDone = false
+		task.spawn(function()
+			pcall(function()
+				LocalPlayer:RequestStreamAroundAsync(targetPos, 1.5)
+			end)
+			streamDone = true
+		end)
+		local streamDeadline = os.clock() + 0.35
+		while not streamDone and os.clock() < streamDeadline do
+			if destroyed or not config.AutoCollect or token ~= autoLoopToken then
+				return false, "stopped"
+			end
+			if targetNode and not targetNode.Parent then return false, "gone" end
+			task.wait(0.03)
+		end
+	end
+
+	char = LocalPlayer.Character
+	hum = char and char:FindFirstChildOfClass("Humanoid")
+	root = getRootPart()
+	if not char or not hum or not root or hum.Health <= 0 then
+		return false, "dead"
+	end
+	if targetNode and not targetNode.Parent then
+		return false, "gone"
+	end
+	if targetPrompt and (not targetPrompt.Parent or not targetPrompt.Enabled) then
+		return false, "disabled"
+	end
+
+	local standPos = computeSafeLootStandPos(targetPos, targetNode)
+	local cam = workspace.CurrentCamera
+	local relCam: CFrame? = nil
+	if cam and (cam.CFrame.Position - root.Position).Magnitude <= 35 then
+		relCam = root.CFrame:ToObjectSpace(cam.CFrame)
+	end
+
+	local flatTarget = Vector3.new(targetPos.X, standPos.Y, targetPos.Z)
+	local destCF = if (flatTarget - standPos).Magnitude > 0.8
+		then CFrame.lookAt(standPos, flatTarget)
+		else (CFrame.new(standPos) * (root.CFrame - root.CFrame.Position))
+
+	endActivePromptHold()
+	hum.Sit = false
+	hum.PlatformStand = false
+	pcall(function()
+		if char:GetAttribute("FallRagdoll") then char:SetAttribute("FallRagdoll", nil) end
+		if char:GetAttribute("LocalLimp") then char:SetAttribute("LocalLimp", nil) end
+	end)
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+
+	-- Keep root.Anchored = false during teleport so Roblox replicates Client->Server CFrame immediately
+	char:PivotTo(destCF)
+	root.Anchored = false
+	lootAnchoredSelf = false
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+	if cam then
+		if relCam then
+			local nextCamCF = root.CFrame * relCam
+			local toTarget = targetPos - nextCamCF.Position
+			if toTarget.Magnitude > 0.5 and nextCamCF.LookVector:Dot(toTarget.Unit) < 0.35 then
+				nextCamCF = CFrame.lookAt(nextCamCF.Position, targetPos)
+			end
+			cam.CFrame = nextCamCF
+		else
+			cam.CameraType = Enum.CameraType.Custom
+			cam.CameraSubject = hum
+			local flatDir = Vector3.new(targetPos.X - standPos.X, 0, targetPos.Z - standPos.Z)
+			local dirUnit = if flatDir.Magnitude > 0.5 then flatDir.Unit else destCF.LookVector
+			local camPos = standPos - dirUnit * 11 + Vector3.new(0, 4.5, 0)
+			if (targetPos - camPos).Magnitude > 0.25 then
+				cam.CFrame = CFrame.lookAt(camPos, targetPos)
+			end
+		end
+		cam.Focus = CFrame.new(targetPos)
+	end
+
+	-- Adaptive Client->Server replication + PromptShown settle (keeps velocity damped while unanchored)
+	if curDist > 14 then
+		local settleTime = if curDist > 60 then 0.26 elseif curDist > 28 then 0.20 else 0.14
+		local settleDeadline = os.clock() + settleTime
+		while os.clock() < settleDeadline do
+			if not config.AutoCollect or token ~= autoLoopToken or destroyed then
+				releaseLootPhysics()
+				return false, "stopped"
+			end
+			if targetNode and not targetNode.Parent then
+				releaseLootPhysics()
+				return false, "gone"
+			end
+			if targetPrompt and (not targetPrompt.Parent or not targetPrompt.Enabled) then
+				releaseLootPhysics()
+				return false, "disabled"
+			end
+			local rNow = getRootPart()
+			if rNow then
+				rNow.AssemblyLinearVelocity = Vector3.zero
+				rNow.AssemblyAngularVelocity = Vector3.zero
+				if (rNow.Position - standPos).Magnitude > 4.0 and char.Parent then
+					char:PivotTo(destCF)
+					rNow.AssemblyLinearVelocity = Vector3.zero
+				end
+			end
+			task.wait(0.03)
+		end
+	end
+
+	if not config.AutoCollect or token ~= autoLoopToken or destroyed then
+		releaseLootPhysics()
+		return false, "stopped"
+	end
+	if targetNode and not targetNode.Parent then
+		releaseLootPhysics()
+		return false, "gone"
+	end
+	if targetPrompt and (not targetPrompt.Parent or not targetPrompt.Enabled) then
+		releaseLootPhysics()
+		return false, "disabled"
+	end
+
+	return true, "reached"
+end
+
+local function fireOrHoldPrompt(prompt: ProximityPrompt, shouldContinue: () -> boolean, acceptDisabledAsSuccess: boolean?, itemIdForBagCheck: string?): boolean
 	if not prompt or not prompt.Parent or not prompt.Enabled then
 		return false
 	end
 
+	-- Clear any stuck prompt from previous interaction before starting
+	endActivePromptHold()
+
 	local triggered = false
-	local conn = prompt.Triggered:Connect(function()
+	local hiddenOrGone = false
+	local bagBefore = if itemIdForBagCheck and itemIdForBagCheck ~= "" then getBagCountForItem(itemIdForBagCheck) else 0
+
+	local connTrig = prompt.Triggered:Connect(function()
 		triggered = true
+	end)
+	local connHidden = prompt.PromptHidden:Connect(function()
+		if not prompt.Parent or not prompt.Enabled then
+			hiddenOrGone = true
+		end
 	end)
 
 	local origLOS = prompt.RequiresLineOfSight
@@ -3104,7 +3410,7 @@ local function fireOrHoldPrompt(prompt: ProximityPrompt, shouldContinue: () -> b
 		else nil
 	local rootPart = getRootPart()
 	local rootPos: Vector3? = if rootPart then rootPart.Position else nil
-	local neededDist = if rootPos and pWorldPos then math.max(10, (pWorldPos - rootPos).Magnitude + 3.5) else 12
+	local neededDist = if rootPos and pWorldPos then math.max(12, (pWorldPos - rootPos).Magnitude + 4.5) else 14
 	local bumpedDist = false
 
 	local function ensurePromptReachable()
@@ -3117,64 +3423,156 @@ local function fireOrHoldPrompt(prompt: ProximityPrompt, shouldContinue: () -> b
 	end
 
 	pcall(function()
+		if not ProximityPromptService.Enabled then
+			local ch = LocalPlayer.Character
+			local hm = ch and ch:FindFirstChildOfClass("Humanoid")
+			if not (hm and hm.SeatPart) then
+				ProximityPromptService.Enabled = true
+			end
+		end
 		prompt.RequiresLineOfSight = false
 		prompt.Exclusivity = Enum.ProximityPromptExclusivity.AlwaysShow
 	end)
+	local function getPromptWorldPosNow(): Vector3?
+		local prt = prompt.Parent
+		if not prt then
+			return nil
+		end
+		if prt:IsA("Attachment") then
+			return prt.WorldPosition
+		elseif prt:IsA("BasePart") then
+			return prt.Position
+		elseif prt:IsA("Model") then
+			return prt:GetPivot().Position
+		end
+		local baseAnc = prompt:FindFirstAncestorWhichIsA("BasePart")
+		if baseAnc then
+			return baseAnc.Position
+		end
+		local mdlAnc = prompt:FindFirstAncestorWhichIsA("Model")
+		return if mdlAnc then mdlAnc:GetPivot().Position else nil
+	end
+	local camAdjusted = false
+	pcall(function()
+		local cam = workspace.CurrentCamera
+		local ch = LocalPlayer.Character
+		local hm = ch and ch:FindFirstChildOfClass("Humanoid")
+		local rt = ch and ch:FindFirstChild("HumanoidRootPart") :: BasePart?
+		local pPos = getPromptWorldPosNow()
+		if cam and rt and pPos then
+			local toPrompt = pPos - cam.CFrame.Position
+			local camFar = toPrompt.Magnitude > 40
+			local camFacingAway = toPrompt.Magnitude > 0.5 and cam.CFrame.LookVector:Dot(toPrompt.Unit) < 0.25
+			if camFar or camFacingAway then
+				if cam.CameraType ~= Enum.CameraType.Custom then
+					cam.CameraType = Enum.CameraType.Custom
+				end
+				if hm and cam.CameraSubject ~= hm then
+					cam.CameraSubject = hm
+				end
+				if camFar then
+					local flatDir = Vector3.new(pPos.X - rt.Position.X, 0, pPos.Z - rt.Position.Z)
+					local dirUnit = if flatDir.Magnitude > 0.5 then flatDir.Unit else rt.CFrame.LookVector
+					local camPos = rt.Position - dirUnit * 11 + Vector3.new(0, 4.5, 0)
+					if (pPos - camPos).Magnitude > 0.25 then
+						cam.CFrame = CFrame.lookAt(camPos, pPos)
+						camAdjusted = true
+					end
+				elseif (pPos - cam.CFrame.Position).Magnitude > 0.25 then
+					cam.CFrame = CFrame.lookAt(cam.CFrame.Position, pPos)
+					camAdjusted = true
+				end
+				cam.Focus = CFrame.new(pPos)
+			end
+		end
+	end)
+	if camAdjusted then
+		task.wait()
+	end
 	ensurePromptReachable()
 
 	local firePromptFn = resolveFirePromptFn()
-	if (origMaxDist <= 0.2 or origExcl ~= Enum.ProximityPromptExclusivity.AlwaysShow) and not firePromptFn then
-		-- Let ProximityPromptService promote this prompt immediately even when another [E] station is nearby
+	local holdDur = prompt.HoldDuration or 0
+	local hardDeadline = os.clock() + math.clamp(holdDur + 1.4, 1.1, 4.5)
+
+	if (bumpedDist or origMaxDist <= 0.2 or origExcl ~= Enum.ProximityPromptExclusivity.AlwaysShow) and not firePromptFn then
 		RunService.Heartbeat:Wait()
 		ensurePromptReachable()
 	end
 
-	for attempt = 1, 2 do
-		if not shouldContinue() or not prompt.Parent or not prompt.Enabled or triggered then
-			break
+	local function isPickedUp(): boolean
+		if triggered or hiddenOrGone or not prompt.Parent or not prompt.Enabled then
+			return true
 		end
-
-		ensurePromptReachable()
-		if firePromptFn then
-			pcall(firePromptFn, prompt)
-			local fastWaitEnd = os.clock() + 0.18
-			while os.clock() < fastWaitEnd do
-				if triggered or not prompt.Parent or not prompt.Enabled or not shouldContinue() then
-					break
-				end
-				ensurePromptReachable()
-				task.wait(0.03)
+		if itemIdForBagCheck and itemIdForBagCheck ~= "" then
+			if getBagCountForItem(itemIdForBagCheck) > bagBefore then
+				return true
 			end
 		end
+		return false
+	end
 
-		if not triggered and prompt.Parent and prompt.Enabled and shouldContinue() then
+	-- Phase 1: Try instant executor trigger if supported (skip direct instant retry on hold>0 if previously ignored)
+	if firePromptFn and (holdDur <= 0.05 or not holdNeedsRealHold) then
+		if shouldContinue() and prompt.Parent and prompt.Enabled and os.clock() < hardDeadline then
 			ensurePromptReachable()
-			pcall(function()
-				prompt:InputHoldBegin()
-			end)
-			local holdDur = math.max(0.08, prompt.HoldDuration + 0.16)
-			local endWait = os.clock() + holdDur
-			while os.clock() < endWait do
-				if triggered or not shouldContinue() or not prompt.Parent or not prompt.Enabled then
+			pcall(firePromptFn, prompt)
+			local fastWaitEnd = os.clock() + (if holdDur <= 0.05 then 0.14 else 0.11)
+			while os.clock() < fastWaitEnd and os.clock() < hardDeadline do
+				if isPickedUp() or not shouldContinue() then
 					break
 				end
 				ensurePromptReachable()
-				task.wait(0.04)
+				task.wait(0.02)
 			end
-			pcall(function()
-				prompt:InputHoldEnd()
-			end)
-			task.wait(0.12)
-		end
-
-		if triggered or not prompt.Parent or not prompt.Enabled then
-			break
-		end
-		if attempt == 1 then
-			task.wait(0.06)
+			if holdDur > 0.05 and not isPickedUp() then
+				holdNeedsRealHold = true
+			end
 		end
 	end
 
+	-- Phase 2: Native InputHoldBegin -> HoldDuration -> InputHoldEnd (guarded by hardDeadline)
+	if not isPickedUp() and shouldContinue() and os.clock() < hardDeadline then
+		ensurePromptReachable()
+		activeHeldPrompt = prompt
+		pcall(function()
+			prompt:InputHoldBegin()
+		end)
+		local targetHold = math.max(0.06, holdDur + 0.08)
+		local endWait = math.min(hardDeadline - 0.12, os.clock() + targetHold)
+		while os.clock() < endWait do
+			if isPickedUp() or not shouldContinue() then
+				break
+			end
+			ensurePromptReachable()
+			task.wait(0.03)
+		end
+		endActivePromptHold()
+
+		local settleEnd = math.min(hardDeadline, os.clock() + 0.12)
+		while os.clock() < settleEnd do
+			if isPickedUp() or not shouldContinue() then
+				break
+			end
+			task.wait(0.03)
+		end
+
+		-- Fast 1-tick retry for instant prompts if first InputHoldBegin happened on frame transition
+		if not isPickedUp() and holdDur <= 0.05 and shouldContinue() and prompt.Parent and prompt.Enabled and os.clock() + 0.16 < hardDeadline then
+			RunService.Heartbeat:Wait()
+			ensurePromptReachable()
+			activeHeldPrompt = prompt
+			pcall(function() prompt:InputHoldBegin() end)
+			local rEnd = math.min(hardDeadline, os.clock() + 0.07)
+			while os.clock() < rEnd do
+				if isPickedUp() or not shouldContinue() then break end
+				task.wait(0.02)
+			end
+			endActivePromptHold()
+		end
+	end
+
+	endActivePromptHold()
 	pcall(function()
 		if prompt.Parent then
 			prompt.RequiresLineOfSight = origLOS
@@ -3184,13 +3582,50 @@ local function fireOrHoldPrompt(prompt: ProximityPrompt, shouldContinue: () -> b
 			end
 		end
 	end)
-	conn:Disconnect()
+	connTrig:Disconnect()
+	connHidden:Disconnect()
 
 	if triggered then
 		return true
 	end
+	if itemIdForBagCheck and itemIdForBagCheck ~= "" and getBagCountForItem(itemIdForBagCheck) > bagBefore then
+		return true
+	end
 	if acceptDisabledAsSuccess then
-		return not prompt.Enabled or not prompt.Parent
+		return (not prompt.Enabled) or (not prompt.Parent)
+	end
+	return false
+end
+
+local function confirmResourceLooted(targetInfo, beforeBag: number): boolean
+	local itemId = tostring(targetInfo.itemId or "")
+	local node = targetInfo.node
+	local prompt = targetInfo.prompt
+	local function hasLootEvidence(): boolean
+		if not node or not node.Parent then
+			return true
+		end
+		if not prompt or not prompt.Parent or not prompt.Enabled then
+			return true
+		end
+		if itemId ~= "" and getBagCountForItem(itemId) > beforeBag then
+			return true
+		end
+		return false
+	end
+	if hasLootEvidence() then
+		return true
+	end
+	-- Wait briefly (up to 0.22s) for Server replication of Destroy/Enabled=false/Bag after Triggered
+	local deadline = os.clock() + 0.22
+	while os.clock() < deadline do
+		if destroyed or not config.AutoCollect then
+			return false
+		end
+		if hasLootEvidence() then
+			return true
+		end
+		task.wait(0.025)
 	end
 	return false
 end
@@ -3205,14 +3640,16 @@ local function triggerPromptSafe(targetInfo, token: number): boolean
 		return (not destroyed) and config.AutoCollect and (token == autoLoopToken)
 	end
 
-	-- Maintain hover position & zero velocity during HoldDuration while using Fly mode
+	local beforeBag = if targetInfo.itemId and targetInfo.itemId ~= "" then getBagCountForItem(targetInfo.itemId) else 0
+
+	-- In Fly modes maintain hover stability during HoldDuration; in Teleport mode root is already safely Anchored!
 	local hoverConn = nil
-	if config.MoveMode ~= "Walk" then
+	if config.MoveMode ~= "Walk" and config.MoveMode ~= "Teleport" then
 		local maxAct = prompt.MaxActivationDistance or 10
 		local hoverY = math.min(2.6, math.max(1.2, maxAct * 0.38))
 		local hoverPos = targetInfo.pos + Vector3.new(0, hoverY, 0)
 		hoverConn = RunService.Heartbeat:Connect(function()
-			if not stillActive() or config.MoveMode == "Walk" then
+			if not stillActive() or config.MoveMode == "Walk" or config.MoveMode == "Teleport" then
 				return
 			end
 			local root = getRootPart()
@@ -3229,12 +3666,53 @@ local function triggerPromptSafe(targetInfo, token: number): boolean
 		end)
 	end
 
-	local ok = fireOrHoldPrompt(prompt, stillActive, true)
+	local confirmed = false
+	local maxAttempts = if config.MoveMode == "Teleport" then 2 else 1
+	local nodeObj = targetInfo.node
+	local itemKey = tostring(targetInfo.itemId or "")
+	for attempt = 1, maxAttempts do
+		if (not nodeObj or not nodeObj.Parent) or not prompt.Parent or not prompt.Enabled or (itemKey ~= "" and getBagCountForItem(itemKey) > beforeBag) then
+			confirmed = true
+			break
+		end
+		if not stillActive() then
+			break
+		end
+		if attempt > 1 then
+			-- Wait briefly in-place so delayed ServerHRP replication finishes before retry
+			local waitEnd = os.clock() + 0.16
+			while os.clock() < waitEnd and stillActive() and prompt.Parent and prompt.Enabled do
+				local rNow = getRootPart()
+				if rNow then
+					rNow.AssemblyLinearVelocity = Vector3.zero
+					rNow.AssemblyAngularVelocity = Vector3.zero
+				end
+				task.wait(0.03)
+			end
+			if (not nodeObj or not nodeObj.Parent) or not prompt.Parent or not prompt.Enabled or (itemKey ~= "" and getBagCountForItem(itemKey) > beforeBag) then
+				confirmed = true
+				break
+			end
+			if not stillActive() then
+				break
+			end
+		end
+
+		fireOrHoldPrompt(prompt, stillActive, true, targetInfo.itemId)
+		if confirmResourceLooted(targetInfo, beforeBag) then
+			confirmed = true
+			break
+		end
+	end
+
 	if hoverConn then
 		hoverConn:Disconnect()
 		hoverConn = nil
 	end
-	return ok
+	if config.MoveMode == "Teleport" then
+		releaseLootPhysics()
+	end
+	return confirmed
 end
 
 function Material:ScanNow(): string
@@ -3281,34 +3759,74 @@ function Material:SetAutoCollect(enabled: boolean)
 	local myToken = autoLoopToken
 	if not enabled then
 		stopFlightSession()
+		releaseLootPhysics()
 		lastCollectMsg = "Disabled"
 		return
 	end
 
 	table.clear(skippedNodes)
+	table.clear(nodeFailCounts)
+	consecutiveLootFails = 0
+	holdNeedsRealHold = false
 	lastCollectMsg = "Scanning..."
+	local loopDim = LocalPlayer:GetAttribute("CurrentDimension")
 
 	task.spawn(function()
 		while config.AutoCollect and myToken == autoLoopToken and not destroyed do
+			-- Yield cleanly if Force Home / Quick Interact teleport is currently in progress
+			if teleportInProgress then
+				releaseLootPhysics()
+				lastCollectMsg = "Paused for Teleport..."
+				task.wait(0.15)
+				continue
+			end
+
+			-- Reset skip/cache cleanly if player dimension changed
+			local curDimNow = LocalPlayer:GetAttribute("CurrentDimension")
+			if curDimNow ~= loopDim then
+				loopDim = curDimNow
+				table.clear(skippedNodes)
+				table.clear(nodeFailCounts)
+				consecutiveLootFails = 0
+				releaseLootPhysics()
+			end
+
+			local charNow = LocalPlayer.Character
+			local humNow = charNow and charNow:FindFirstChildOfClass("Humanoid")
+			if not charNow or not humNow or humNow.Health <= 0 then
+				releaseLootPhysics()
+				lastCollectMsg = "Waiting for character..."
+				task.wait(0.35)
+				continue
+			end
+
 			local matches = scanMatchingNodes(false)
 			local target = matches[1]
 			if not target then
+				releaseLootPhysics()
 				local root = getRootPart()
 				local biomeKey = WILD_BIOMES[config.SelectedItem]
 				if root and biomeKey then
 					local bPos, bDist = findNearestBiomeTarget(biomeKey, root.Position)
 					if bPos and bDist then
-						local useFly = (config.MoveMode ~= "Walk")
+						local useTp = (config.MoveMode == "Teleport")
+						local useFly = (config.MoveMode == "FlyNoclip" or config.MoveMode == "FlySolid")
 						lastCollectMsg = ("%s %s (%.0fm)..."):format(
-							if useFly then "Flying to" else "Walking to",
+							if useTp then "Teleporting to" elseif useFly then "Flying to" else "Walking to",
 							BIOME_LABELS[biomeKey] or biomeKey,
 							bDist
 						)
 						local stepDir = (bPos - root.Position) * Vector3.new(1, 0, 1)
-						local hopDist = math.min(if useFly then 140 else 60, stepDir.Magnitude)
+						local hopDist = math.min(if useTp then 190 elseif useFly then 140 else 60, stepDir.Magnitude)
 						if hopDist > 5 then
 							local hopPos = root.Position + stepDir.Unit * hopDist
-							if useFly then
+							if useTp then
+								if isPositionSafeForDimension(hopPos, false) then
+									pcall(function() LocalPlayer:RequestStreamAroundAsync(hopPos, 1.5) end)
+									local safeHop = computeSafeLootStandPos(hopPos, nil)
+									pivotCharacterSafely(safeHop, bPos)
+								end
+							elseif useFly then
 								flyTowardsTarget(hopPos, 16, myToken, nil, nil, true)
 							else
 								moveTowardsTarget(hopPos, 8, myToken, nil)
@@ -3320,17 +3838,22 @@ function Material:SetAutoCollect(enabled: boolean)
 				end
 				stopFlightSession()
 				lastCollectMsg = "Waiting for nearby materials..."
-				task.wait(0.8)
+				task.wait(0.65)
 				continue
 			end
 
-			local useFly = (config.MoveMode ~= "Walk")
+			local moveMode = config.MoveMode
+			local useTp = (moveMode == "Teleport")
+			local useFly = (moveMode == "FlyNoclip" or moveMode == "FlySolid")
 			local maxAct = if target.prompt then (target.prompt.MaxActivationDistance or 10) else 8
 			local reachDist = if target.prompt then math.max(5.5, maxAct - 1.5) else 6.5
 
 			local reached = false
 			local moveReason = ""
-			if useFly then
+			if useTp then
+				lastCollectMsg = ("Teleporting to: %s (%.0fm)"):format(target.name, target.dist)
+				reached, moveReason = teleportToLootNode(target.pos, myToken, target.node, target.prompt)
+			elseif useFly then
 				lastCollectMsg = ("Flying to: %s (%.0fm)"):format(target.name, target.dist)
 				reached, moveReason = flyTowardsTarget(target.pos, reachDist, myToken, target.node, target.prompt, false)
 			else
@@ -3339,42 +3862,71 @@ function Material:SetAutoCollect(enabled: boolean)
 			end
 
 			if not config.AutoCollect or myToken ~= autoLoopToken or destroyed then
+				releaseLootPhysics()
 				break
 			end
 
 			if moveReason == "retarget" or moveReason == "gone" or moveReason == "disabled" then
-				task.wait(0.05)
+				releaseLootPhysics()
+				task.wait(0.03)
 				continue
 			end
 
 			if reached and target.prompt and target.prompt.Parent and target.prompt.Enabled then
-				lastCollectMsg = ("Collecting: %s..."):format(target.name)
+				lastCollectMsg = ("Looting: %s..."):format(target.name)
 				local okPick = triggerPromptSafe(target, myToken)
 				if okPick then
 					collectedCount += 1
+					consecutiveLootFails = 0
+					nodeFailCounts[target.node] = nil
 					lastCollectMsg = ("Collected %s (Total: %d)"):format(target.name, collectedCount)
 				else
-					skippedNodes[target.node] = os.clock() + 4
+					local fCount = (nodeFailCounts[target.node] or 0) + 1
+					nodeFailCounts[target.node] = fCount
+					local skipSecs = if fCount == 1 then 8 elseif fCount == 2 then 20 else 60
+					skippedNodes[target.node] = os.clock() + skipSecs
+					lastCollectMsg = ("Skipped stuck node: %s"):format(target.name)
+					consecutiveLootFails += 1
+					if consecutiveLootFails >= 3 then
+						consecutiveLootFails = 0
+						recoverFromLootHang("Auto-recovered from prompt hang...")
+					end
 				end
 			else
-				skippedNodes[target.node] = os.clock() + 6
+				releaseLootPhysics()
+				local fCount = (nodeFailCounts[target.node] or 0) + 1
+				nodeFailCounts[target.node] = fCount
+				local skipSecs = if fCount == 1 then 8 elseif fCount == 2 then 20 else 45
+				skippedNodes[target.node] = os.clock() + skipSecs
 				lastCollectMsg = ("Skipped unreachable node: %s"):format(target.name)
+				consecutiveLootFails += 1
+				if consecutiveLootFails >= 3 then
+					consecutiveLootFails = 0
+					recoverFromLootHang("Auto-recovered from stuck node...")
+				end
 			end
-			task.wait(0.1)
+
+			local stepPause = if useTp then (if lowEndMode then math.max(config.LootDelay, 0.08) else config.LootDelay) else 0.08
+			task.wait(stepPause)
 		end
 		stopFlightSession()
+		releaseLootPhysics()
 	end)
 end
 
 function Material:SetMoveMode(mode: string)
-	if mode == "FlyNoclip" or mode == "FlySolid" or mode == "Walk" then
+	if mode == "Teleport" or mode == "FlyNoclip" or mode == "FlySolid" or mode == "Walk" then
 		config.MoveMode = mode
-		if mode == "Walk" then
+		if mode == "Walk" or mode == "Teleport" then
 			stopFlightSession()
 		elseif flyActive then
 			setNoclipEnabled(mode == "FlyNoclip")
 		end
 	end
+end
+
+function Material:SetLootDelay(seconds: number)
+	config.LootDelay = math.clamp(seconds, 0.03, 0.50)
 end
 
 function Material:SetFlySpeed(speed: number)
@@ -3703,7 +4255,7 @@ local function pivotCharacterSafely(destPos: Vector3, lookAtPos: Vector3?): bool
 
 	local cam = workspace.CurrentCamera
 	local relCam: CFrame? = nil
-	if cam then
+	if cam and (cam.CFrame.Position - root.Position).Magnitude <= 35 then
 		relCam = root.CFrame:ToObjectSpace(cam.CFrame)
 	end
 
@@ -3730,8 +4282,20 @@ local function pivotCharacterSafely(destPos: Vector3, lookAtPos: Vector3?): bool
 
 	root.AssemblyLinearVelocity = Vector3.zero
 	root.AssemblyAngularVelocity = Vector3.zero
-	if cam and relCam then
-		cam.CFrame = root.CFrame * relCam
+	if cam then
+		if relCam then
+			cam.CFrame = root.CFrame * relCam
+			cam.Focus = CFrame.new(destPos)
+		else
+			cam.CameraType = Enum.CameraType.Custom
+			cam.CameraSubject = hum
+			local camTarget = if lookAtPos then lookAtPos else (destPos + destCF.LookVector * 12)
+			local camPos = destPos - destCF.LookVector * 12 + Vector3.new(0, 5, 0)
+			if (camTarget - camPos).Magnitude > 0.25 then
+				cam.CFrame = CFrame.lookAt(camPos, camTarget)
+			end
+			cam.Focus = CFrame.new(camTarget)
+		end
 	end
 	pcall(function()
 		hum:ChangeState(Enum.HumanoidStateType.Running)
@@ -4713,7 +5277,7 @@ function Material:GetStatusText(): string
 		end
 		return ("Nearby: %d materials ready | Collected: %d\nStatus: OFF"):format(cachedOffAvail, collectedCount)
 	end
-	return ("%s\nAuto Fly & Collect: %s (Collected: %d)"):format(lastSummaryText, lastCollectMsg, collectedCount)
+	return ("%s\nAuto Loot (%s): %s (Collected: %d)"):format(lastSummaryText, config.MoveMode, lastCollectMsg, collectedCount)
 end
 
 function Material:Destroy()
@@ -4723,9 +5287,12 @@ function Material:Destroy()
 	config.AutoCollect = false
 	autoLoopToken += 1
 	stopFlightSession()
+	releaseLootPhysics()
 	refreshLoopState()
 	clearAllVisuals()
 	table.clear(nodeInfoCache)
+	table.clear(skippedNodes)
+	table.clear(nodeFailCounts)
 	table.clear(charPartsCache)
 	charCachedRef = nil
 end
@@ -8327,6 +8894,7 @@ MaterialTab:CreateDropdown({
 })
 
 local MOVE_MODES = {
+	["Teleport (Instant Loot)"] = "Teleport",
 	["Fly (Hover + Noclip)"] = "FlyNoclip",
 	["Fly (Collision On)"] = "FlySolid",
 	["Walk (Pathfind)"] = "Walk",
@@ -8334,10 +8902,10 @@ local MOVE_MODES = {
 
 MaterialTab:CreateDropdown({
 	Name = "Move Mode",
-	Options = { "Fly (Hover + Noclip)", "Fly (Collision On)", "Walk (Pathfind)" },
-	CurrentOption = "Fly (Hover + Noclip)",
+	Options = { "Teleport (Instant Loot)", "Fly (Hover + Noclip)", "Fly (Collision On)", "Walk (Pathfind)" },
+	CurrentOption = "Teleport (Instant Loot)",
 	Callback = function(option: string)
-		Material:SetMoveMode(MOVE_MODES[option] or "FlyNoclip")
+		Material:SetMoveMode(MOVE_MODES[option] or "Teleport")
 	end,
 })
 
@@ -8353,7 +8921,18 @@ MaterialTab:CreateSlider({
 })
 
 MaterialTab:CreateSlider({
-	Name = "Fly Speed",
+	Name = "Teleport Loot Delay",
+	Range = { 0.03, 0.35 },
+	Increment = 0.02,
+	Suffix = "s",
+	CurrentValue = 0.05,
+	Callback = function(value: number)
+		Material:SetLootDelay(value)
+	end,
+})
+
+MaterialTab:CreateSlider({
+	Name = "Fly Speed (Fly Mode)",
 	Range = { 25, 250 },
 	Increment = 5,
 	Suffix = "stud/s",
@@ -8388,14 +8967,14 @@ local tglMatBeam = MaterialTab:CreateToggle({
 })
 
 local tglMatAutoCollect = MaterialTab:CreateToggle({
-	Name = "Auto Fly & Collect Material",
-	Description = "Automatically fly to the nearest Material and collect it",
+	Name = "Auto Loot Material (Teleport / Fast)",
+	Description = "Instantly teleports/moves to matching materials with anti-hang prompt & GroundGuard recovery",
 	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		Material:SetAutoCollect(enabled)
 		Window:Notify({
-			Title = "Auto Fly Material",
-			Content = if enabled then "Auto Fly & Collect ENABLED." else "Auto Fly & Collect DISABLED.",
+			Title = "Auto Loot Material",
+			Content = if enabled then "Auto Loot Material ENABLED." else "Auto Loot Material DISABLED.",
 			Duration = 2.5,
 			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
 		})
