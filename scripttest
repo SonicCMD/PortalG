@@ -1,15 +1,6 @@
--- Rayfield Menu + Material + ESP + Auto Research + Fast Craft + Combat/Guardian/Mission (Instant Teleport Loot & Low-End Bundle)
-local __modules = {}
-local __cache = {}
-local function __req(name)
-	if __cache[name] ~= nil then return __cache[name] end
-	local fn = __modules[name]
-	if not fn then error('Missing bundled module: ' .. tostring(name)) end
-	local res = fn()
-	__cache[name] = res
-	return res
-end
-__modules["RayfieldLib"] = function()
+-- RayfieldMenu DeltaX Single-File Build
+
+local __mod_RayfieldLib = (function()
 --[[
 	RayfieldLib
 	Native Luau UI Framework inspired by Rayfield Interface Suite.
@@ -1427,8 +1418,9 @@ function RayfieldLib:CreateWindow(config)
 end
 
 return RayfieldLib
-end
-__modules["EspModule"] = function()
+end)()
+
+local __mod_EspModule = (function()
 --[[
 	EspModule
 	Client-side Player ESP / Visual Tracker using Highlight + BillboardGui.
@@ -2020,8 +2012,9 @@ function Esp:Destroy()
 end
 
 return Esp
-end
-__modules["MaterialModule"] = function()
+end)()
+
+local __mod_MaterialModule = (function()
 --[[
 	MaterialModule
 	Auto scan, ESP/guide beam visualization, and Instant Teleport + Anti-Hang Auto Loot for Materials in PortalG.
@@ -2092,11 +2085,43 @@ local config = {
 	ScanEsp = false,
 	ShowBeam = false,
 	AutoCollect = false,
+	AutoCrossPlanet = false,
+	TravelMethod = "SmartAuto", -- "SmartAuto" | "BypassOnly" | "PortalGunOnly"
 	SelectedItem = "ALL",
 	MaxDistance = 3000,
 	MoveMode = "Teleport", -- "Teleport" | "FlyNoclip" | "FlySolid" | "Walk"
 	FlySpeed = 90,
 	LootDelay = 0.05,
+}
+
+local DIM_TO_PORTAL_CODE: { [string]: string } = {
+	C137 = "C137",
+	Ex01 = "EX01",
+	Citadel = "CITADEL",
+	Wasteland = "WASTELAND",
+	["35C"] = "35C",
+	J197 = "J197",
+	Prime = "PRIME",
+	PurgePlanet = "PURGEPLANET",
+	Valhalla = "VALHALLA",
+	PrimeLair = "PRIMELAIR",
+	EvilMorty = "EVILMORTY",
+	FedHQ = "FEDHQ",
+	UnityPlanet = "UNITY",
+	Worldender = "WORLDENDER",
+	Microverse = "MICROVERSE",
+	Miniverse = "MINIVERSE",
+	Teenyverse = "TEENYVERSE",
+}
+
+local EARTH_ITEMS: { [string]: boolean } = {
+	Scrap = true,
+	Electronics = true,
+	BottledWater = true,
+	Beer = true,
+	MagmaShard = true,
+	FrostGem = true,
+	DeepQuartz = true,
 }
 
 local cachedGameData = nil
@@ -2151,6 +2176,8 @@ local charCachedRef: Model? = nil
 local cachedOffAvail = 0
 local cachedOffClock = 0
 local elapsedAcc = 0
+local lastTravelAttemptClock = 0
+local exploreStepIdx = 0
 
 local function getWorldInfo(): any
 	if not worldInfoChecked then
@@ -3753,6 +3780,594 @@ function Material:SetShowBeam(enabled: boolean)
 	refreshLoopState()
 end
 
+local function getCharacterScale(): number
+	local char = LocalPlayer.Character
+	if not char then
+		return 1
+	end
+	local okScale, s = pcall(function()
+		return char:GetScale()
+	end)
+	if okScale and type(s) == "number" and s > 0 then
+		return math.clamp(s, 0.6, 2.2)
+	end
+	return 1
+end
+
+local function pivotCharacterSafely(destPos: Vector3, lookAtPos: Vector3?): boolean
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local root = getRootPart()
+	if not char or not hum or not root or hum.Health <= 0 then
+		return false
+	end
+
+	local cam = workspace.CurrentCamera
+	local relCam: CFrame? = nil
+	if cam and (cam.CFrame.Position - root.Position).Magnitude <= 35 then
+		relCam = root.CFrame:ToObjectSpace(cam.CFrame)
+	end
+
+	local flatLook = false
+	local destCF: CFrame
+	if lookAtPos then
+		local flatTarget = Vector3.new(lookAtPos.X, destPos.Y, lookAtPos.Z)
+		if (flatTarget - destPos).Magnitude > 1.2 then
+			destCF = CFrame.lookAt(destPos, flatTarget)
+			flatLook = true
+		end
+	end
+	if not flatLook then
+		destCF = CFrame.new(destPos) * (root.CFrame - root.CFrame.Position)
+	end
+
+	hum.Sit = false
+	hum.PlatformStand = false
+	root.Anchored = false
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+
+	char:PivotTo(destCF)
+
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+	if cam then
+		if relCam then
+			cam.CFrame = root.CFrame * relCam
+			cam.Focus = CFrame.new(destPos)
+		else
+			cam.CameraType = Enum.CameraType.Custom
+			cam.CameraSubject = hum
+			local camTarget = if lookAtPos then lookAtPos else (destPos + destCF.LookVector * 12)
+			local camPos = destPos - destCF.LookVector * 12 + Vector3.new(0, 5, 0)
+			if (camTarget - camPos).Magnitude > 0.25 then
+				cam.CFrame = CFrame.lookAt(camPos, camTarget)
+			end
+			cam.Focus = CFrame.new(camTarget)
+		end
+	end
+	pcall(function()
+		hum:ChangeState(Enum.HumanoidStateType.Running)
+	end)
+	return true
+end
+
+local function getItemWorldTarget(itemId: string): { kind: string, dimId: string?, planetId: string?, portalCode: string?, needGolden: boolean, displayName: string }?
+	if itemId == "" or itemId == "ALL" then
+		return nil
+	end
+	local gd = getGameData()
+	if not gd then
+		return nil
+	end
+	local meta = gd.Items and gd.Items[itemId]
+	if type(meta) ~= "table" then
+		return nil
+	end
+
+	if meta.planet and tostring(meta.planet) ~= "" then
+		local pId = tostring(meta.planet)
+		local pMeta = gd.PlanetById and gd.PlanetById[pId]
+		if type(pMeta) == "table" and pMeta.dim and tostring(pMeta.dim) ~= "" then
+			local dId = tostring(pMeta.dim)
+			return {
+				kind = "planet",
+				planetId = pId,
+				dimId = dId,
+				portalCode = DIM_TO_PORTAL_CODE[dId] or string.upper(dId),
+				needGolden = false,
+				displayName = tostring(pMeta.name or pId),
+			}
+		end
+		return {
+			kind = "planet",
+			planetId = pId,
+			dimId = "PLANET_" .. pId,
+			portalCode = string.upper(pId),
+			needGolden = true,
+			displayName = tostring((type(pMeta) == "table" and pMeta.name) or pId),
+		}
+	end
+
+	if meta.dim and tostring(meta.dim) ~= "" then
+		local dId = tostring(meta.dim)
+		local dMeta = gd.DimensionById and gd.DimensionById[dId]
+		local needGold = (gd.GoldenPlaceIds and gd.GoldenPlaceIds[dId] == true) or (type(dMeta) == "table" and dMeta.outside == true) or false
+		return {
+			kind = "dim",
+			dimId = dId,
+			portalCode = DIM_TO_PORTAL_CODE[dId] or string.upper(dId),
+			needGolden = needGold,
+			displayName = tostring((type(dMeta) == "table" and dMeta.name) or dId),
+		}
+	end
+
+	if EARTH_ITEMS[itemId] then
+		local homeDim = tostring(LocalPlayer:GetAttribute("HomeDimension") or "C137")
+		return {
+			kind = "home",
+			dimId = homeDim,
+			portalCode = "C137",
+			needGolden = false,
+			displayName = "Earth (" .. homeDim .. ")",
+		}
+	end
+
+	return nil
+end
+
+local function isPlayerInWorldTarget(req: any): boolean
+	if not req then
+		return true
+	end
+	local curDim = tostring(LocalPlayer:GetAttribute("CurrentDimension") or "")
+	local homeDim = tostring(LocalPlayer:GetAttribute("HomeDimension") or "C137")
+	local inOrbit = LocalPlayer:GetAttribute("InOrbit") == true
+	if inOrbit then
+		return false
+	end
+	if req.kind == "home" then
+		return curDim == "" or curDim == homeDim or curDim == "C137"
+	elseif req.kind == "planet" then
+		if curDim == ("PLANET_" .. tostring(req.planetId)) or curDim == tostring(req.planetId) or (req.dimId and curDim == req.dimId) then
+			return true
+		end
+		if curDim == "" and req.planetId and workspace:FindFirstChild("Proc_PLANET_" .. tostring(req.planetId)) then
+			return true
+		end
+		return false
+	elseif req.kind == "dim" then
+		return req.dimId ~= nil and curDim == req.dimId
+	end
+	return true
+end
+
+local function findOwnedPortalGun(requireGolden: boolean): (Tool?, string)
+	local char = LocalPlayer.Character
+	local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+	local best: Tool? = nil
+	local bestTier = -1
+
+	local function scanContainer(c: Instance?)
+		if not c then
+			return
+		end
+		for _, ch in ipairs(c:GetChildren()) do
+			if ch:IsA("Tool") then
+				local tier = if ch.Name == "GoldenPortalGun" then 3 elseif ch.Name == "PortalGun" then 2 elseif ch.Name == "PortalGunJr" then 1 else -1
+				if tier > bestTier then
+					if not requireGolden or tier == 3 then
+						bestTier = tier
+						best = ch
+					end
+				end
+			end
+		end
+	end
+
+	scanContainer(char)
+	scanContainer(bp)
+	if best then
+		return best, "ok"
+	end
+	if requireGolden then
+		return nil, "Requires GoldenPortalGun"
+	end
+	return nil, "No PortalGun found in bag"
+end
+
+local function configurePortalGunTarget(code: string)
+	local pg = LocalPlayer:FindFirstChild("PlayerGui")
+	if not pg then
+		return
+	end
+	for _, uiName in ipairs({ "PortalGunUI", "PortalGunUILegacy" }) do
+		local ui = pg:FindFirstChild(uiName)
+		if ui then
+			local modeVal = ui:FindFirstChild("PortalMode")
+			if modeVal and modeVal:IsA("StringValue") then
+				modeVal.Value = "dim"
+			end
+			local td = ui:FindFirstChild("TargetDimension")
+			if td and td:IsA("StringValue") then
+				td.Value = code
+			end
+			local scr = ui:FindFirstChild("Screen", true)
+			if scr and scr:IsA("TextBox") then
+				scr.Text = code
+			end
+			if td and td:IsA("StringValue") then
+				td.Value = code
+			end
+		end
+	end
+end
+
+local function crossPortalInstance(portalModel: Model, side: string, targetDimId: string?): (boolean, string)
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local root = getRootPart()
+	if not char or not hum or not root or hum.Health <= 0 then
+		return false, "Character not ready"
+	end
+	local cfAttr = portalModel:GetAttribute(side .. "CF")
+	if typeof(cfAttr) ~= "CFrame" then
+		return false, "Portal surface CFrame missing"
+	end
+
+	releaseLootPhysics()
+	hum.Sit = false
+	hum.PlatformStand = false
+	root.Anchored = false
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+
+	local enterFront = cfAttr.Position + cfAttr.LookVector * 2.4
+	local enterIn = cfAttr.Position + cfAttr.LookVector * 0.35
+	char:PivotTo(CFrame.lookAt(enterFront, enterIn))
+	task.wait(0.06)
+	char:PivotTo(CFrame.lookAt(enterIn, enterIn - cfAttr.LookVector * 2))
+	pcall(function()
+		hum:Move(-cfAttr.LookVector, false)
+	end)
+
+	local waitDeadline = os.clock() + 8.5
+	local sentManualCross = false
+	local pc = ReplicatedStorage:FindFirstChild("PortalCrossed")
+	while os.clock() < waitDeadline and not destroyed do
+		local curDim = tostring(LocalPlayer:GetAttribute("CurrentDimension") or "")
+		if targetDimId and (curDim == targetDimId or (targetDimId:sub(1, 7) == "PLANET_" and curDim == targetDimId)) then
+			pcall(function() hum:Move(Vector3.zero, false) end)
+			return true, ("Crossed portal to %s"):format(targetDimId)
+		end
+		if os.clock() > waitDeadline - 7.3 and not sentManualCross and pc and pc:IsA("RemoteEvent") and portalModel.Parent then
+			sentManualCross = true
+			pcall(function()
+				pc:FireServer(portalModel, side)
+			end)
+		end
+		task.wait(0.1)
+	end
+	pcall(function() hum:Move(Vector3.zero, false) end)
+	return false, "Portal crossing timed out"
+end
+
+local function findOpenPortalTo(targetDimId: string): (Model?, string?)
+	local portals = workspace:FindFirstChild("Portals")
+	if not portals or not targetDimId or targetDimId == "" then
+		return nil, nil
+	end
+	for _, p in ipairs(portals:GetChildren()) do
+		if p:IsA("Model") and not p:GetAttribute("Closing") and p:GetAttribute("Linked") ~= false then
+			local dimB = tostring(p:GetAttribute("DimB") or "")
+			local dimA = tostring(p:GetAttribute("DimA") or "")
+			if dimB == targetDimId and typeof(p:GetAttribute("ACF")) == "CFrame" then
+				return p, "A"
+			elseif dimA == targetDimId and typeof(p:GetAttribute("BCF")) == "CFrame" then
+				return p, "B"
+			end
+		end
+	end
+	return nil, nil
+end
+
+local function findChalkDoorForFroopy(): BasePart?
+	local chalk = workspace:FindFirstChild("ChalkDoors")
+	if chalk then
+		for _, d in ipairs(chalk:GetDescendants()) do
+			if d:IsA("BasePart") then
+				return d
+			end
+		end
+	end
+	return nil
+end
+
+local function tryPortalGunToTarget(req: any): (boolean, string)
+	if req.dimId == "FROOPYLAND" then
+		local chalkPart = findChalkDoorForFroopy()
+		local char = LocalPlayer.Character
+		if chalkPart and char then
+			releaseLootPhysics()
+			char:PivotTo(CFrame.new(chalkPart.Position + Vector3.new(0, 2, 0)))
+			task.wait(0.8)
+			if isPlayerInWorldTarget(req) then
+				return true, "Entered Froopyland via Magic Chalk door"
+			end
+		end
+		return false, "Froopyland requires Magic Chalk door on Earth"
+	end
+
+	-- 1) Reuse any active portal in workspace pointing to req.dimId
+	if req.dimId then
+		local exPortal, exSide = findOpenPortalTo(req.dimId)
+		if exPortal and exSide then
+			local okC, msgC = crossPortalInstance(exPortal, exSide, req.dimId)
+			if okC then
+				return true, msgC
+			end
+		end
+	end
+
+	-- 2) Equip owned PortalGun / GoldenPortalGun & fire onto flat floor/wall ahead
+	local pgTool, pgErr = findOwnedPortalGun(req.needGolden == true)
+	if not pgTool then
+		return false, pgErr
+	end
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local root = getRootPart()
+	if not char or not hum or not root or hum.Health <= 0 then
+		return false, "Character not ready"
+	end
+
+	local fluid = tonumber(pgTool:GetAttribute("Fluid"))
+	if fluid ~= nil and fluid <= 0 then
+		local rf = ReplicatedStorage:FindFirstChild("ReloadFluid")
+		if rf and rf:IsA("RemoteEvent") then
+			pcall(function() rf:FireServer() end)
+			task.wait(0.25)
+		end
+		fluid = tonumber(pgTool:GetAttribute("Fluid"))
+		if fluid ~= nil and fluid <= 0 then
+			return false, "Portal Gun out of fluid"
+		end
+	end
+
+	local portalCode = tostring(req.portalCode or "")
+	if portalCode == "" then
+		return false, "Missing portal code"
+	end
+	configurePortalGunTarget(portalCode)
+
+	if pgTool.Parent ~= char then
+		pcall(function() hum:EquipTool(pgTool) end)
+		task.wait(0.18)
+	end
+	configurePortalGunTarget(portalCode)
+
+	local portalsFolder = workspace:FindFirstChild("Portals")
+	local existingPortals: { [Instance]: boolean } = {}
+	if portalsFolder then
+		for _, child in ipairs(portalsFolder:GetChildren()) do
+			existingPortals[child] = true
+		end
+	end
+
+	-- Aim downward onto clear ground/floor 7 studs in front of character
+	releaseLootPhysics()
+	sharedFloorParams.FilterDescendantsInstances = { char }
+	local fwd = root.CFrame.LookVector
+	local flatVec = Vector3.new(fwd.X, 0, fwd.Z)
+	local flatFwd = if flatVec.Magnitude > 0.05 then flatVec.Unit else Vector3.new(0, 0, -1)
+	local probeOrigin = root.Position + flatFwd * 7 + Vector3.new(0, 6, 0)
+	local hitSurface = workspace:Raycast(probeOrigin, Vector3.new(0, -24, 0), sharedFloorParams)
+	local aimSpot = if hitSurface then hitSurface.Position else (root.Position + (flatFwd * 7) - Vector3.new(0, 3.5, 0))
+
+	local cam = workspace.CurrentCamera
+	if cam then
+		cam.CameraType = Enum.CameraType.Custom
+		cam.CameraSubject = hum
+		local lookFrom = root.Position + Vector3.new(0, 3.5, 0) - flatFwd * 4
+		if (aimSpot - lookFrom).Magnitude > 0.5 then
+			cam.CFrame = CFrame.lookAt(lookFrom, aimSpot)
+			cam.Focus = CFrame.new(aimSpot)
+		end
+	end
+	char:PivotTo(CFrame.lookAt(root.Position, Vector3.new(aimSpot.X, root.Position.Y, aimSpot.Z)))
+	task.wait(0.08)
+
+	pcall(function()
+		pgTool:Activate()
+	end)
+	local clickFn = rawget(_G, "mouse1click")
+	if type(clickFn) == "function" then
+		pcall(clickFn)
+	end
+	task.delay(0.08, function()
+		pcall(function()
+			if pgTool and pgTool.Parent == char then
+				pgTool:Deactivate()
+			end
+		end)
+	end)
+
+	local spawnedPortal: Model? = nil
+	local findDeadline = os.clock() + 3.2
+	while os.clock() < findDeadline and not destroyed do
+		if portalsFolder then
+			for _, child in ipairs(portalsFolder:GetChildren()) do
+				if child:IsA("Model") and not existingPortals[child] then
+					local owner = tostring(child:GetAttribute("Owner") or "")
+					local acf = child:GetAttribute("ACF")
+					local nearShot = typeof(acf) == "CFrame" and (acf.Position - aimSpot).Magnitude <= 35
+					if (owner == "" or owner == LocalPlayer.Name) and (nearShot or typeof(acf) == "CFrame") then
+						spawnedPortal = child
+						break
+					end
+				end
+			end
+		end
+		if spawnedPortal then
+			break
+		end
+		if isPlayerInWorldTarget(req) then
+			return true, ("Entered %s via Portal Gun"):format(req.displayName)
+		end
+		task.wait(0.08)
+	end
+
+	if not spawnedPortal then
+		return false, ("Portal did not open for %s (%s)"):format(req.displayName, portalCode)
+	end
+
+	return crossPortalInstance(spawnedPortal, "A", req.dimId)
+end
+
+local function bypassViaPlanetTravel(planetId: string, labelName: string): (boolean, string)
+	local pt = ReplicatedStorage:FindFirstChild("PlanetTravel")
+	if not pt or not pt:IsA("RemoteFunction") then
+		return false, "RemoteFunction PlanetTravel not found"
+	end
+
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local root = getRootPart()
+	if not char or not hum or not root or hum.Health <= 0 then
+		return false, "Character not ready"
+	end
+
+	releaseLootPhysics()
+	hum.Sit = false
+	hum.PlatformStand = false
+	root.Anchored = false
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+
+	local okEnter, destPos, auxInfo = pcall(function()
+		return pt:InvokeServer("enter", planetId)
+	end)
+
+	-- If server requires Orbit state first, leave current gravity well briefly then enter target planet
+	if (not okEnter or typeof(destPos) ~= "Vector3") and LocalPlayer:GetAttribute("InOrbit") ~= true then
+		pcall(function()
+			return pt:InvokeServer("leave")
+		end)
+		task.wait(0.28)
+		okEnter, destPos, auxInfo = pcall(function()
+			return pt:InvokeServer("enter", planetId)
+		end)
+	end
+
+	if not okEnter or typeof(destPos) ~= "Vector3" then
+		return false, ("Planet bypass denied for %s: %s"):format(labelName, tostring(auxInfo or destPos or "unavailable"))
+	end
+
+	local dropPos = destPos - Vector3.new(0, 66, 0)
+	root.Anchored = true
+	char:PivotTo(CFrame.new(dropPos))
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+
+	task.spawn(function()
+		pcall(function()
+			LocalPlayer:RequestStreamAroundAsync(dropPos, 6)
+		end)
+	end)
+
+	local spaceLocal = workspace:FindFirstChild("SpaceLocal")
+	sharedFloorParams.FilterDescendantsInstances = if spaceLocal then { char, spaceLocal } else { char }
+
+	local groundHit: RaycastResult? = nil
+	local deadline = os.clock() + 5.0
+	while os.clock() < deadline and not destroyed do
+		local hit = workspace:Raycast(dropPos + Vector3.new(0, 500, 0), Vector3.new(0, -2200, 0), sharedFloorParams)
+		if hit and hit.Instance then
+			if hit.Instance == workspace.Terrain or (hit.Instance:IsA("BasePart") and hit.Instance.Anchored and hit.Instance.Size.X * hit.Instance.Size.Z >= 64) then
+				groundHit = hit
+				break
+			end
+		end
+		task.wait(0.08)
+	end
+
+	local finalSpot = if groundHit then (groundHit.Position + Vector3.new(0, 4.5 * getCharacterScale(), 0)) else dropPos
+	pcall(function()
+		LocalPlayer:SetAttribute("InOrbit", nil)
+	end)
+	pivotCharacterSafely(finalSpot, finalSpot + Vector3.new(0, 0, -10))
+	root = getRootPart()
+	if root and root.Parent then
+		root.Anchored = false
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+	end
+
+	return true, ("Bypassed to planet %s"):format(labelName)
+end
+
+local function travelToWorldForMaterial(req: any): (boolean, string)
+	if isPlayerInWorldTarget(req) then
+		return true, "Already in " .. req.displayName
+	end
+
+	if req.kind == "home" then
+		local okH, msgH = Material:ForceSendHomeNow()
+		return okH, msgH
+	end
+
+	local mode = config.TravelMethod
+	if req.kind == "planet" and req.planetId then
+		if mode == "PortalGunOnly" then
+			local okP, msgP = tryPortalGunToTarget(req)
+			if okP then
+				return true, msgP
+			end
+			return bypassViaPlanetTravel(req.planetId, req.displayName)
+		elseif mode == "BypassOnly" then
+			local okB, msgB = bypassViaPlanetTravel(req.planetId, req.displayName)
+			if okB then
+				return true, msgB
+			end
+			return false, msgB
+		else
+			-- SmartAuto: Instant PlanetTravel bypass first (no Golden gun / Cruiser flight needed), fallback Portal Gun
+			local okB, msgB = bypassViaPlanetTravel(req.planetId, req.displayName)
+			if okB then
+				return true, msgB
+			end
+			return tryPortalGunToTarget(req)
+		end
+	end
+
+	if req.kind == "dim" then
+		return tryPortalGunToTarget(req)
+	end
+
+	return false, "Unsupported world target"
+end
+
+local function getProcExploreWaypoint(originPos: Vector3): (Vector3?, string?, Vector3?)
+	local curDim = tostring(LocalPlayer:GetAttribute("CurrentDimension") or "")
+	if curDim == "" then
+		return nil, nil, nil
+	end
+	local proc = workspace:FindFirstChild("Proc_" .. curDim)
+	if not proc then
+		return nil, nil, nil
+	end
+	local zc = proc:GetAttribute("ZoneCenter")
+	local zh = proc:GetAttribute("ZoneHalf")
+	if typeof(zc) ~= "Vector3" or typeof(zh) ~= "Vector3" then
+		return nil, nil, nil
+	end
+	exploreStepIdx = (exploreStepIdx % 8) + 1
+	local ang = (exploreStepIdx - 1) * (math.pi / 4)
+	local radius = math.clamp(math.min(zh.X, zh.Z) * 0.45, 160, 1400)
+	local targetPos = Vector3.new(zc.X + math.cos(ang) * radius, originPos.Y, zc.Z + math.sin(ang) * radius)
+	return targetPos, curDim, zc
+end
+
 function Material:SetAutoCollect(enabled: boolean)
 	config.AutoCollect = enabled
 	autoLoopToken += 1
@@ -3800,11 +4415,76 @@ function Material:SetAutoCollect(enabled: boolean)
 				continue
 			end
 
+			local activeWorldReq = if config.AutoCrossPlanet and config.SelectedItem ~= "ALL" then getItemWorldTarget(config.SelectedItem) else nil
+			local needWorldTravel = activeWorldReq ~= nil and not isPlayerInWorldTarget(activeWorldReq)
 			local matches = scanMatchingNodes(false)
+			if needWorldTravel and #matches > 0 then
+				local safeMatches = {}
+				for _, m in ipairs(matches) do
+					if isPositionSafeForDimension(m.pos, false) then
+						table.insert(safeMatches, m)
+					end
+				end
+				matches = safeMatches
+			end
 			local target = matches[1]
 			if not target then
 				releaseLootPhysics()
 				local root = getRootPart()
+
+				-- Auto Cross-Planet / Cross-Dimension travel when selected item belongs to another world
+				if config.AutoCrossPlanet and config.SelectedItem ~= "ALL" then
+					local worldReq = activeWorldReq or getItemWorldTarget(config.SelectedItem)
+					if worldReq and not isPlayerInWorldTarget(worldReq) then
+						local nowClock = os.clock()
+						if lastTravelAttemptClock == 0 or (nowClock - lastTravelAttemptClock) >= 4.0 then
+							lastTravelAttemptClock = nowClock
+							lastCollectMsg = ("Traveling to %s..."):format(worldReq.displayName)
+							local okTr, msgTr = travelToWorldForMaterial(worldReq)
+							lastCollectMsg = msgTr
+							if okTr then
+								table.clear(skippedNodes)
+								table.clear(nodeFailCounts)
+								table.clear(nodeInfoCache)
+								exploreStepIdx = 0
+								task.wait(0.65)
+								continue
+							end
+						else
+							lastCollectMsg = ("Waiting to travel to %s..."):format(worldReq.displayName)
+						end
+					elseif worldReq and isPlayerInWorldTarget(worldReq) and root then
+						-- Already on target planet/world, patrol chunk zones gently on verified solid ground to stream distant nodes
+						local expPos, expDim, zoneCenter = getProcExploreWaypoint(root.Position)
+						if expPos and expDim then
+							local useTp = (config.MoveMode == "Teleport")
+							lastCollectMsg = ("Exploring %s for %s..."):format(expDim, getItemMeta(config.SelectedItem))
+							if useTp then
+								pcall(function() LocalPlayer:RequestStreamAroundAsync(expPos, 2.0) end)
+								local spaceLocal = workspace:FindFirstChild("SpaceLocal")
+								sharedFloorParams.FilterDescendantsInstances = if spaceLocal then { charNow, spaceLocal } else { charNow }
+								local baseY = if zoneCenter then math.max(expPos.Y, zoneCenter.Y) else expPos.Y
+								local candidates = if zoneCenter then { expPos, zoneCenter:Lerp(expPos, 0.45), zoneCenter } else { expPos }
+								local groundedSpot: Vector3? = nil
+								for _, candXZ in ipairs(candidates) do
+									local hit = workspace:Raycast(Vector3.new(candXZ.X, baseY + 120, candXZ.Z), Vector3.new(0, -320, 0), sharedFloorParams)
+									if hit and hit.Instance and hit.Normal.Y >= 0.5 then
+										groundedSpot = hit.Position + Vector3.new(0, 3.5 * getCharacterScale(), 0)
+										break
+									end
+								end
+								if groundedSpot then
+									pivotCharacterSafely(groundedSpot, groundedSpot + Vector3.new(0, 0, -10))
+								end
+							else
+								flyTowardsTarget(expPos, 18, myToken, nil, nil, true)
+							end
+							task.wait(0.35)
+							continue
+						end
+					end
+				end
+
 				local biomeKey = WILD_BIOMES[config.SelectedItem]
 				if root and biomeKey then
 					local bPos, bDist = findNearestBiomeTarget(biomeKey, root.Position)
@@ -3946,6 +4626,34 @@ function Material:SetMaxDistance(dist: number)
 	if config.ScanEsp or config.ShowBeam then
 		updateVisuals()
 	end
+end
+
+function Material:SetAutoCrossPlanet(enabled: boolean)
+	config.AutoCrossPlanet = enabled == true
+	lastTravelAttemptClock = 0
+	exploreStepIdx = 0
+end
+
+function Material:SetTravelMethod(method: string)
+	if method == "SmartAuto" or method == "BypassOnly" or method == "PortalGunOnly" then
+		config.TravelMethod = method
+	end
+end
+
+function Material:TravelToSelectedItemWorld(): (boolean, string)
+	if config.SelectedItem == "ALL" or config.SelectedItem == "" then
+		return false, "Select a specific material first"
+	end
+	local req = getItemWorldTarget(config.SelectedItem)
+	if not req then
+		return false, "Item does not specify another planet/dimension"
+	end
+	if isPlayerInWorldTarget(req) then
+		return true, ("Already at %s"):format(req.displayName)
+	end
+	local okTr, msgTr = travelToWorldForMaterial(req)
+	lastCollectMsg = msgTr
+	return okTr, msgTr
 end
 
 function Material:GetMaterialOptions(): ({ string }, { [string]: string })
@@ -4115,20 +4823,6 @@ local function isSafeGarageFloorPoint(house: Model, garage: Instance, floorY: nu
 	return true, downHit.Position
 end
 
-local function getCharacterScale(): number
-	local char = LocalPlayer.Character
-	if not char then
-		return 1
-	end
-	local okScale, s = pcall(function()
-		return char:GetScale()
-	end)
-	if okScale and type(s) == "number" and s > 0 then
-		return math.clamp(s, 0.6, 2.2)
-	end
-	return 1
-end
-
 local function findGarageSpot(house: Model?): (Vector3?, Vector3?, string)
 	local scale = getCharacterScale()
 	if not house then
@@ -4243,64 +4937,6 @@ local function findGarageSpot(house: Model?): (Vector3?, Vector3?, string)
 		return gcf.Position + Vector3.new(0, 3.4 * scale, 0), lookPos, "Garage"
 	end
 	return nil, nil, "Unknown"
-end
-
-local function pivotCharacterSafely(destPos: Vector3, lookAtPos: Vector3?): boolean
-	local char = LocalPlayer.Character
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	local root = getRootPart()
-	if not char or not hum or not root or hum.Health <= 0 then
-		return false
-	end
-
-	local cam = workspace.CurrentCamera
-	local relCam: CFrame? = nil
-	if cam and (cam.CFrame.Position - root.Position).Magnitude <= 35 then
-		relCam = root.CFrame:ToObjectSpace(cam.CFrame)
-	end
-
-	local flatLook = false
-	local destCF: CFrame
-	if lookAtPos then
-		local flatTarget = Vector3.new(lookAtPos.X, destPos.Y, lookAtPos.Z)
-		if (flatTarget - destPos).Magnitude > 1.2 then
-			destCF = CFrame.lookAt(destPos, flatTarget)
-			flatLook = true
-		end
-	end
-	if not flatLook then
-		destCF = CFrame.new(destPos) * (root.CFrame - root.CFrame.Position)
-	end
-
-	hum.Sit = false
-	hum.PlatformStand = false
-	root.Anchored = false
-	root.AssemblyLinearVelocity = Vector3.zero
-	root.AssemblyAngularVelocity = Vector3.zero
-
-	char:PivotTo(destCF)
-
-	root.AssemblyLinearVelocity = Vector3.zero
-	root.AssemblyAngularVelocity = Vector3.zero
-	if cam then
-		if relCam then
-			cam.CFrame = root.CFrame * relCam
-			cam.Focus = CFrame.new(destPos)
-		else
-			cam.CameraType = Enum.CameraType.Custom
-			cam.CameraSubject = hum
-			local camTarget = if lookAtPos then lookAtPos else (destPos + destCF.LookVector * 12)
-			local camPos = destPos - destCF.LookVector * 12 + Vector3.new(0, 5, 0)
-			if (camTarget - camPos).Magnitude > 0.25 then
-				cam.CFrame = CFrame.lookAt(camPos, camTarget)
-			end
-			cam.Focus = CFrame.new(camTarget)
-		end
-	end
-	pcall(function()
-		hum:ChangeState(Enum.HumanoidStateType.Running)
-	end)
-	return true
 end
 
 function Material:IsPositionSafeForMove(pos: Vector3, allowSpace: boolean?): (boolean, string?)
@@ -5285,6 +5921,7 @@ function Material:Destroy()
 	config.ScanEsp = false
 	config.ShowBeam = false
 	config.AutoCollect = false
+	config.AutoCrossPlanet = false
 	autoLoopToken += 1
 	stopFlightSession()
 	releaseLootPhysics()
@@ -5299,8 +5936,9 @@ end
 
 return Material
 
-end
-__modules["AutomationModule"] = function()
+end)()
+
+local __mod_AutomationModule = (function()
 --[[
 	AutomationModule
 	Fast Auto Research & Auto Craft module for PortalG.
@@ -7087,8 +7725,9 @@ function Automation:Destroy()
 end
 
 return Automation
-end
-__modules["CombatModule"] = function()
+end)()
+
+local __mod_CombatModule = (function()
 --[[
 	CombatModule
 	Character Guardian (Anti-Void, Auto-Heal/Regen, Auto Emergency Force-Home),
@@ -7243,6 +7882,31 @@ local sharedSafeRayParams = RaycastParams.new()
 sharedSafeRayParams.FilterType = Enum.RaycastFilterType.Exclude
 sharedSafeRayParams.RespectCanCollide = true
 local cachedRayChar: Model? = nil
+
+local sharedLosRayParams = RaycastParams.new()
+sharedLosRayParams.FilterType = Enum.RaycastFilterType.Exclude
+sharedLosRayParams.IgnoreWater = true
+sharedLosRayParams.RespectCanCollide = true
+local cachedLosChar: Model? = nil
+local cachedLosCam: Camera? = nil
+
+local sharedLosBackParams = RaycastParams.new()
+sharedLosBackParams.FilterType = Enum.RaycastFilterType.Exclude
+sharedLosBackParams.IgnoreWater = true
+sharedLosBackParams.RespectCanCollide = true
+local cachedBackChar: Model? = nil
+local cachedBackTarget: Model? = nil
+local cachedBackCam: Camera? = nil
+
+local sharedWallParams = OverlapParams.new()
+sharedWallParams.FilterType = Enum.RaycastFilterType.Exclude
+sharedWallParams.RespectCanCollide = true
+local cachedWallChar: Model? = nil
+local cachedWallTarget: Model? = nil
+
+local skippedMobs: { [Model]: number } = {}
+local mobSkipCounts: { [Model]: number } = {}
+local lastHuntDim: any = nil
 
 local function getSafeRayParams(char: Model?): RaycastParams
 	if char ~= cachedRayChar then
@@ -7408,12 +8072,13 @@ local function isHostileMob(m: Instance): (boolean, string, Humanoid?, BasePart?
 	return true, enemyKey, hum, root
 end
 
-local function scanMobs(filterEnemyId: string?, maxDist: number?, requireSafeBounds: boolean?): { { model: Model, id: string, displayName: string, hum: Humanoid, root: BasePart, dist: number, isRanged: boolean } }
+local function scanMobs(filterEnemyId: string?, maxDist: number?, requireSafeBounds: boolean?, ignoreSkipped: boolean?): { { model: Model, id: string, displayName: string, hum: Humanoid, root: BasePart, dist: number, isRanged: boolean } }
 	local _, _, myRoot = getCharParts()
 	local originPos = if myRoot then myRoot.Position else (workspace.CurrentCamera and workspace.CurrentCamera.CFrame.Position or Vector3.zero)
 	local limit = maxDist or mobConfig.MaxHuntDist
 	local wantFilter = filterEnemyId and filterEnemyId ~= "" and filterEnemyId ~= "ALL"
 	local gd = getGameData()
+	local nowSkip = if ignoreSkipped then os.clock() else 0
 
 	local seen: { [Model]: boolean } = {}
 	local out = {}
@@ -7423,6 +8088,12 @@ local function scanMobs(filterEnemyId: string?, maxDist: number?, requireSafeBou
 			return
 		end
 		seen[m] = true
+		if ignoreSkipped and skippedMobs[m] then
+			if skippedMobs[m] > nowSkip then
+				return
+			end
+			skippedMobs[m] = nil
+		end
 		local okMob, eId, hum, mRoot = isHostileMob(m)
 		if not okMob or not hum or not mRoot then
 			return
@@ -7812,6 +8483,268 @@ local function installAimHook()
 	rawset(_G, "PG_AimLock", ourAimLockFn)
 end
 
+local function getLosRayParams(char: Model?): RaycastParams
+	local cam = workspace.CurrentCamera
+	if char ~= cachedLosChar or cam ~= cachedLosCam then
+		cachedLosChar = char
+		cachedLosCam = cam
+		local list = {}
+		if char then table.insert(list, char) end
+		if cam then table.insert(list, cam) end
+		sharedLosRayParams.FilterDescendantsInstances = list
+	end
+	return sharedLosRayParams
+end
+
+local function getLosBackParams(char: Model?, targetModel: Model?): RaycastParams
+	local cam = workspace.CurrentCamera
+	if char ~= cachedBackChar or targetModel ~= cachedBackTarget or cam ~= cachedBackCam then
+		cachedBackChar = char
+		cachedBackTarget = targetModel
+		cachedBackCam = cam
+		local list = {}
+		if char then table.insert(list, char) end
+		if targetModel then table.insert(list, targetModel) end
+		if cam then table.insert(list, cam) end
+		sharedLosBackParams.FilterDescendantsInstances = list
+	end
+	return sharedLosBackParams
+end
+
+local function getWallOverlapParams(char: Model?, targetModel: Model?): OverlapParams
+	if char ~= cachedWallChar or targetModel ~= cachedWallTarget then
+		cachedWallChar = char
+		cachedWallTarget = targetModel
+		local list = {}
+		if char then table.insert(list, char) end
+		if targetModel then table.insert(list, targetModel) end
+		sharedWallParams.FilterDescendantsInstances = list
+	end
+	return sharedWallParams
+end
+
+local function isPartShotBlocker(part: BasePart, targetModel: Model): boolean
+	if part:IsDescendantOf(targetModel) then
+		return false
+	end
+	if not part.CanCollide then
+		return false
+	end
+	if part.Transparency >= 0.95 then
+		return false
+	end
+	return true
+end
+
+-- Two-way raycast (shooter -> target AND target -> shooter) prevents both front walls and single-sided mesh walls
+local function hasClearShotToTarget(fromStandPos: Vector3, targetModel: Model, targetRoot: BasePart, char: Model): boolean
+	if not targetModel.Parent or not targetRoot.Parent then
+		return false
+	end
+	local rpFwd = getLosRayParams(char)
+	local rpBack = getLosBackParams(char, targetModel)
+	local eyeOrigin = fromStandPos + Vector3.new(0, 1.5, 0)
+
+	local aimPart = getMobAimPart(targetModel, targetRoot)
+	local points = {}
+	if aimPart then
+		table.insert(points, aimPart.Position)
+	end
+	if targetRoot and (not aimPart or aimPart ~= targetRoot) then
+		table.insert(points, targetRoot.Position + Vector3.new(0, 0.5, 0))
+	end
+
+	for _, pt in ipairs(points) do
+		local delta = pt - eyeOrigin
+		local dLen = delta.Magnitude
+		if dLen <= 0.6 then
+			return true
+		end
+		local hitFwd = workspace:Raycast(eyeOrigin, delta, rpFwd)
+		local fwdClear = (hitFwd == nil) or (not isPartShotBlocker(hitFwd.Instance :: BasePart, targetModel))
+		if fwdClear then
+			local hitBack = workspace:Raycast(pt, -delta, rpBack)
+			local backClear = (hitBack == nil) or (not hitBack.Instance:IsA("BasePart")) or (not (hitBack.Instance :: BasePart).CanCollide)
+			if backClear then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+local function isSpotFreeOfSolidWall(standPos: Vector3, char: Model, targetModel: Model?): boolean
+	local ov = getWallOverlapParams(char, targetModel)
+	-- Center probe at chest/shoulder height (+1.55 above HRP) so flat or thick floors never false-trigger
+	local probeCenter = standPos + Vector3.new(0, 1.55, 0)
+	local hits = workspace:GetPartBoundsInRadius(probeCenter, 1.0, ov)
+	for _, p in ipairs(hits) do
+		if p:IsA("BasePart") and p.CanCollide then
+			if p ~= workspace.Terrain then
+				local topY = p.Position.Y + p.Size.Y * 0.5
+				if topY > standPos.Y - 0.6 then
+					return false
+				end
+			else
+				local tHit = workspace:Raycast(standPos + Vector3.new(0, 3.0, 0), Vector3.new(0, -2.5, 0), getLosBackParams(char, targetModel))
+				if tHit and tHit.Position.Y > standPos.Y + 0.2 then
+					return false
+				end
+			end
+		end
+	end
+	local rpBack = getLosBackParams(char, targetModel)
+	local headCheck = workspace:Raycast(standPos + Vector3.new(0, 0.4, 0), Vector3.new(0, 3.2, 0), rpBack)
+	if headCheck and headCheck.Instance and headCheck.Instance:IsA("BasePart") and (headCheck.Instance :: BasePart).CanCollide then
+		return false
+	end
+	return true
+end
+
+-- Raycast strictly from just above mob height downward so characters stay inside the room instead of snapping onto roofs
+local function resolveRoomFloorY(candXZ: Vector3, refMobY: number, char: Model, targetModel: Model): (boolean, number)
+	local probeStart = Vector3.new(candXZ.X, refMobY + 3.0, candXZ.Z)
+	if matMod and type(matMod.IsPositionSafeForMove) == "function" then
+		local okSafe = matMod:IsPositionSafeForMove(Vector3.new(candXZ.X, refMobY, candXZ.Z), false)
+		if not okSafe then
+			return false, refMobY
+		end
+	elseif refMobY < -20500 then
+		return false, refMobY
+	end
+
+	local rpBack = getLosBackParams(char, targetModel)
+	local floorHit = workspace:Raycast(probeStart, Vector3.new(0, -18, 0), rpBack)
+	if floorHit and floorHit.Instance then
+		local candY = math.max(floorHit.Position.Y + 3.1, refMobY - 0.5)
+		if math.abs(candY - refMobY) <= 10 then
+			return true, candY
+		end
+	end
+
+	-- Fallback downward check when mob stands on a steep edge, keeping elevation bounded near mob
+	local deeperHit = workspace:Raycast(probeStart, Vector3.new(0, -65, 0), rpBack)
+	if deeperHit and deeperHit.Instance then
+		return true, refMobY + 0.5
+	end
+	return isSafePointInWorld(Vector3.new(candXZ.X, refMobY + 0.5, candXZ.Z), true), refMobY + 0.5
+end
+
+local APPROACH_ANGLES_RAD = {
+	0,
+	math.rad(35),
+	math.rad(-35),
+	math.rad(70),
+	math.rad(-70),
+	math.rad(110),
+	math.rad(-110),
+	math.rad(145),
+	math.rad(-145),
+	math.pi,
+}
+
+local function findBestAttackSpot(
+	char: Model,
+	root: BasePart,
+	targetModel: Model,
+	targetRoot: BasePart,
+	preferredDir: Vector3,
+	wantDist: number,
+	isMelee: boolean
+): (Vector3?, boolean, Vector3)
+	local mobPos = targetRoot.Position
+	local flatDiff = Vector3.new(root.Position.X - mobPos.X, 0, root.Position.Z - mobPos.Z)
+	local horizDist = flatDiff.Magnitude
+
+	-- Fast path: if already within engagement range, clear of walls, and has 2-way LOS, keep stationary aim
+	local maxStand = if isMelee then 8.5 else (wantDist + 2.5)
+	if horizDist <= maxStand and math.abs(root.Position.Y - mobPos.Y) <= 12 then
+		if isSpotFreeOfSolidWall(root.Position, char, targetModel) and hasClearShotToTarget(root.Position, targetModel, targetRoot, char) then
+			local keepDir = if horizDist > 0.4 then flatDiff.Unit else preferredDir
+			return root.Position, true, keepDir
+		end
+	end
+
+	local baseDir = Vector3.new(preferredDir.X, 0, preferredDir.Z)
+	baseDir = if baseDir.Magnitude > 0.2 then baseDir.Unit else Vector3.new(0, 0, 1)
+
+	local radii: { number }
+	if isMelee then
+		radii = { 5.2, 3.8, 2.8 }
+	else
+		local r2 = math.min(wantDist * 0.65, 13.5)
+		radii = { wantDist }
+		for _, rCand in ipairs({ r2, 9.0, 5.8, 3.8 }) do
+			if rCand < wantDist - 1.5 and rCand >= 3.2 then
+				table.insert(radii, rCand)
+			end
+		end
+	end
+
+	-- Pass 1: Search same-approach-direction first at decreasing radii (keeps straight approach whenever possible)
+	for _, r in ipairs(radii) do
+		local candXZ = mobPos + baseDir * r
+		local safeFloor, spotY = resolveRoomFloorY(candXZ, mobPos.Y, char, targetModel)
+		if safeFloor then
+			local candPos = Vector3.new(candXZ.X, spotY, candXZ.Z)
+			if isSpotFreeOfSolidWall(candPos, char, targetModel) and hasClearShotToTarget(candPos, targetModel, targetRoot, char) then
+				return candPos, true, baseDir
+			end
+		end
+	end
+
+	-- Pass 2: Building/wall blocked front path -> scan perimeter angles (prioritizing inside room gaps -> elevated outside angles)
+	for _, r in ipairs(radii) do
+		for i = 2, #APPROACH_ANGLES_RAD do
+			local ang = APPROACH_ANGLES_RAD[i]
+			local cs = math.cos(ang)
+			local sn = math.sin(ang)
+			local dir = Vector3.new(baseDir.X * cs - baseDir.Z * sn, 0, baseDir.X * sn + baseDir.Z * cs).Unit
+			local candXZ = mobPos + dir * r
+			local safeFloor, spotY = resolveRoomFloorY(candXZ, mobPos.Y, char, targetModel)
+			if safeFloor then
+				local candPos = Vector3.new(candXZ.X, spotY, candXZ.Z)
+				if isSpotFreeOfSolidWall(candPos, char, targetModel) and hasClearShotToTarget(candPos, targetModel, targetRoot, char) then
+					return candPos, true, dir
+				end
+			end
+		end
+	end
+
+	-- Pass 3: Check slightly elevated angles (windows / low fences) on closer radii
+	for _, r in ipairs({ math.min(wantDist, 14), 8.0 }) do
+		for i = 1, 5 do
+			local ang = APPROACH_ANGLES_RAD[i]
+			local cs = math.cos(ang)
+			local sn = math.sin(ang)
+			local dir = Vector3.new(baseDir.X * cs - baseDir.Z * sn, 0, baseDir.X * sn + baseDir.Z * cs).Unit
+			local candPos = Vector3.new(mobPos.X + dir.X * r, mobPos.Y + 5.5, mobPos.Z + dir.Z * r)
+			if isSafePointInWorld(candPos, true) and isSpotFreeOfSolidWall(candPos, char, targetModel) and hasClearShotToTarget(candPos, targetModel, targetRoot, char) then
+				return candPos, true, dir
+			end
+		end
+	end
+
+	-- No clear LOS exists anywhere (mob trapped inside solid mesh/sealed box) -> try closest non-solid melee pocket if any
+	for _, r in ipairs({ 4.2, 6.2 }) do
+		for _, ang in ipairs(APPROACH_ANGLES_RAD) do
+			local cs = math.cos(ang)
+			local sn = math.sin(ang)
+			local dir = Vector3.new(baseDir.X * cs - baseDir.Z * sn, 0, baseDir.X * sn + baseDir.Z * cs).Unit
+			local candXZ = mobPos + dir * r
+			local safeFloor, spotY = resolveRoomFloorY(candXZ, mobPos.Y, char, targetModel)
+			if safeFloor then
+				local candPos = Vector3.new(candXZ.X, spotY, candXZ.Z)
+				if isSpotFreeOfSolidWall(candPos, char, targetModel) then
+					return candPos, false, dir
+				end
+			end
+		end
+	end
+
+	return nil, false, baseDir
+end
+
 local function applyAimToTarget(targetModel: Model, targetRoot: BasePart, aimCamera: boolean): Vector3?
 	local aimPart = getMobAimPart(targetModel, targetRoot)
 	if not aimPart then
@@ -7822,7 +8755,7 @@ local function applyAimToTarget(targetModel: Model, targetRoot: BasePart, aimCam
 	installAimHook()
 
 	local aimPos = aimPart.Position
-	local _, _, root = getCharParts()
+	local char, _, root = getCharParts()
 	if root then
 		local lookXZ = Vector3.new(aimPos.X - root.Position.X, 0, aimPos.Z - root.Position.Z)
 		if lookXZ.Magnitude > 0.25 then
@@ -7836,15 +8769,47 @@ local function applyAimToTarget(targetModel: Model, targetRoot: BasePart, aimCam
 
 	if aimCamera then
 		local cam = workspace.CurrentCamera
-		if cam and (cam.CFrame.Position - aimPos).Magnitude > 1.2 then
-			cam.CFrame = CFrame.lookAt(cam.CFrame.Position, aimPos)
+		if cam then
+			local camPos = cam.CFrame.Position
+			-- If interior wall blocks camera-to-mob view, tuck camera safely inside the room in front of wall
+			if char and root then
+				local camDelta = aimPos - camPos
+				local camBlocked = false
+				if (camPos - root.Position).Magnitude > 22 then
+					camBlocked = true
+				elseif camDelta.Magnitude > 1.5 then
+					local rp = getLosRayParams(char)
+					local hit = workspace:Raycast(camPos, camDelta, rp)
+					if hit and hit.Instance and hit.Instance:IsA("BasePart") and isPartShotBlocker(hit.Instance :: BasePart, targetModel) then
+						camBlocked = true
+					end
+				end
+				if camBlocked then
+					local toAimFlat = Vector3.new(aimPos.X - root.Position.X, 0, aimPos.Z - root.Position.Z)
+					local backDir = if toAimFlat.Magnitude > 0.3 then toAimFlat.Unit else root.CFrame.LookVector
+					local desiredCam = root.Position - backDir * 4.5 + Vector3.new(0, 2.2, 0)
+					local rpBack = getLosBackParams(char, targetModel)
+					local wallBehind = workspace:Raycast(root.Position + Vector3.new(0, 1.8, 0), desiredCam - (root.Position + Vector3.new(0, 1.8, 0)), rpBack)
+					if wallBehind and wallBehind.Distance > 0.8 then
+						camPos = (root.Position + Vector3.new(0, 1.8, 0)) + (desiredCam - (root.Position + Vector3.new(0, 1.8, 0))).Unit * math.max(0.5, wallBehind.Distance - 0.5)
+					elseif not wallBehind then
+						camPos = desiredCam
+					else
+						camPos = root.Position + Vector3.new(0, 2.0, 0)
+					end
+				end
+			end
+			if (camPos - aimPos).Magnitude > 0.5 then
+				cam.CFrame = CFrame.lookAt(camPos, aimPos)
+			end
+			cam.Focus = CFrame.new(aimPos)
 		end
 	end
 
 	return aimPos
 end
 
-local function pickBestWeaponTool(): (Tool?, boolean)
+local function pickBestWeaponTool(preferMelee: boolean?): (Tool?, boolean)
 	local char, _, _ = getCharParts()
 	local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
 	local bestMelee: Tool? = nil
@@ -7875,6 +8840,9 @@ local function pickBestWeaponTool(): (Tool?, boolean)
 	inspectContainer(char)
 	inspectContainer(bp)
 
+	if preferMelee and bestMelee then
+		return bestMelee, false
+	end
 	if bestRanged then
 		return bestRanged, true
 	end
@@ -7888,7 +8856,7 @@ local function isPortalGunTool(tool: Tool?): boolean
 	return tool.Name == "PortalGun" or tool.Name == "GoldenPortalGun" or tool.Name == "PortalGunJr"
 end
 
-local function performAimAndShoot(targetModel: Model, targetRoot: BasePart)
+local function performAimAndShoot(targetModel: Model, targetRoot: BasePart, preferMeleeClose: boolean?)
 	local char, hum, root = getCharParts()
 	if not char or not hum or not root or hum.Health <= 0 then
 		return
@@ -7902,7 +8870,7 @@ local function performAimAndShoot(targetModel: Model, targetRoot: BasePart)
 
 	local now = os.clock()
 	local held = char:FindFirstChildOfClass("Tool")
-	local bestWeapon, isRanged = pickBestWeaponTool()
+	local bestWeapon, isRanged = pickBestWeaponTool(preferMeleeClose and dist <= 10.5)
 
 	-- Equip best weapon cleanly (prioritize Ranged Guns; keep PortalGun unequipped)
 	if bestWeapon and held ~= bestWeapon then
@@ -8044,8 +9012,19 @@ local function stepAutoAim(dt: number)
 	end
 	aimAcc = 0
 
-	local nearby = scanMobs(mobConfig.HuntFilter, mobConfig.AimRange, false)
+	local nearby = scanMobs(mobConfig.HuntFilter, mobConfig.AimRange, false, false)
+	local char = LocalPlayer.Character
+	local _, _, root = getCharParts()
 	local chosen = nearby[1]
+	if chosen and char and root and #nearby > 1 then
+		for i = 1, math.min(5, #nearby) do
+			local cand = nearby[i]
+			if hasClearShotToTarget(root.Position, cand.model, cand.root, char) then
+				chosen = cand
+				break
+			end
+		end
+	end
 	if chosen then
 		local aimPos = applyAimToTarget(chosen.model, chosen.root, true)
 		local char = LocalPlayer.Character
@@ -8099,9 +9078,27 @@ end
 --====================================================
 -- AUTO FARM MOBS (1-DIRECTION FLY + AIM & SHOOT)
 --====================================================
+local function markMobSkipped(targetModel: Model)
+	local count = (mobSkipCounts[targetModel] or 0) + 1
+	mobSkipCounts[targetModel] = count
+	local skipSecs = if count == 1 then 18 elseif count == 2 then 40 else 90
+	skippedMobs[targetModel] = os.clock() + skipSecs
+end
+
 local function startAutoHuntLoop(myToken: number)
+	lastHuntDim = LocalPlayer:GetAttribute("CurrentDimension")
+	table.clear(skippedMobs)
+	table.clear(mobSkipCounts)
+
 	task.spawn(function()
 		while mobConfig.AutoHunt and myToken == huntToken and not destroyed do
+			local curDimNow = LocalPlayer:GetAttribute("CurrentDimension")
+			if curDimNow ~= lastHuntDim then
+				lastHuntDim = curDimNow
+				table.clear(skippedMobs)
+				table.clear(mobSkipCounts)
+			end
+
 			local char, hum, root = getCharParts()
 			if not char or not hum or not root or hum.Health <= 0 then
 				currentAimModel = nil
@@ -8110,30 +9107,71 @@ local function startAutoHuntLoop(myToken: number)
 				continue
 			end
 
-			local targets = scanMobs(mobConfig.HuntFilter, mobConfig.MaxHuntDist, true)
+			local targets = scanMobs(mobConfig.HuntFilter, mobConfig.MaxHuntDist, true, true)
 			if #targets == 0 then
 				currentAimModel = nil
 				currentAimPart = nil
-				lastMobMsg = ("No %s nearby"):format(if mobConfig.HuntFilter == "ALL" then "mobs" else mobConfig.HuntFilter)
+				local allTargets = scanMobs(mobConfig.HuntFilter, mobConfig.MaxHuntDist, true, false)
+				if #allTargets > 0 then
+					lastMobMsg = ("All %d nearby mobs blocked in buildings (waiting)..."):format(#allTargets)
+				else
+					lastMobMsg = ("No %s nearby"):format(if mobConfig.HuntFilter == "ALL" then "mobs" else mobConfig.HuntFilter)
+				end
 				task.wait(0.55)
 				continue
 			end
 
 			local chosen = targets[1]
+			-- Prefer first nearby target (within +30m of nearest) that already has an open attack spot with LOS
+			local _, isRangedBest = pickBestWeaponTool(false)
+			local hasEvilBlast = LocalPlayer:GetAttribute("EyePatchOn") == true and (tonumber(LocalPlayer:GetAttribute("EyeLevel")) or 0) >= 5
+			local wantDistInit = if (isRangedBest or hasEvilBlast) then math.clamp(mobConfig.EngageDist, 6, 45) else 5.2
+			local chosenSpot: Vector3? = nil
+			local chosenClear = false
+			local singleApproachDir = Vector3.new(0, 0, 1)
+
+			for i = 1, math.min(5, #targets) do
+				local cand = targets[i]
+				if cand.dist > targets[1].dist + 45 then
+					break
+				end
+				local deltaC = Vector3.new(root.Position.X - cand.root.Position.X, 0, root.Position.Z - cand.root.Position.Z)
+				local prefC = if deltaC.Magnitude > 0.4 then deltaC.Unit else Vector3.new(0, 0, 1)
+				local spotC, clearC, dirC = findBestAttackSpot(char, root, cand.model, cand.root, prefC, wantDistInit, not (isRangedBest or hasEvilBlast))
+				if clearC and spotC then
+					chosen = cand
+					chosenSpot = spotC
+					chosenClear = true
+					singleApproachDir = dirC
+					break
+				elseif i == 1 then
+					chosenSpot = spotC
+					chosenClear = clearC
+					singleApproachDir = dirC
+				end
+			end
+
 			local targetModel = chosen.model
 			local targetHum = chosen.hum
 			local targetRoot = chosen.root
-
-			-- Capture 1 clean single approach direction from mob toward player (NO orbiting behind/in front)
-			local deltaInit = Vector3.new(root.Position.X - targetRoot.Position.X, 0, root.Position.Z - targetRoot.Position.Z)
-			local singleApproachDir = if deltaInit.Magnitude > 0.5 then deltaInit.Unit else Vector3.new(0, 0, 1)
 			lastMobMsg = ("Locking %s (%.0fm)"):format(chosen.displayName, chosen.dist)
 
 			local engageStart = os.clock()
 			local lastHuntStepClock = engageStart
+			local lastSeenHp = targetHum.Health
+			local lastDamageClock = engageStart
+			local firingStartedClock: number? = nil
+			local noLosSinceClock: number? = nil
+			local retargetAttempts = 0
+			local lastRepositionClock = 0
+			local forceMeleeClose = false
+			local activeSpot: Vector3? = chosenSpot
+			local activeSpotClear = chosenClear
+			local lastMobPosSnapshot = targetRoot.Position
+
 			while mobConfig.AutoHunt and myToken == huntToken and not destroyed
 				and targetModel.Parent and targetHum.Health > 0 and targetRoot.Parent
-				and os.clock() - engageStart < 30
+				and os.clock() - engageStart < 35
 			do
 				local nowStep = os.clock()
 				local stepDt = math.clamp(nowStep - lastHuntStepClock, 0.03, 0.25)
@@ -8143,68 +9181,175 @@ local function startAutoHuntLoop(myToken: number)
 					break
 				end
 
+				-- Track actual HP damage dealt to detect wall-blocked or invincible trapped mobs fast
+				local hpNow = targetHum.Health
+				if hpNow < lastSeenHp - 0.05 then
+					lastSeenHp = hpNow
+					lastDamageClock = nowStep
+					retargetAttempts = 0
+					forceMeleeClose = false
+				end
+
 				local mobPos = targetRoot.Position
-				local safeOk, groundPos = isSafePointInWorld(mobPos, false)
+				local safeOk = isSafePointInWorld(mobPos, false)
 				if not safeOk then
 					lastMobMsg = "Skipped unsafe Void/Space mob"
+					markMobSkipped(targetModel)
 					break
 				end
 
-				local _, isRanged = pickBestWeaponTool()
-				local hasEvilBlast = LocalPlayer:GetAttribute("EyePatchOn") == true and (tonumber(LocalPlayer:GetAttribute("EyeLevel")) or 0) >= 5
-				local wantDist = if (isRanged or hasEvilBlast) then math.clamp(mobConfig.EngageDist, 8, 45) else 6.2
-				local idealY = if groundPos then math.max(groundPos.Y + 3.2, mobPos.Y + 0.5) else (mobPos.Y + 1.0)
+				local _, isRangedNow = pickBestWeaponTool(false)
+				local hasBlastNow = LocalPlayer:GetAttribute("EyePatchOn") == true and (tonumber(LocalPlayer:GetAttribute("EyeLevel")) or 0) >= 5
+				local wantDist = if (isRangedNow or hasBlastNow) and not forceMeleeClose then math.clamp(mobConfig.EngageDist, 6, 45) else 5.0
 
-				local fireSpot = Vector3.new(
-					mobPos.X + singleApproachDir.X * wantDist,
-					idealY,
-					mobPos.Z + singleApproachDir.Z * wantDist
-				)
-				local fsSafe, fsGround = isSafePointInWorld(fireSpot, false)
-				if fsSafe and fsGround then
-					fireSpot = Vector3.new(fireSpot.X, math.max(fsGround.Y + 3.2, mobPos.Y + 0.5), fireSpot.Z)
-				elseif not fsSafe then
-					local midSpot = Vector3.new(
-						mobPos.X + singleApproachDir.X * math.min(wantDist, 5.5),
-						idealY,
-						mobPos.Z + singleApproachDir.Z * math.min(wantDist, 5.5)
-					)
-					local mSafe, mGround = isSafePointInWorld(midSpot, false)
-					if mSafe then
-						fireSpot = Vector3.new(midSpot.X, if mGround then math.max(mGround.Y + 3.2, mobPos.Y + 0.5) else idealY, midSpot.Z)
-					else
-						fireSpot = Vector3.new(mobPos.X, idealY, mobPos.Z)
+				-- Re-evaluate vantage spot if missing, mob moved >4 studs, LOS lost while standing, or 0 damage for >0.95s
+				local distToSpot = if activeSpot then (activeSpot - root.Position).Magnitude else 999
+				local currentLosOk = if distToSpot <= 4.5 then hasClearShotToTarget(root.Position, targetModel, targetRoot, char) else activeSpotClear
+				local stalledOnShot = (firingStartedClock ~= nil) and ((nowStep - math.max(firingStartedClock :: number, lastDamageClock)) >= 0.95)
+				local mobMoved = (mobPos - lastMobPosSnapshot).Magnitude >= 4.0
+
+				if (not activeSpot) or mobMoved or (distToSpot <= 4.5 and not currentLosOk) or (stalledOnShot and nowStep - lastRepositionClock >= 0.85) then
+					lastMobPosSnapshot = mobPos
+					lastRepositionClock = nowStep
+					if stalledOnShot then
+						retargetAttempts += 1
+						-- Tighten distance gradually on retry so character steps past outer walls/pillars into the room
+						wantDist = if retargetAttempts == 1 then math.min(wantDist, 9.5) else 4.8
+						if retargetAttempts >= 2 then
+							forceMeleeClose = true
+						end
+					end
+
+					local newSpot, newClear, newDir = findBestAttackSpot(char, root, targetModel, targetRoot, singleApproachDir, wantDist, forceMeleeClose or not (isRangedNow or hasBlastNow))
+					activeSpot = newSpot
+					activeSpotClear = newClear
+					singleApproachDir = newDir
+
+					if newClear then
+						noLosSinceClock = nil
+					elseif not noLosSinceClock then
+						noLosSinceClock = nowStep
+					end
+
+					-- Bail out quickly if mob has 0 clear LOS anywhere and melee/stalled checks fail
+					if (not newSpot) or (not newClear and (nowStep - (noLosSinceClock :: number)) >= 1.6) or retargetAttempts >= 3 then
+						markMobSkipped(targetModel)
+						lastMobMsg = ("Skipped trapped mob in building: %s"):format(chosen.displayName)
+						break
 					end
 				end
 
-				local horizDist = Vector3.new(root.Position.X - mobPos.X, 0, root.Position.Z - mobPos.Z).Magnitude
-				local toFireSpot = fireSpot - root.Position
-				if horizDist > wantDist + 2.5 and toFireSpot.Magnitude > 2.5 then
-					local stepDist = math.min(toFireSpot.Magnitude, 95 * stepDt)
-					local nextPos = root.Position + toFireSpot.Unit * stepDist
-					if isSafePointInWorld(nextPos, true) then
+				-- Global zero-damage watchdog once in shooting phase (>3.2s with 0 HP loss)
+				if firingStartedClock and (nowStep - math.max(firingStartedClock :: number, lastDamageClock)) >= 3.2 then
+					markMobSkipped(targetModel)
+					lastMobMsg = ("Skipped blocked mob (0 dmg): %s"):format(chosen.displayName)
+					break
+				end
+
+				if not activeSpot then
+					markMobSkipped(targetModel)
+					lastMobMsg = ("Skipped unreachable mob: %s"):format(chosen.displayName)
+					break
+				end
+
+				local toSpot = activeSpot - root.Position
+				local spotDist = toSpot.Magnitude
+				local didLongTeleport = false
+				if spotDist > 3.2 then
+					-- Check if straight travel path is blocked by building wall/roof OR is far -> Teleport cleanly to vantage spot
+					local rpFwd = getLosRayParams(char)
+					local pathDelta = (activeSpot + Vector3.new(0, 1.0, 0)) - (root.Position + Vector3.new(0, 1.0, 0))
+					local pathHit = if pathDelta.Magnitude > 1.0 then workspace:Raycast(root.Position + Vector3.new(0, 1.0, 0), pathDelta, rpFwd) else nil
+					local pathBlocked = pathHit ~= nil and pathHit.Instance ~= nil and pathHit.Instance:IsA("BasePart") and isPartShotBlocker(pathHit.Instance :: BasePart, targetModel)
+
+					if pathBlocked or spotDist > 34 then
+						if spotDist > 110 then
+							local sDone = false
+							task.spawn(function()
+								pcall(function()
+									LocalPlayer:RequestStreamAroundAsync(activeSpot :: Vector3, 1.0)
+								end)
+								sDone = true
+							end)
+							local sEnd = os.clock() + 0.30
+							while not sDone and os.clock() < sEnd and mobConfig.AutoHunt and myToken == huntToken and not destroyed do
+								task.wait(0.03)
+							end
+						end
+						if not mobConfig.AutoHunt or myToken ~= huntToken or destroyed then
+							break
+						end
+						hum.Sit = false
+						hum.PlatformStand = false
+						root.Anchored = false
 						root.AssemblyLinearVelocity = Vector3.zero
 						root.AssemblyAngularVelocity = Vector3.zero
-						root.CFrame = CFrame.lookAt(nextPos, Vector3.new(mobPos.X, nextPos.Y, mobPos.Z))
+						local lookPt = Vector3.new(mobPos.X, activeSpot.Y, mobPos.Z)
+						local destCF = if (lookPt - activeSpot).Magnitude > 0.3 then CFrame.lookAt(activeSpot, lookPt) else CFrame.new(activeSpot)
+						char:PivotTo(destCF)
+						root.AssemblyLinearVelocity = Vector3.zero
+						root.AssemblyAngularVelocity = Vector3.zero
+						if spotDist > 20 then
+							didLongTeleport = true
+						end
 					else
-						break
+						local stepDist = math.min(spotDist, 115 * stepDt)
+						local nextPos = root.Position + toSpot.Unit * stepDist
+						if isSafePointInWorld(nextPos, true) then
+							hum.Sit = false
+							hum.PlatformStand = false
+							root.AssemblyLinearVelocity = Vector3.zero
+							root.AssemblyAngularVelocity = Vector3.zero
+							local lookPt = Vector3.new(mobPos.X, nextPos.Y, mobPos.Z)
+							root.CFrame = if (lookPt - nextPos).Magnitude > 0.3 then CFrame.lookAt(nextPos, lookPt) else CFrame.new(nextPos)
+						else
+							markMobSkipped(targetModel)
+							break
+						end
 					end
 				else
 					root.AssemblyLinearVelocity = Vector3.zero
 					root.AssemblyAngularVelocity = Vector3.zero
-					if math.abs(root.Position.Y - idealY) > 1.5 and isSafePointInWorld(Vector3.new(root.Position.X, idealY, root.Position.Z), false) then
-						root.CFrame = CFrame.lookAt(Vector3.new(root.Position.X, idealY, root.Position.Z), Vector3.new(mobPos.X, idealY, mobPos.Z))
+					if math.abs(root.Position.Y - activeSpot.Y) > 1.5 and isSpotFreeOfSolidWall(Vector3.new(root.Position.X, activeSpot.Y, root.Position.Z), char, targetModel) then
+						local adjPos = Vector3.new(root.Position.X, activeSpot.Y, root.Position.Z)
+						local lookPt = Vector3.new(mobPos.X, adjPos.Y, mobPos.Z)
+						root.CFrame = if (lookPt - adjPos).Magnitude > 0.3 then CFrame.lookAt(adjPos, lookPt) else CFrame.new(adjPos)
 					end
 				end
 
-				performAimAndShoot(targetModel, targetRoot)
-				lastMobMsg = ("Aiming & Shooting %s (HP %.0f | %.0fm)"):format(chosen.displayName, math.max(0, targetHum.Health), horizDist)
+				-- Brief replication settle after a long teleport so Server sees the new clear-LOS spot before firing
+				if didLongTeleport then
+					task.wait(0.14)
+					if not mobConfig.AutoHunt or myToken ~= huntToken or destroyed or not targetModel.Parent or targetHum.Health <= 0 then
+						break
+					end
+					char, hum, root = getCharParts()
+					if not char or not hum or not root or hum.Health <= 0 then
+						break
+					end
+					root.AssemblyLinearVelocity = Vector3.zero
+					root.AssemblyAngularVelocity = Vector3.zero
+				end
+
+				-- Only start/advance damage timer once actually in weapon position with clear shot or close pocket
+				if (activeSpot - root.Position).Magnitude <= 5.5 then
+					if not firingStartedClock then
+						firingStartedClock = os.clock()
+						lastDamageClock = os.clock()
+					end
+				end
+
+				performAimAndShoot(targetModel, targetRoot, forceMeleeClose)
+				local liveDist = (targetRoot.Position - root.Position).Magnitude
+				lastMobMsg = ("%s %s (HP %.0f | %.0fm)"):format(if activeSpotClear then "Shooting" else "Closing", chosen.displayName, math.max(0, targetHum.Health), liveDist)
 				task.wait(if lowEndMode then 0.09 else 0.06)
 			end
 
 			currentAimModel = nil
 			currentAimPart = nil
 			if targetHum.Health <= 0 or not targetModel.Parent then
+				skippedMobs[targetModel] = nil
+				mobSkipCounts[targetModel] = nil
 				killedCount += 1
 				lastMobMsg = ("Defeated %s (#%d)"):format(chosen.displayName, killedCount)
 				task.wait(0.08)
@@ -8784,6 +9929,8 @@ function Combat:Destroy()
 	missionConfig.AutoEnabled = false
 	huntToken += 1
 	missionToken += 1
+	table.clear(skippedMobs)
+	table.clear(mobSkipCounts)
 	releaseMissionSubModes()
 	clearMobEsp()
 	uninstallAimHook()
@@ -8792,8 +9939,8 @@ end
 
 return Combat
 
-end
-do
+end)()
+
 --[[
 	RayfieldMenu (LocalScript)
 	Client controller in StarterPlayer.StarterPlayerScripts (and DeltaX Mobile single-file compatible).
@@ -8813,11 +9960,11 @@ local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 
-local Rayfield = __req("RayfieldLib")
-local Esp = __req("EspModule")
-local Material = __req("MaterialModule")
-local Automation = __req("AutomationModule")
-local Combat = __req("CombatModule")
+local Rayfield = __mod_RayfieldLib
+local Esp = __mod_EspModule
+local Material = __mod_MaterialModule
+local Automation = __mod_AutomationModule
+local Combat = __mod_CombatModule
 
 Combat:SetDependencies(Material, Automation)
 
@@ -8966,6 +10113,36 @@ local tglMatBeam = MaterialTab:CreateToggle({
 	end,
 })
 
+local TRAVEL_MODES = {
+	["Smart (Planet Bypass + Portal Gun)"] = "SmartAuto",
+	["Planet Bypass Only (Fastest)"] = "BypassOnly",
+	["Portal Gun (Open & Cross)"] = "PortalGunOnly",
+}
+
+MaterialTab:CreateDropdown({
+	Name = "Off-World Travel Method",
+	Options = { "Smart (Planet Bypass + Portal Gun)", "Planet Bypass Only (Fastest)", "Portal Gun (Open & Cross)" },
+	CurrentOption = "Smart (Planet Bypass + Portal Gun)",
+	Callback = function(option: string)
+		Material:SetTravelMethod(TRAVEL_MODES[option] or "SmartAuto")
+	end,
+})
+
+local tglMatCrossPlanet = MaterialTab:CreateToggle({
+	Name = "Auto Travel Planets / Dimensions",
+	Description = "Uses PlanetTravel bypass or opens Portal Gun when selected material is on another planet/world",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Material:SetAutoCrossPlanet(enabled)
+		Window:Notify({
+			Title = "Off-World Auto Loot",
+			Content = if enabled then "Auto Planet/Portal Travel ENABLED." else "Auto Planet/Portal Travel DISABLED.",
+			Duration = 2.5,
+			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
+		})
+	end,
+})
+
 local tglMatAutoCollect = MaterialTab:CreateToggle({
 	Name = "Auto Loot Material (Teleport / Fast)",
 	Description = "Instantly teleports/moves to matching materials with anti-hang prompt & GroundGuard recovery",
@@ -8977,6 +10154,21 @@ local tglMatAutoCollect = MaterialTab:CreateToggle({
 			Content = if enabled then "Auto Loot Material ENABLED." else "Auto Loot Material DISABLED.",
 			Duration = 2.5,
 			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
+		})
+	end,
+})
+
+MaterialTab:CreateButton({
+	Name = "Travel to Selected Material World",
+	Description = "Bypass or open Portal Gun straight to the planet/dimension for the selected material",
+	Callback = function()
+		local ok, msg = Material:TravelToSelectedItemWorld()
+		materialStatus:Set({ Content = Material:GetStatusText() })
+		Window:Notify({
+			Title = "Off-World Travel",
+			Content = msg,
+			Duration = 3,
+			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
 		})
 	end,
 })
@@ -9371,8 +10563,8 @@ CombatTab:CreateSlider({
 })
 
 local tglAutoHunt = CombatTab:CreateToggle({
-	Name = "Auto Farm Mobs (Fly + Aim & Shoot)",
-	Description = "Flies straight toward mobs in 1 direction, aims directly & shoots with your best weapon",
+	Name = "Auto Farm Mobs (Smart Tele/Fly + LOS)",
+	Description = "Finds clear line-of-sight around/inside buildings, teleports/flies past walls & skips solid-trapped mobs",
 	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		Combat:SetAutoHunt(enabled)
@@ -9831,4 +11023,3 @@ Window:Notify({
 	Content = "Press RightShift to toggle the menu anytime.",
 	Duration = 4,
 })
-end
