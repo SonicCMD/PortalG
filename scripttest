@@ -6525,9 +6525,9 @@ __modules["CombatModule"] = function()
 --[[
 	CombatModule
 	Character Guardian (Anti-Void, Auto-Heal/Regen, Auto Emergency Force-Home),
-	Mob Hunter + Kill Aura (legitimate Tool / CyberArm / EvilTech attacks + drop pickup),
+	Auto Aim (PG_AimLock + Camera + Facing) & Single-Direction Auto Farm Mobs (Fly + Aim & Shoot),
 	and Mission-Aware Auto Quest Runner for PortalG.
-	Zero idle CPU when toggles are OFF. Compatible with Studio and DeltaX Mobile.
+	Zero idle CPU when toggles are OFF. Compatible with Studio, DeltaX Mobile & PC executors.
 ]]
 
 local CollectionService = game:GetService("CollectionService")
@@ -6554,14 +6554,14 @@ local guardConfig = {
 }
 
 local mobConfig = {
-	KillAura = false,
-	AuraRange = 18,
+	AutoAim = false,
+	AimRange = 140,
 	AutoHunt = false,
 	HuntFilter = "ALL",
 	MaxHuntDist = 1800,
+	EngageDist = 24,
 	MobEsp = false,
 	AutoPickupDrops = true,
-	SafeStandoff = true,
 }
 
 local missionConfig = {
@@ -6580,15 +6580,16 @@ local MELEE_TOOLS: { [string]: number } = {
 }
 
 local RANGED_TOOLS: { [string]: number } = {
-	AntimatterGun = 9,
-	PrimeBlaster = 8,
-	SpaceBethRifle = 7,
-	EvilBlaster = 6,
-	PlasmaShotgun = 5,
-	TwinCannon = 4,
-	GromflomiteBlaster = 3,
-	DoofusPistol = 2,
-	LaserGun = 1,
+	AntimatterGun = 10,
+	PrimeBlaster = 9,
+	SpaceBethRifle = 8,
+	EvilBlaster = 7,
+	PlasmaShotgun = 6,
+	TwinCannon = 5,
+	GromflomiteBlaster = 4,
+	DoofusPistol = 3,
+	LaserGun = 2,
+	FreezeGun = 1,
 }
 
 local HEAL_ITEMS = {
@@ -6643,11 +6644,17 @@ local lastRegenClock = 0
 local lastItemClock: { [string]: number } = {}
 local lastEscapeClock = 0
 
-local auraAcc = 0
+local aimAcc = 0
 local lastSwingClock = 0
 local lastArmStrikeClock = 0
+local lastArmAimClock = 0
 local lastAimClickClock = 0
 local lastDropSweepClock = 0
+
+local currentAimModel: Model? = nil
+local currentAimPart: BasePart? = nil
+local savedPrevAimLock: any = nil
+local ourAimLockFn: (() -> Vector3?)? = nil
 
 local mobEspFolder: Folder? = nil
 local mobEspVisuals: { [Model]: { bb: BillboardGui, lbl: TextLabel, hl: Highlight, lastTxt: string } } = {}
@@ -6655,7 +6662,7 @@ local mobEspAcc = 0
 
 local lowEndMode = false
 local guardInterval = 0.14
-local auraInterval = 0.16
+local aimInterval = 0.05
 local mobEspInterval = 0.28
 local maxMobEspHighlights = 12
 local dropSweepInterval = 0.75
@@ -6682,13 +6689,13 @@ function Combat:SetLowEndMode(enabled: boolean)
 	lowEndMode = enabled == true
 	if lowEndMode then
 		guardInterval = 0.20
-		auraInterval = 0.22
+		aimInterval = 0.08
 		mobEspInterval = 0.55
 		maxMobEspHighlights = 4
 		dropSweepInterval = 1.35
 	else
 		guardInterval = 0.14
-		auraInterval = 0.16
+		aimInterval = 0.05
 		mobEspInterval = 0.28
 		maxMobEspHighlights = 12
 		dropSweepInterval = 0.75
@@ -7175,9 +7182,102 @@ local function stepGuardian(dt: number)
 end
 
 --====================================================
--- GENUINE PLAYER ATTACK ENGINE (KILL AURA + AUTO HUNT)
+-- AUTO AIM (PG_AimLock + CAMERA + FACING) & AIM SHOOT
 --====================================================
-local function pickBestWeaponTool(dist: number): Tool?
+local function getMobAimPart(targetModel: Model?, fallbackRoot: BasePart?): BasePart?
+	if not targetModel or not targetModel.Parent then
+		return nil
+	end
+	local head = targetModel:FindFirstChild("Head")
+	if head and head:IsA("BasePart") then
+		return head
+	end
+	local torso = targetModel:FindFirstChild("UpperTorso") or targetModel:FindFirstChild("Torso")
+	if torso and torso:IsA("BasePart") then
+		return torso
+	end
+	return fallbackRoot or targetModel.PrimaryPart
+end
+
+local function uninstallAimHook()
+	currentAimModel = nil
+	currentAimPart = nil
+	pcall(function()
+		LocalPlayer:SetAttribute("AimCenter", nil)
+	end)
+	if ourAimLockFn and rawget(_G, "PG_AimLock") == ourAimLockFn then
+		rawset(_G, "PG_AimLock", savedPrevAimLock)
+	end
+	ourAimLockFn = nil
+	savedPrevAimLock = nil
+end
+
+local function installAimHook()
+	if ourAimLockFn and rawget(_G, "PG_AimLock") == ourAimLockFn then
+		return
+	end
+	local existing = rawget(_G, "PG_AimLock")
+	if existing ~= nil and existing ~= ourAimLockFn then
+		savedPrevAimLock = existing
+	end
+	ourAimLockFn = function(): Vector3?
+		if not destroyed and (mobConfig.AutoAim or mobConfig.AutoHunt) and currentAimModel and currentAimModel.Parent then
+			local mh = currentAimModel:FindFirstChildOfClass("Humanoid")
+			if mh and mh.Health > 0 then
+				local p = currentAimPart
+				if not p or not p.Parent then
+					p = getMobAimPart(currentAimModel, nil)
+					currentAimPart = p
+				end
+				if p then
+					return p.Position
+				end
+			end
+		end
+		if type(savedPrevAimLock) == "function" then
+			local ok, res = pcall(savedPrevAimLock)
+			if ok then
+				return res
+			end
+		end
+		return nil
+	end
+	rawset(_G, "PG_AimLock", ourAimLockFn)
+end
+
+local function applyAimToTarget(targetModel: Model, targetRoot: BasePart, aimCamera: boolean): Vector3?
+	local aimPart = getMobAimPart(targetModel, targetRoot)
+	if not aimPart then
+		return nil
+	end
+	currentAimModel = targetModel
+	currentAimPart = aimPart
+	installAimHook()
+
+	local aimPos = aimPart.Position
+	local _, _, root = getCharParts()
+	if root then
+		local lookXZ = Vector3.new(aimPos.X - root.Position.X, 0, aimPos.Z - root.Position.Z)
+		if lookXZ.Magnitude > 0.25 then
+			root.CFrame = CFrame.lookAt(root.Position, root.Position + lookXZ)
+		end
+	end
+
+	pcall(function()
+		LocalPlayer:SetAttribute("AimCenter", true)
+	end)
+
+	if aimCamera then
+		local cam = workspace.CurrentCamera
+		if cam and (cam.CFrame.Position - aimPos).Magnitude > 1.2 then
+			cam.CFrame = CFrame.lookAt(cam.CFrame.Position, aimPos)
+		end
+	end
+
+	return aimPos
+end
+
+local function pickBestWeaponTool(): (Tool?, boolean)
 	local char, _, _ = getCharParts()
 	local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
 	local bestMelee: Tool? = nil
@@ -7208,10 +7308,10 @@ local function pickBestWeaponTool(dist: number): Tool?
 	inspectContainer(char)
 	inspectContainer(bp)
 
-	if dist <= 11.5 then
-		return bestMelee or bestRanged
+	if bestRanged then
+		return bestRanged, true
 	end
-	return bestRanged or bestMelee
+	return bestMelee, false
 end
 
 local function isPortalGunTool(tool: Tool?): boolean
@@ -7221,26 +7321,23 @@ local function isPortalGunTool(tool: Tool?): boolean
 	return tool.Name == "PortalGun" or tool.Name == "GoldenPortalGun" or tool.Name == "PortalGunJr"
 end
 
-local function performGenuineAttack(targetModel: Model, targetRoot: BasePart, isAura: boolean)
+local function performAimAndShoot(targetModel: Model, targetRoot: BasePart)
 	local char, hum, root = getCharParts()
 	if not char or not hum or not root or hum.Health <= 0 then
 		return
 	end
 
-	local targetPos = targetRoot.Position
-	local dist = (targetPos - root.Position).Magnitude
-
-	-- Face enemy on horizontal plane so melee & gun rays align cleanly
-	local lookXZ = Vector3.new(targetPos.X - root.Position.X, 0, targetPos.Z - root.Position.Z)
-	if lookXZ.Magnitude > 0.2 then
-		root.CFrame = CFrame.lookAt(root.Position, root.Position + lookXZ)
+	local aimPos = applyAimToTarget(targetModel, targetRoot, true)
+	if not aimPos then
+		return
 	end
+	local dist = (targetRoot.Position - root.Position).Magnitude
 
 	local now = os.clock()
 	local held = char:FindFirstChildOfClass("Tool")
-	local bestWeapon = pickBestWeaponTool(dist)
+	local bestWeapon, isRanged = pickBestWeaponTool()
 
-	-- Equip real weapon when we have one (or unequip PortalGun before melee)
+	-- Equip best weapon cleanly (prioritize Ranged Guns; keep PortalGun unequipped)
 	if bestWeapon and held ~= bestWeapon then
 		pcall(function()
 			hum:EquipTool(bestWeapon)
@@ -7253,28 +7350,28 @@ local function performGenuineAttack(targetModel: Model, targetRoot: BasePart, is
 		held = nil
 	end
 
-	-- 1) Weapon Tool Activation (server processes player damage/kill/rewards)
-	if held and not isPortalGunTool(held) and (not MELEE_TOOLS[held.Name] or dist <= 13.5) then
-		if now - lastSwingClock >= 0.22 then
+	-- 1) Shoot / Swing equipped real weapon Tool
+	if held and not isPortalGunTool(held) then
+		local inWeaponRange = if isRanged then (dist <= 95) else (dist <= 13.5)
+		if inWeaponRange and now - lastSwingClock >= 0.18 then
 			lastSwingClock = now
 			pcall(function()
 				LocalPlayer:SetAttribute("AimCenter", true)
 				held:Activate()
 			end)
-			task.delay(0.08, function()
+			task.delay(0.06, function()
 				pcall(function()
 					if held and held.Parent == char then
 						held:Deactivate()
 					end
-					LocalPlayer:SetAttribute("AimCenter", nil)
 				end)
 			end)
 		end
 	end
 
-	-- 2) Mech Arms Attack (CyberArm:FireServer("strike", aimPos))
+	-- 2) Mech Arms Attack (CyberArm aim + strike when in strike range)
 	local mechLevel = tonumber(char:GetAttribute("MechLevel")) or 0
-	if mechLevel > 0 and dist <= 22 then
+	if mechLevel > 0 and dist <= 28 then
 		local cyberArm = ReplicatedStorage:FindFirstChild("CyberArm")
 		if cyberArm and cyberArm:IsA("RemoteEvent") then
 			if char:GetAttribute("MechDeployed") ~= true and now - lastArmStrikeClock >= 0.6 then
@@ -7282,11 +7379,11 @@ local function performGenuineAttack(targetModel: Model, targetRoot: BasePart, is
 				pcall(function()
 					cyberArm:FireServer("toggle", nil)
 				end)
-			elseif now - lastArmStrikeClock >= 0.48 then
+			elseif now - lastArmStrikeClock >= 0.45 then
 				lastArmStrikeClock = now
 				pcall(function()
-					cyberArm:FireServer("aim", targetPos)
-					cyberArm:FireServer("strike", targetPos)
+					cyberArm:FireServer("aim", aimPos)
+					cyberArm:FireServer("strike", aimPos)
 				end)
 			end
 		end
@@ -7304,7 +7401,7 @@ local function performGenuineAttack(targetModel: Model, targetRoot: BasePart, is
 				end)
 			end
 			if eyeLevel >= 5 and (tonumber(LocalPlayer:GetAttribute("EvilReady_blast")) or 0) <= srvNow and dist <= 120 then
-				local dir = (targetPos - root.Position).Unit
+				local dir = (aimPos - root.Position).Unit
 				pcall(function()
 					evilTech:FireServer("blast", dir)
 				end)
@@ -7312,27 +7409,27 @@ local function performGenuineAttack(targetModel: Model, targetRoot: BasePart, is
 		end
 	end
 
-	-- 4) Optional Unarmed Click when completely without weapon/mech & AutoHunt is running
+	-- 4) Fallback unarmed click when completely empty-handed in close range
 	if not held and mechLevel <= 0 and dist <= 8.5 and now - lastAimClickClock >= 0.35 then
 		lastAimClickClock = now
 		local clickFn = rawget(_G, "mouse1click")
-		if type(clickFn) == "function" and not isAura then
+		if type(clickFn) == "function" then
 			pcall(clickFn)
 		end
 	end
 end
 
-local function sweepNearbyDrops()
+local function sweepNearbyDrops(forceNow: boolean?, dropOrigin: Vector3?)
 	if not mobConfig.AutoPickupDrops or not matMod then
 		return
 	end
-	if os.clock() - lastDropSweepClock < dropSweepInterval then
+	if not forceNow and os.clock() - lastDropSweepClock < dropSweepInterval then
 		return
 	end
 	lastDropSweepClock = os.clock()
 
-	local _, _, root = getCharParts()
-	if not root then
+	local char, _, root = getCharParts()
+	if not char or not root then
 		return
 	end
 	local firePromptFn = rawget(_G, "fireproximityprompt")
@@ -7344,16 +7441,25 @@ local function sweepNearbyDrops()
 					then pr.Parent.Position
 					elseif pr.Parent and pr.Parent:IsA("Attachment") then pr.Parent.WorldPosition
 					else nil
-				if pPos and (pPos - root.Position).Magnitude <= 26 then
-					if type(firePromptFn) == "function" then
-						pcall(firePromptFn, pr)
-					else
-						pcall(function()
-							pr:InputHoldBegin()
-							task.delay(math.max(0.08, pr.HoldDuration + 0.08), function()
-								pcall(function() pr:InputHoldEnd() end)
+				if pPos then
+					local dMe = (pPos - root.Position).Magnitude
+					local nearDeadMob = dropOrigin ~= nil and (pPos - dropOrigin).Magnitude <= 18
+					local maxCheck = if forceNow then 48 else 26
+					if (dMe <= maxCheck) or nearDeadMob then
+						if dMe > math.max(8, pr.MaxActivationDistance - 2) and isSafePointInWorld(pPos, false) then
+							char:PivotTo(CFrame.new(pPos + Vector3.new(0, 2.8, 0)))
+							task.wait(0.04)
+						end
+						if type(firePromptFn) == "function" then
+							pcall(firePromptFn, pr)
+						else
+							pcall(function()
+								pr:InputHoldBegin()
+								task.delay(math.max(0.08, pr.HoldDuration + 0.08), function()
+									pcall(function() pr:InputHoldEnd() end)
+								end)
 							end)
-						end)
+						end
 					end
 				end
 			end
@@ -7361,33 +7467,48 @@ local function sweepNearbyDrops()
 	end
 end
 
-local function stepKillAura(dt: number)
-	if not mobConfig.KillAura then
+local function stepAutoAim(dt: number)
+	if not mobConfig.AutoAim or mobConfig.AutoHunt then
 		return
 	end
-	auraAcc += dt
-	if auraAcc < auraInterval then
+	aimAcc += dt
+	if aimAcc < aimInterval then
 		return
 	end
-	auraAcc = 0
+	aimAcc = 0
 
-	local nearby = scanMobs(mobConfig.HuntFilter, mobConfig.AuraRange, false)
-	if #nearby > 0 then
-		local t = nearby[1]
-		performGenuineAttack(t.model, t.root, true)
-		sweepNearbyDrops()
+	local nearby = scanMobs(mobConfig.HuntFilter, mobConfig.AimRange, false)
+	local chosen = nearby[1]
+	if chosen then
+		local aimPos = applyAimToTarget(chosen.model, chosen.root, true)
+		local char = LocalPlayer.Character
+		if aimPos and char and char:GetAttribute("MechDeployed") == true and os.clock() - lastArmAimClock >= 0.12 then
+			lastArmAimClock = os.clock()
+			local cyberArm = ReplicatedStorage:FindFirstChild("CyberArm")
+			if cyberArm and cyberArm:IsA("RemoteEvent") then
+				pcall(function()
+					cyberArm:FireServer("aim", aimPos)
+				end)
+			end
+		end
+	else
+		currentAimModel = nil
+		currentAimPart = nil
+		pcall(function()
+			LocalPlayer:SetAttribute("AimCenter", nil)
+		end)
 	end
 end
 
 local function refreshRuntimeLoop()
-	local needLoop = (not destroyed) and (guardConfig.AntiVoid or guardConfig.AutoHeal or guardConfig.AutoEscapeHome or mobConfig.KillAura or mobConfig.MobEsp)
+	local needLoop = (not destroyed) and (guardConfig.AntiVoid or guardConfig.AutoHeal or guardConfig.AutoEscapeHome or mobConfig.AutoAim or mobConfig.MobEsp)
 	if needLoop and not guardConn then
 		guardConn = RunService.Heartbeat:Connect(function(dt: number)
 			if destroyed then
 				return
 			end
 			stepGuardian(dt)
-			stepKillAura(dt)
+			stepAutoAim(dt)
 			if mobConfig.MobEsp then
 				mobEspAcc += dt
 				if mobEspAcc >= mobEspInterval then
@@ -7403,16 +7524,20 @@ local function refreshRuntimeLoop()
 			clearMobEsp()
 		end
 	end
+	if not (mobConfig.AutoAim or mobConfig.AutoHunt) then
+		uninstallAimHook()
+	end
 end
 
 --====================================================
--- AUTO HUNT & KILL MOBS LOOP (SAFE GROUNDED STANDOFF)
+-- AUTO FARM MOBS (1-DIRECTION FLY + AIM & SHOOT)
 --====================================================
 local function startAutoHuntLoop(myToken: number)
 	task.spawn(function()
 		while mobConfig.AutoHunt and myToken == huntToken and not destroyed do
 			local char, hum, root = getCharParts()
 			if not char or not hum or not root or hum.Health <= 0 then
+				currentAimModel = nil
 				lastMobMsg = "Waiting for character..."
 				task.wait(0.4)
 				continue
@@ -7420,8 +7545,10 @@ local function startAutoHuntLoop(myToken: number)
 
 			local targets = scanMobs(mobConfig.HuntFilter, mobConfig.MaxHuntDist, true)
 			if #targets == 0 then
+				currentAimModel = nil
+				currentAimPart = nil
 				lastMobMsg = ("No %s nearby"):format(if mobConfig.HuntFilter == "ALL" then "mobs" else mobConfig.HuntFilter)
-				task.wait(0.6)
+				task.wait(0.55)
 				continue
 			end
 
@@ -7429,7 +7556,11 @@ local function startAutoHuntLoop(myToken: number)
 			local targetModel = chosen.model
 			local targetHum = chosen.hum
 			local targetRoot = chosen.root
-			lastMobMsg = ("Hunting %s (%.0fm)"):format(chosen.displayName, chosen.dist)
+
+			-- Capture 1 clean single approach direction from mob toward player (NO orbiting behind/in front)
+			local deltaInit = Vector3.new(root.Position.X - targetRoot.Position.X, 0, root.Position.Z - targetRoot.Position.Z)
+			local singleApproachDir = if deltaInit.Magnitude > 0.5 then deltaInit.Unit else Vector3.new(0, 0, 1)
+			lastMobMsg = ("Locking %s (%.0fm)"):format(chosen.displayName, chosen.dist)
 
 			local engageStart = os.clock()
 			local lastHuntStepClock = engageStart
@@ -7452,40 +7583,39 @@ local function startAutoHuntLoop(myToken: number)
 					break
 				end
 
-				local held = pickBestWeaponTool((mobPos - root.Position).Magnitude)
-				local wantDist = if held and RANGED_TOOLS[held.Name] then 13.5 elseif mobConfig.SafeStandoff then 5.2 else 3.8
-				local mobBack = -targetRoot.CFrame.LookVector
-				local toMe = Vector3.new(root.Position.X - mobPos.X, 0, root.Position.Z - mobPos.Z)
-				local toMeUnit = if toMe.Magnitude > 0.2 then toMe.Unit else mobBack
-				local dirs = {
-					Vector3.new(mobBack.X, 0, mobBack.Z),
-					Vector3.new(toMeUnit.X, 0, toMeUnit.Z),
-					Vector3.new(-mobBack.X, 0, -mobBack.Z),
-					Vector3.new(targetRoot.CFrame.RightVector.X, 0, targetRoot.CFrame.RightVector.Z),
-					Vector3.new(-targetRoot.CFrame.RightVector.X, 0, -targetRoot.CFrame.RightVector.Z),
-				}
-				local standoffPos = mobPos + Vector3.new(toMeUnit.X, 0, toMeUnit.Z) * wantDist
-				local standY = if groundPos then math.max(groundPos.Y + 3.4, mobPos.Y + 0.5) else (mobPos.Y + 1.2)
-				standoffPos = Vector3.new(standoffPos.X, standY, standoffPos.Z)
-				for _, d in ipairs(dirs) do
-					if d.Magnitude > 0.1 then
-						local candRaw = mobPos + d.Unit * wantDist
-						local candProbe = Vector3.new(candRaw.X, mobPos.Y + 1.2, candRaw.Z)
-						local cSafe, cGround = isSafePointInWorld(candProbe, false)
-						if cSafe then
-							local cY = if cGround then math.max(cGround.Y + 3.4, mobPos.Y + 0.5) else standY
-							standoffPos = Vector3.new(candRaw.X, cY, candRaw.Z)
-							break
-						end
+				local _, isRanged = pickBestWeaponTool()
+				local hasEvilBlast = LocalPlayer:GetAttribute("EyePatchOn") == true and (tonumber(LocalPlayer:GetAttribute("EyeLevel")) or 0) >= 5
+				local wantDist = if (isRanged or hasEvilBlast) then math.clamp(mobConfig.EngageDist, 8, 45) else 6.2
+				local idealY = if groundPos then math.max(groundPos.Y + 3.2, mobPos.Y + 0.5) else (mobPos.Y + 1.0)
+
+				local fireSpot = Vector3.new(
+					mobPos.X + singleApproachDir.X * wantDist,
+					idealY,
+					mobPos.Z + singleApproachDir.Z * wantDist
+				)
+				local fsSafe, fsGround = isSafePointInWorld(fireSpot, false)
+				if fsSafe and fsGround then
+					fireSpot = Vector3.new(fireSpot.X, math.max(fsGround.Y + 3.2, mobPos.Y + 0.5), fireSpot.Z)
+				elseif not fsSafe then
+					local midSpot = Vector3.new(
+						mobPos.X + singleApproachDir.X * math.min(wantDist, 5.5),
+						idealY,
+						mobPos.Z + singleApproachDir.Z * math.min(wantDist, 5.5)
+					)
+					local mSafe, mGround = isSafePointInWorld(midSpot, false)
+					if mSafe then
+						fireSpot = Vector3.new(midSpot.X, if mGround then math.max(mGround.Y + 3.2, mobPos.Y + 0.5) else idealY, midSpot.Z)
+					else
+						fireSpot = Vector3.new(mobPos.X, idealY, mobPos.Z)
 					end
 				end
 
-				local curDist = (standoffPos - root.Position).Magnitude
-				if curDist > 4.0 then
-					local stepDist = math.min(curDist, 95 * stepDt)
-					local nextPos = root.Position + (standoffPos - root.Position).Unit * stepDist
-					local safeStep = isSafePointInWorld(nextPos, true)
-					if safeStep then
+				local horizDist = Vector3.new(root.Position.X - mobPos.X, 0, root.Position.Z - mobPos.Z).Magnitude
+				local toFireSpot = fireSpot - root.Position
+				if horizDist > wantDist + 2.5 and toFireSpot.Magnitude > 2.5 then
+					local stepDist = math.min(toFireSpot.Magnitude, 95 * stepDt)
+					local nextPos = root.Position + toFireSpot.Unit * stepDist
+					if isSafePointInWorld(nextPos, true) then
 						root.AssemblyLinearVelocity = Vector3.zero
 						root.AssemblyAngularVelocity = Vector3.zero
 						root.CFrame = CFrame.lookAt(nextPos, Vector3.new(mobPos.X, nextPos.Y, mobPos.Z))
@@ -7494,23 +7624,32 @@ local function startAutoHuntLoop(myToken: number)
 					end
 				else
 					root.AssemblyLinearVelocity = Vector3.zero
-					root.CFrame = CFrame.lookAt(standoffPos, Vector3.new(mobPos.X, standoffPos.Y, mobPos.Z))
+					root.AssemblyAngularVelocity = Vector3.zero
+					if math.abs(root.Position.Y - idealY) > 1.5 and isSafePointInWorld(Vector3.new(root.Position.X, idealY, root.Position.Z), false) then
+						root.CFrame = CFrame.lookAt(Vector3.new(root.Position.X, idealY, root.Position.Z), Vector3.new(mobPos.X, idealY, mobPos.Z))
+					end
 				end
 
-				performGenuineAttack(targetModel, targetRoot, false)
-				lastMobMsg = ("Attacking %s (HP %.0f)"):format(chosen.displayName, math.max(0, targetHum.Health))
-				task.wait(if lowEndMode then 0.11 else 0.08)
+				performAimAndShoot(targetModel, targetRoot)
+				lastMobMsg = ("Aiming & Shooting %s (HP %.0f | %.0fm)"):format(chosen.displayName, math.max(0, targetHum.Health), horizDist)
+				task.wait(if lowEndMode then 0.09 else 0.06)
 			end
 
+			currentAimModel = nil
+			currentAimPart = nil
 			if targetHum.Health <= 0 or not targetModel.Parent then
 				killedCount += 1
 				lastMobMsg = ("Defeated %s (#%d)"):format(chosen.displayName, killedCount)
-				sweepNearbyDrops()
-				task.wait(0.25)
+				task.wait(0.08)
+				sweepNearbyDrops(true, if targetRoot and targetRoot.Parent then targetRoot.Position else nil)
+				task.wait(0.12)
 			end
 		end
 		if not mobConfig.AutoHunt then
 			lastMobMsg = "Idle"
+		end
+		if not (mobConfig.AutoAim or mobConfig.AutoHunt) then
+			uninstallAimHook()
 		end
 	end)
 end
@@ -7752,8 +7891,8 @@ local function stepAutoMissionOnce(): (boolean, string)
 			matMod:SetAutoCollect(false)
 		end
 		mobConfig.HuntFilter = info.enemy
-		if not mobConfig.KillAura then
-			mobConfig.KillAura = true
+		if not mobConfig.AutoAim then
+			mobConfig.AutoAim = true
 		end
 		if not mobConfig.AutoHunt then
 			mobConfig.AutoHunt = true
@@ -7906,16 +8045,23 @@ function Combat:EnableAllGameProtections(): (boolean, string)
 	return true, "Enabled all unlocked protections"
 end
 
-function Combat:SetKillAura(enabled: boolean, rangeStuds: number?)
+function Combat:SetAutoAim(enabled: boolean, rangeStuds: number?)
 	if rangeStuds ~= nil then
-		self:SetAuraRange(rangeStuds)
+		self:SetAimRange(rangeStuds)
 	end
-	mobConfig.KillAura = enabled
+	mobConfig.AutoAim = enabled == true
+	if enabled then
+		installAimHook()
+	end
 	refreshRuntimeLoop()
 end
 
-function Combat:SetAuraRange(studs: number)
-	mobConfig.AuraRange = math.clamp(math.round(studs), 8, 250)
+function Combat:SetAimRange(studs: number)
+	mobConfig.AimRange = math.clamp(math.round(studs), 25, 300)
+end
+
+function Combat:SetEngageDistance(studs: number)
+	mobConfig.EngageDist = math.clamp(math.round(studs), 6, 45)
 end
 
 function Combat:SetMobEsp(enabled: boolean)
@@ -7940,9 +8086,10 @@ function Combat:SetAutoHunt(enabled: boolean, maxDist: number?)
 	if maxDist ~= nil then
 		mobConfig.MaxHuntDist = math.clamp(math.round(maxDist), 100, 5000)
 	end
-	mobConfig.AutoHunt = enabled
+	mobConfig.AutoHunt = enabled == true
 	huntToken += 1
 	if enabled then
+		installAimHook()
 		startAutoHuntLoop(huntToken)
 	else
 		lastMobMsg = "Idle"
@@ -8011,7 +8158,7 @@ function Combat:GetToggleStates(): { [string]: boolean }
 		AntiVoid = guardConfig.AntiVoid,
 		AutoHeal = guardConfig.AutoHeal,
 		AutoEscapeHome = guardConfig.AutoEscapeHome,
-		KillAura = mobConfig.KillAura,
+		AutoAim = mobConfig.AutoAim,
 		AutoHunt = mobConfig.AutoHunt,
 		MobEsp = mobConfig.MobEsp,
 		AutoMission = missionConfig.AutoEnabled,
@@ -8023,7 +8170,7 @@ function Combat:GetCombatStatusText(): string
 	local hpStr = if hum then ("%d/%d (%.0f%%)"):format(math.floor(hum.Health), math.floor(hum.MaxHealth), (hum.Health / math.max(1, hum.MaxHealth)) * 100) else "N/A"
 	local mobs = scanMobs(mobConfig.HuntFilter, mobConfig.MaxHuntDist, false)
 	local nearestStr = if mobs[1] then ("%s (%.0fm)"):format(mobs[1].displayName, mobs[1].dist) else "None"
-	return ("HP: %s | Nearby Mobs: %d | Nearest: %s\nGuardian: Void=%s Heal=%s AutoHome=%s | Kills: %d\nHunt Status: %s"):format(
+	return ("HP: %s | Mobs: %d | Nearest: %s\nGuardian: Void=%s Heal=%s AutoHome=%s | Kills: %d\nAimLock: %s | Farm Status: %s"):format(
 		hpStr,
 		#mobs,
 		nearestStr,
@@ -8031,6 +8178,7 @@ function Combat:GetCombatStatusText(): string
 		if guardConfig.AutoHeal then "ON" else "OFF",
 		if guardConfig.AutoEscapeHome then "ON" else "OFF",
 		killedCount,
+		if (mobConfig.AutoAim or mobConfig.AutoHunt) then "ACTIVE" else "OFF",
 		lastMobMsg
 	)
 end
@@ -8063,7 +8211,7 @@ function Combat:Destroy()
 	guardConfig.AntiVoid = false
 	guardConfig.AutoHeal = false
 	guardConfig.AutoEscapeHome = false
-	mobConfig.KillAura = false
+	mobConfig.AutoAim = false
 	mobConfig.AutoHunt = false
 	mobConfig.MobEsp = false
 	missionConfig.AutoEnabled = false
@@ -8071,6 +8219,7 @@ function Combat:Destroy()
 	missionToken += 1
 	releaseMissionSubModes()
 	clearMobEsp()
+	uninstallAimHook()
 	refreshRuntimeLoop()
 end
 
@@ -8608,7 +8757,7 @@ CombatTab:CreateButton({
 	end,
 })
 
-CombatTab:CreateSection("Mob Hunter & Kill Aura")
+CombatTab:CreateSection("Auto Farm & Auto Aim (Mobs)")
 
 local enemyOpts, enemyMap = Combat:GetEnemyFilterOptions()
 CombatTab:CreateDropdown({
@@ -8621,34 +8770,45 @@ CombatTab:CreateDropdown({
 	end,
 })
 
-local tglKillAura = CombatTab:CreateToggle({
-	Name = "Kill Aura (Genuine Player Attack)",
-	Description = "Attacks nearby mobs using your equipped Tool / CyberArm / EvilTech so drops & mission kills count",
+local tglAutoAim = CombatTab:CreateToggle({
+	Name = "Auto Aim (Lock On Mobs)",
+	Description = "Locks aim straight onto nearest mob (PG_AimLock + Camera + Facing) for guns & powers",
 	CurrentValue = false,
 	Callback = function(enabled: boolean)
-		Combat:SetKillAura(enabled)
+		Combat:SetAutoAim(enabled)
 		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
 	end,
 })
 
 CombatTab:CreateSlider({
-	Name = "Kill Aura Range",
-	Range = { 8, 40 },
-	Increment = 2,
+	Name = "Auto Aim Range",
+	Range = { 25, 250 },
+	Increment = 5,
 	Suffix = "m",
-	CurrentValue = 18,
+	CurrentValue = 140,
 	Callback = function(val: number)
-		Combat:SetAuraRange(val)
+		Combat:SetAimRange(val)
 	end,
 })
 
 local tglAutoHunt = CombatTab:CreateToggle({
-	Name = "Auto Hunt & Kill Mobs",
-	Description = "Flies to safe standoff behind matching mobs, kills with your real weapons, sweeps nearby drops",
+	Name = "Auto Farm Mobs (Fly + Aim & Shoot)",
+	Description = "Flies straight toward mobs in 1 direction, aims directly & shoots with your best weapon",
 	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		Combat:SetAutoHunt(enabled)
 		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+	end,
+})
+
+CombatTab:CreateSlider({
+	Name = "Farm Shooting Distance",
+	Range = { 6, 45 },
+	Increment = 2,
+	Suffix = "m",
+	CurrentValue = 24,
+	Callback = function(val: number)
+		Combat:SetEngageDistance(val)
 	end,
 })
 
@@ -8972,7 +9132,7 @@ SettingsTab:CreateButton({
 		Combat:SetAntiVoid(false)
 		Combat:SetAutoHeal(false)
 		Combat:SetAutoEscapeHome(false)
-		Combat:SetKillAura(false)
+		Combat:SetAutoAim(false)
 		Combat:SetAutoHunt(false)
 		Combat:SetMobEsp(false)
 		Combat:SetAutoMission(false)
@@ -8980,7 +9140,7 @@ SettingsTab:CreateButton({
 		tglAntiVoid:Set(false, true)
 		tglAutoHeal:Set(false, true)
 		tglAutoEscapeHome:Set(false, true)
-		tglKillAura:Set(false, true)
+		tglAutoAim:Set(false, true)
 		tglAutoHunt:Set(false, true)
 		tglMobEsp:Set(false, true)
 		tglAutoMission:Set(false, true)
@@ -9024,7 +9184,7 @@ Combat:SetStateSyncCallback(function()
 	end
 	tglMatAutoCollect:Set(Material:IsAutoCollecting(), true)
 	local st = Combat:GetToggleStates()
-	tglKillAura:Set(st.KillAura, true)
+	tglAutoAim:Set(st.AutoAim, true)
 	tglAutoHunt:Set(st.AutoHunt, true)
 	tglAutoMission:Set(st.AutoMission, true)
 	refreshActiveTabStatus(Window:GetActiveTabName())
