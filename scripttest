@@ -1,6 +1,6 @@
 --[[
 	Rayfield Client Menu (Single-File DeltaX Mobile & Client Script)
-	Features: Material Scanner + Auto Fly & Collect (Noclip) | Player ESP | Auto Research (3-Minigame Solver) | Fast Craft | Home (Garage) Teleport | Settings
+	Features: Material Scanner + Auto Fly & Collect (Noclip) | Player ESP | Auto Research (3-Minigame Solver) | Fast Craft (Workbench Auto-Solver) | Home (Garage) Teleport | Settings
 ]]
 
 if not game:IsLoaded() then
@@ -3598,9 +3598,10 @@ local Automation = (function()
 	Fast Auto Research & Auto Craft module for PortalG.
 	Uses GameData, ResearchLab live minigame auto-solver, and the game's RemoteFunctions directly:
 	  - Research: Solves all 3 ResearchLab minigames live (scan, circuit, gyro, mix) cleanly without auto-cancel
-	  - Craft: CraftItem ("assemble" -> CraftFinish "done", skipping AssemblyBench minigame) or standard CraftItem
+	  - Craft: Standard CraftItem, paced Fast Assemble (assemble -> CraftFinish "done"), & live AssemblyBench solver
 ]]
 
+local CollectionService = game:GetService("CollectionService")
 local GuiService = game:GetService("GuiService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
@@ -3623,6 +3624,7 @@ local inventory: { [string]: number } = {}
 local stash: { [string]: number } = {}
 local hasInventoryData = false
 local lastStashRefresh = 0
+local lastInvSyncRequest = 0
 local inventoryConn: RBXScriptConnection? = nil
 local destroyed = false
 
@@ -3645,9 +3647,12 @@ local craftConfig = {
 	SelectedId = "",
 	Quantity = 1,
 	FastAssemble = false,
-	AutoClampMax = false,
+	AssembleDelay = 3.5,
+	AutoClampMax = true,
 	Interval = 0.5,
 }
+local lastCraftMsg = "Idle"
+local learnedMinAssembleDelay = 0
 
 local researchLoopToken = 0
 local craftLoopToken = 0
@@ -3668,6 +3673,9 @@ local lastGyroClickClock = 0
 local lastMixHoldStartClock = 0
 local clickedScanAt: { [Instance]: number } = {}
 local clickedCircuitIdxAt: { [number]: number } = {}
+local assemblyHoldStage: string? = nil
+local assemblyHoldFakeInput: any = nil
+local lastAssemblyPieceClock = 0
 
 local function getExecFunc(name: string): any
 	local okEnv, genv = pcall(function()
@@ -3709,7 +3717,7 @@ local function detectInputCapability(): boolean
 	return hasGetConnections() ~= nil or canUseVirtualInput()
 end
 
-local function findResearchLabInputConns(signal: RBXScriptSignal): { any }
+local function findScriptInputConns(signal: RBXScriptSignal, scriptNeedle: string): { any }
 	local gc = hasGetConnections()
 	if not gc then
 		return {}
@@ -3722,8 +3730,8 @@ local function findResearchLabInputConns(signal: RBXScriptSignal): { any }
 	for _, conn in ipairs(conns) do
 		local fn = conn and conn.Function
 		if type(fn) == "function" then
-			local okInfo, src = pcall(debug.info, fn, "s")
-			if okInfo and type(src) == "string" and string.find(src, "ResearchLab", 1, true) then
+			local okInfo, fnSrc = pcall(debug.info, fn, "s")
+			if okInfo and type(fnSrc) == "string" and string.find(fnSrc, scriptNeedle, 1, true) then
 				table.insert(matched, conn)
 			end
 		end
@@ -3786,7 +3794,7 @@ local function releaseMixHold()
 	local sx, sy = makeSafeHoldScreenPoint()
 
 	if mixHoldFakeInput then
-		local endedConns = findResearchLabInputConns(UserInputService.InputEnded)
+		local endedConns = findScriptInputConns(UserInputService.InputEnded, "ResearchLab")
 		invokeSignalConns(endedConns, mixHoldFakeInput, false)
 		mixHoldFakeInput = nil
 	end
@@ -3805,8 +3813,8 @@ local function releaseMixHold()
 end
 
 local function sendLabClick(screenX: number, screenY: number, vpX: number?, vpY: number?)
-	local beganConns = findResearchLabInputConns(UserInputService.InputBegan)
-	local endedConns = findResearchLabInputConns(UserInputService.InputEnded)
+	local beganConns = findScriptInputConns(UserInputService.InputBegan, "ResearchLab")
+	local endedConns = findScriptInputConns(UserInputService.InputEnded, "ResearchLab")
 	if #beganConns > 0 then
 		local fakeInput = {
 			UserInputType = Enum.UserInputType.MouseButton1,
@@ -3846,7 +3854,7 @@ local function sendLabHold(holdDown: boolean, screenX: number, screenY: number)
 		return
 	end
 
-	local beganConns = findResearchLabInputConns(UserInputService.InputBegan)
+	local beganConns = findScriptInputConns(UserInputService.InputBegan, "ResearchLab")
 	if #beganConns > 0 then
 		local fakeInput = {
 			UserInputType = Enum.UserInputType.MouseButton1,
@@ -4075,25 +4083,143 @@ local function stepMinigameSolver()
 	end
 end
 
-local function stopMinigameSolver()
-	if solverConn then
-		solverConn:Disconnect()
-		solverConn = nil
+local function releaseAssemblyHold()
+	if assemblyHoldFakeInput then
+		local endedConns = findScriptInputConns(UserInputService.InputEnded, "AssemblyBench")
+		invokeSignalConns(endedConns, assemblyHoldFakeInput, false)
+		assemblyHoldFakeInput = nil
 	end
-	releaseMixHold()
-	table.clear(finishedMixLabels)
-	table.clear(clickedScanAt)
-	table.clear(clickedCircuitIdxAt)
+	assemblyHoldStage = nil
+end
+
+local function detectAssemblyStage(hud: Instance): string?
+	for _, desc in ipairs(hud:GetDescendants()) do
+		if desc:IsA("TextLabel") then
+			local txt = desc.Text
+			if txt and txt ~= "" then
+				local lower = string.lower(txt)
+				if string.find(lower, "assembled!", 1, true) then
+					return "done"
+				elseif string.find(lower, "power it on", 1, true) then
+					return "power"
+				elseif string.find(lower, "screw", 1, true) then
+					return "screws"
+				elseif string.find(lower, "glowing place", 1, true)
+					or string.find(lower, "shining piece", 1, true)
+					or string.find(lower, "each piece", 1, true)
+				then
+					return "pieces"
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function stepAssemblySolver()
+	if destroyed or not (craftConfig.AutoEnabled or craftConfig.FastAssemble) then
+		releaseAssemblyHold()
+		return
+	end
+
+	local benchFolder = workspace:FindFirstChild("AssemblyBenchLocal")
+	local pg = LocalPlayer:FindFirstChild("PlayerGui")
+	local hud = pg and pg:FindFirstChild("AssemblyHUD")
+	if not benchFolder or not hud then
+		releaseAssemblyHold()
+		return
+	end
+
+	local stage = detectAssemblyStage(hud)
+	if not stage or stage == "done" then
+		releaseAssemblyHold()
+		return
+	end
+
+	local beganConns = findScriptInputConns(UserInputService.InputBegan, "AssemblyBench")
+	if #beganConns == 0 then
+		return
+	end
+
+	lastCraftMsg = ("Solving Workbench: %s"):format(string.upper(stage))
+
+	if stage ~= assemblyHoldStage and assemblyHoldStage ~= nil then
+		releaseAssemblyHold()
+	end
+
+	local now = os.clock()
+	if stage == "pieces" then
+		if now - lastAssemblyPieceClock < 0.18 then
+			return
+		end
+		lastAssemblyPieceClock = now
+		local fakeInput = {
+			UserInputType = Enum.UserInputType.Gamepad1,
+			UserInputState = Enum.UserInputState.Begin,
+			KeyCode = Enum.KeyCode.ButtonA,
+			Position = Vector3.zero,
+		}
+		invokeSignalConns(beganConns, fakeInput, true)
+		local endedConns = findScriptInputConns(UserInputService.InputEnded, "AssemblyBench")
+		if #endedConns > 0 then
+			invokeSignalConns(endedConns, fakeInput, false)
+		end
+	elseif stage == "screws" or stage == "power" then
+		if assemblyHoldStage ~= stage then
+			local fakeInput = {
+				UserInputType = Enum.UserInputType.Gamepad1,
+				UserInputState = Enum.UserInputState.Begin,
+				KeyCode = Enum.KeyCode.ButtonA,
+				Position = Vector3.zero,
+			}
+			if invokeSignalConns(beganConns, fakeInput, true) then
+				assemblyHoldStage = stage
+				assemblyHoldFakeInput = fakeInput
+			end
+		end
+	end
+end
+
+local function stepAllSolvers()
+	if destroyed then
+		return
+	end
+	if researchConfig.AutoEnabled then
+		stepMinigameSolver()
+	end
+	if craftConfig.AutoEnabled or craftConfig.FastAssemble then
+		stepAssemblySolver()
+	end
+end
+
+local function refreshSolverState()
+	local needSolver = (not destroyed) and (researchConfig.AutoEnabled or craftConfig.AutoEnabled or craftConfig.FastAssemble)
+	if not needSolver then
+		if solverConn then
+			solverConn:Disconnect()
+			solverConn = nil
+		end
+		releaseMixHold()
+		releaseAssemblyHold()
+		table.clear(finishedMixLabels)
+		table.clear(clickedScanAt)
+		table.clear(clickedCircuitIdxAt)
+		return
+	end
+	if not solverConn then
+		table.clear(finishedMixLabels)
+		table.clear(clickedScanAt)
+		table.clear(clickedCircuitIdxAt)
+		solverConn = RunService.RenderStepped:Connect(stepAllSolvers)
+	end
+end
+
+local function stopMinigameSolver()
+	refreshSolverState()
 end
 
 local function startMinigameSolver()
-	if solverConn or destroyed then
-		return
-	end
-	table.clear(finishedMixLabels)
-	table.clear(clickedScanAt)
-	table.clear(clickedCircuitIdxAt)
-	solverConn = RunService.RenderStepped:Connect(stepMinigameSolver)
+	refreshSolverState()
 end
 
 local function sendNotice(title: string, msg: string, color: Color3?)
@@ -4173,6 +4299,26 @@ local function hookResearchLab()
 	end
 end
 
+local function waitAssemblyWindow(targetSec: number, itemLabel: string, tokenToCancelOnAbort: any?): boolean
+	if targetSec <= 0 then
+		return true
+	end
+	local startClock = os.clock()
+	while not destroyed do
+		local elapsed = os.clock() - startClock
+		local remain = targetSec - elapsed
+		if remain <= 0 then
+			return true
+		end
+		lastCraftMsg = ("Assembling %s (%.1fs)..."):format(itemLabel, remain)
+		task.wait(math.min(0.2, remain))
+		if tokenToCancelOnAbort ~= nil and not (craftConfig.FastAssemble or craftConfig.AutoEnabled) then
+			return false
+		end
+	end
+	return false
+end
+
 local function hookAssemblyBench()
 	if origAssemblyRun then
 		return
@@ -4184,9 +4330,14 @@ local function hookAssemblyBench()
 			assemblyBenchMod = tbl
 			origAssemblyRun = tbl.run
 			tbl.run = function(args: any)
-				if not destroyed and (craftConfig.FastAssemble or craftConfig.AutoEnabled) then
-					local resName = if type(args) == "table" then args.result else "Item"
-					sendNotice("Fast Craft", ("Skipped minigame: %s"):format(tostring(resName)), Color3.fromRGB(52, 211, 153))
+				-- On DeltaX Mobile / executor with getconnections, let AssemblyBench.run execute and solve it live via stepAssemblySolver().
+				-- When getconnections is unavailable (e.g. plain Studio LocalScript), pace completion cleanly so CraftFinish does not fail 0s checks.
+				if not destroyed and (craftConfig.FastAssemble or craftConfig.AutoEnabled) and not hasGetConnections() then
+					local resId = if type(args) == "table" then tostring(args.result or "Item") else "Item"
+					local waitSec = math.max(craftConfig.AssembleDelay, learnedMinAssembleDelay, 2.5)
+					waitAssemblyWindow(waitSec, resId, nil)
+					lastCraftMsg = ("Assembled: %s"):format(resId)
+					sendNotice("Fast Craft", ("Completed Workbench: %s"):format(resId), Color3.fromRGB(52, 211, 153))
 					return "done"
 				end
 				return origAssemblyRun(args)
@@ -4223,40 +4374,73 @@ local function decodeAttrTable(attrName: string): { [string]: any }
 	return {}
 end
 
-local function initInventorySync()
-	if inventoryConn or destroyed then
+local function requestInventorySync(force: boolean?)
+	local now = os.clock()
+	if not force and (now - lastInvSyncRequest < 2.0) then
 		return
 	end
+	lastInvSyncRequest = now
 	local invSync = ReplicatedStorage:FindFirstChild("InventorySync")
 	if invSync and invSync:IsA("RemoteEvent") then
-		inventoryConn = invSync.OnClientEvent:Connect(function(payload: any)
-			if type(payload) == "table" then
-				inventory = payload
-				hasInventoryData = true
-			end
-		end)
 		pcall(function()
 			invSync:FireServer()
 		end)
 	end
 end
 
-local function refreshStash(force: boolean?)
-	if not force and (os.clock() - lastStashRefresh < 2.5) then
+local function initInventorySync()
+	if destroyed then
+		return
+	end
+	if not inventoryConn then
+		local invSync = ReplicatedStorage:FindFirstChild("InventorySync")
+		if invSync and invSync:IsA("RemoteEvent") then
+			inventoryConn = invSync.OnClientEvent:Connect(function(payload: any)
+				if type(payload) == "table" then
+					inventory = payload
+					hasInventoryData = true
+				end
+			end)
+			requestInventorySync()
+		end
+	elseif not hasInventoryData then
+		requestInventorySync()
+	end
+end
+
+local function fetchStashNow()
+	local stashAction = ReplicatedStorage:FindFirstChild("StashAction")
+	if stashAction and stashAction:IsA("RemoteFunction") then
+		local ok, success, res = pcall(function()
+			return stashAction:InvokeServer("list")
+		end)
+		if not destroyed and ok and success and type(res) == "table" and type(res.stash) == "table" then
+			stash = res.stash
+		end
+	end
+end
+
+local function refreshStash(force: boolean?, syncWait: boolean?)
+	if not force and (os.clock() - lastStashRefresh < 2.0) then
 		return
 	end
 	lastStashRefresh = os.clock()
-	task.spawn(function()
-		local stashAction = ReplicatedStorage:FindFirstChild("StashAction")
-		if stashAction and stashAction:IsA("RemoteFunction") then
-			local ok, success, res = pcall(function()
-				return stashAction:InvokeServer("list")
-			end)
-			if not destroyed and ok and success and type(res) == "table" and type(res.stash) == "table" then
-				stash = res.stash
-			end
+	if syncWait then
+		fetchStashNow()
+	else
+		task.spawn(fetchStashNow)
+	end
+end
+
+local function ensureInventoryAndStashSynced(maxWaitSec: number)
+	initInventorySync()
+	if not hasInventoryData and maxWaitSec > 0 then
+		local deadline = os.clock() + maxWaitSec
+		while not hasInventoryData and os.clock() < deadline and not destroyed do
+			task.wait(0.05)
 		end
-	end)
+	end
+	refreshStash(false, true)
 end
 
 local function totalOwned(itemId: string): number
@@ -4685,118 +4869,260 @@ local function getAffordCount(recipe: any): number
 	return math.max(0, maxMake)
 end
 
+local function getRemainingCraftCapacity(gd: any, recipe: any): number
+	local itemMeta = gd.Items and gd.Items[recipe.result]
+	if not itemMeta or not (itemMeta.gadget or itemMeta.gear) then
+		return 50
+	end
+	local stack = tonumber(itemMeta.stack) or 1
+	local cap = if stack <= 1 then 9 else stack
+	local owned = inventory[recipe.result] or 0
+	local perCraft = math.max(1, tonumber(recipe.amount) or 1)
+	return math.max(0, math.floor((cap - owned) / perCraft))
+end
+
+local function getMissingIngredientsSummary(gd: any, recipe: any): string
+	if type(recipe.ingredients) ~= "table" then
+		return "Not enough materials"
+	end
+	local parts: { string } = {}
+	for _, ing in ipairs(recipe.ingredients) do
+		local need = ing.count or 1
+		local have = totalOwned(ing.item)
+		if have < need then
+			local meta = gd.Items and gd.Items[ing.item]
+			local name = if meta and meta.name then tostring(meta.name) else tostring(ing.item)
+			table.insert(parts, ("%s (%d/%d)"):format(name, have, need))
+			if #parts >= 2 then
+				break
+			end
+		end
+	end
+	if #parts > 0 then
+		return "Missing: " .. table.concat(parts, ", ")
+	end
+	return "Not enough materials to craft"
+end
+
+local function getWorkbenchProximity(): (boolean, string)
+	if LocalPlayer:GetAttribute("PocketWorkbench") == true or LocalPlayer:GetAttribute("RickEyeOn") == true then
+		return true, "Pocket Active"
+	end
+	local char = LocalPlayer.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if not hrp or not hrp:IsA("BasePart") then
+		return false, "No Character"
+	end
+	for _, station in ipairs(CollectionService:GetTagged("CraftingStation")) do
+		if station:IsA("Model") and station:IsDescendantOf(workspace) then
+			local okP, cf = pcall(function()
+				return station:GetPivot()
+			end)
+			if okP and cf and (cf.Position - hrp.Position).Magnitude < 22 then
+				return true, "In Range"
+			end
+		end
+	end
+	return false, "Too Far (Go Home -> Garage)"
+end
+
 function Automation:CraftOnce(targetRecipeId: string?): (boolean, string)
-	if craftBusy then
-		return false, "Craft in progress..."
+	if craftBusy or LocalPlayer:GetAttribute("Crafting") == true then
+		return false, "Craft already in progress..."
 	end
 
 	local gd = getGameData()
 	if not gd or type(gd.Recipes) ~= "table" then
-		return false, "GameData.Recipes not found"
+		lastCraftMsg = "GameData.Recipes not found"
+		return false, lastCraftMsg
 	end
 
 	local craftItem = ReplicatedStorage:FindFirstChild("CraftItem")
 	if not craftItem or not craftItem:IsA("RemoteFunction") then
-		return false, "RemoteFunction CraftItem not found"
+		lastCraftMsg = "RemoteFunction CraftItem not found"
+		return false, lastCraftMsg
 	end
 
-	initInventorySync()
-	refreshStash(false)
+	ensureInventoryAndStashSynced(0.85)
 
 	local recId = if targetRecipeId and targetRecipeId ~= "" then targetRecipeId else craftConfig.SelectedId
 	local recipe = findRecipeById(recId)
 	if not recipe then
-		return false, "No valid recipe selected"
+		lastCraftMsg = "No valid recipe selected"
+		return false, lastCraftMsg
 	end
 
 	if not knowsRecipe(gd, recipe) then
 		local reqId = gd.RecipeResearch[recipe.id]
 		local rName = if gd.ResearchById and gd.ResearchById[reqId] then gd.ResearchById[reqId].name else tostring(reqId)
-		return false, ("Research locked: %s"):format(tostring(rName))
+		lastCraftMsg = ("Research locked: %s"):format(tostring(rName))
+		return false, lastCraftMsg
 	end
 
-	local afford = getAffordCount(recipe)
-	if afford <= 0 then
-		return false, "Not enough materials to craft"
+	local afford = if hasInventoryData then getAffordCount(recipe) else 50
+	if hasInventoryData and afford <= 0 then
+		lastCraftMsg = getMissingIngredientsSummary(gd, recipe)
+		return false, lastCraftMsg
 	end
 
-	local finalQty = math.clamp(math.round(craftConfig.Quantity), 1, 50)
+	local room = if hasInventoryData then getRemainingCraftCapacity(gd, recipe) else 50
+	if hasInventoryData and room <= 0 then
+		local owned = inventory[recipe.result] or 0
+		lastCraftMsg = ("Max owned reached (%d)"):format(owned)
+		return false, lastCraftMsg
+	end
+
+	local requestedQty = math.clamp(math.round(craftConfig.Quantity), 1, 50)
+	local finalQty = requestedQty
 	if craftConfig.AutoClampMax then
-		finalQty = math.clamp(math.min(finalQty, afford), 1, 50)
-	elseif finalQty > afford then
-		return false, ("Enough materials for max x%d"):format(afford)
+		finalQty = math.clamp(math.min(requestedQty, afford, room), 1, 50)
+	elseif hasInventoryData and requestedQty > afford then
+		lastCraftMsg = ("Enough materials for max x%d"):format(afford)
+		return false, lastCraftMsg
 	end
 
 	craftBusy = true
+	LocalPlayer:SetAttribute("Crafting", true)
+
 	local itemMeta = gd.Items and gd.Items[recipe.result]
 	local itemName = if itemMeta and itemMeta.name then itemMeta.name else tostring(recipe.result or recipe.id)
 
-	local craftFinish = ReplicatedStorage:FindFirstChild("CraftFinish")
-	if craftConfig.FastAssemble and craftFinish and craftFinish:IsA("RemoteFunction") then
-		local okInv, okStart, tokenOrErr = pcall(function()
-			return craftItem:InvokeServer(recipe.id, finalQty, "assemble")
-		end)
-		if not okInv or not okStart then
-			craftBusy = false
-			return false, tostring(tokenOrErr or "CraftItem(assemble) failed")
-		end
+	local finalOk = false
+	local finalMsg = "Craft failed"
 
-		local okFin, finOk, finErr = pcall(function()
-			return craftFinish:InvokeServer(tokenOrErr, "done")
-		end)
-		craftBusy = false
+	local runOk, runErr = pcall(function()
+		local craftFinish = ReplicatedStorage:FindFirstChild("CraftFinish")
+		if craftConfig.FastAssemble and craftFinish and craftFinish:IsA("RemoteFunction") then
+			lastCraftMsg = ("Starting assembly: x%d %s..."):format(finalQty, itemName)
+			local okInv, okStart, tokenOrErr = pcall(function()
+				return craftItem:InvokeServer(recipe.id, finalQty, "assemble")
+			end)
+			if not okInv then
+				finalOk = false
+				finalMsg = "CraftItem(assemble) error: " .. tostring(okStart)
+				return
+			end
+			if not okStart then
+				finalOk = false
+				finalMsg = tostring(tokenOrErr or "CraftItem(assemble) rejected")
+				return
+			end
 
-		if not okFin then
-			return false, "CraftFinish error: " .. tostring(finOk)
-		end
-		if not finOk then
-			return false, tostring(finErr or "CraftFinish failed")
-		end
-		return true, ("Fast Assemble x%d %s"):format(finalQty, itemName)
-	else
-		local okInv, craftOk, craftErr = pcall(function()
-			return craftItem:InvokeServer(recipe.id, finalQty)
-		end)
-		craftBusy = false
+			local assembleStartedAt = os.clock()
+			local targetDelay = math.max(craftConfig.AssembleDelay, learnedMinAssembleDelay)
+			if targetDelay > 0 then
+				local okWait = waitAssemblyWindow(targetDelay, itemName, tokenOrErr)
+				if not okWait or destroyed then
+					pcall(function()
+						craftFinish:InvokeServer(tokenOrErr, "cancel")
+					end)
+					finalOk = false
+					finalMsg = "Assembly paused (materials refunded)"
+					return
+				end
+			end
 
-		if not okInv then
-			return false, "CraftItem error: " .. tostring(craftOk)
+			local maxAssembleWait = math.max((tonumber(recipe.time) or 4) * 2.0, 20)
+			while not destroyed do
+				local okFin, finOk, finErr = pcall(function()
+					return craftFinish:InvokeServer(tokenOrErr, "done")
+				end)
+				if okFin and finOk then
+					local totalElapsed = os.clock() - assembleStartedAt
+					if totalElapsed > learnedMinAssembleDelay and learnedMinAssembleDelay > 0 then
+						learnedMinAssembleDelay = math.clamp(math.ceil(totalElapsed * 2) / 2, 0, 15)
+					end
+					finalOk = true
+					finalMsg = ("Fast Assembled x%d %s"):format(finalQty, itemName)
+					requestInventorySync(true)
+					refreshStash(true, false)
+					return
+				end
+
+				local errStr = if not okFin then ("CraftFinish error: " .. tostring(finOk)) else tostring(finErr or "CraftFinish failed")
+				local elapsedNow = os.clock() - assembleStartedAt
+				if okFin and isTimingRejectMsg(errStr) and elapsedNow < maxAssembleWait then
+					learnedMinAssembleDelay = math.clamp(math.ceil((elapsedNow + 0.8) * 2) / 2, 0.5, 15)
+					lastCraftMsg = ("Completing assembly %s (%.1fs)..."):format(itemName, elapsedNow)
+					task.wait(0.8)
+				else
+					finalOk = false
+					finalMsg = errStr
+					return
+				end
+			end
+		else
+			lastCraftMsg = ("Crafting x%d %s (Server Auto)..."):format(finalQty, itemName)
+			local okInv, craftOk, craftErr = pcall(function()
+				return craftItem:InvokeServer(recipe.id, finalQty)
+			end)
+			if not okInv then
+				finalOk = false
+				finalMsg = "CraftItem error: " .. tostring(craftOk)
+				return
+			end
+			if not craftOk then
+				finalOk = false
+				finalMsg = tostring(craftErr or "CraftItem rejected")
+				return
+			end
+			finalOk = true
+			finalMsg = ("Crafted x%d %s"):format(finalQty, itemName)
+			requestInventorySync(true)
+			refreshStash(true, false)
 		end
-		if not craftOk then
-			return false, tostring(craftErr or "CraftItem failed")
-		end
-		return true, ("Crafted x%d %s"):format(finalQty, itemName)
+	end)
+
+	LocalPlayer:SetAttribute("Crafting", false)
+	craftBusy = false
+
+	if not runOk then
+		lastCraftMsg = "Craft error: " .. tostring(runErr)
+		return false, lastCraftMsg
 	end
+	lastCraftMsg = finalMsg
+	return finalOk, finalMsg
 end
 
 function Automation:SetAutoCraft(enabled: boolean)
 	craftConfig.AutoEnabled = enabled
 	craftLoopToken += 1
 	local myToken = craftLoopToken
+	refreshSolverState()
 	if not enabled then
+		if not craftBusy and LocalPlayer:GetAttribute("Crafting") == true then
+			LocalPlayer:SetAttribute("Crafting", false)
+		end
+		lastCraftMsg = "Idle"
 		return
 	end
 
 	initInventorySync()
+	refreshStash(false, false)
 	hookAssemblyBench()
 
 	task.spawn(function()
-		local warnedOut = false
+		local lastNotifiedErr = ""
 		while craftConfig.AutoEnabled and myToken == craftLoopToken and not destroyed do
 			local ok, msg = self:CraftOnce(craftConfig.SelectedId)
 			if ok then
-				warnedOut = false
-			elseif not warnedOut then
-				warnedOut = true
-				sendNotice("Auto Craft", msg, Color3.fromRGB(251, 191, 36))
+				lastNotifiedErr = ""
+				sendNotice("Auto Craft", msg, Color3.fromRGB(52, 211, 153))
+				task.wait(craftConfig.Interval)
+			else
+				if msg ~= "Craft already in progress..." and msg ~= lastNotifiedErr then
+					lastNotifiedErr = msg
+					sendNotice("Auto Craft", msg, Color3.fromRGB(251, 191, 36))
+				end
+				task.wait(math.max(craftConfig.Interval, 1.4))
 			end
-			task.wait(craftConfig.Interval)
 		end
 	end)
 end
 
 function Automation:SetSelectedRecipe(recipeId: string)
 	craftConfig.SelectedId = recipeId
+	lastCraftMsg = "Ready"
 end
 
 function Automation:SetCraftQuantity(qty: number)
@@ -4805,9 +5131,14 @@ end
 
 function Automation:SetFastAssemble(enabled: boolean)
 	craftConfig.FastAssemble = enabled
+	refreshSolverState()
 	if enabled then
 		hookAssemblyBench()
 	end
+end
+
+function Automation:SetAssembleDelay(sec: number)
+	craftConfig.AssembleDelay = math.clamp(sec, 0, 15)
 end
 
 function Automation:SetAutoClampMax(enabled: boolean)
@@ -4819,6 +5150,8 @@ function Automation:SetCraftInterval(sec: number)
 end
 
 function Automation:GetRecipeOptions(): ({ string }, { [string]: string })
+	initInventorySync()
+	refreshStash(false, false)
 	local gd = getGameData()
 	local options: { string } = {}
 	local labelToId: { [string]: string } = {}
@@ -4840,6 +5173,8 @@ function Automation:GetRecipeOptions(): ({ string }, { [string]: string })
 end
 
 function Automation:GetCraftStatusText(): string
+	initInventorySync()
+	refreshStash(false, false)
 	local gd = getGameData()
 	if not gd or type(gd.Recipes) ~= "table" then
 		return "GameData.Recipes not loaded"
@@ -4852,14 +5187,24 @@ function Automation:GetCraftStatusText(): string
 	local itemMeta = gd.Items and gd.Items[recipe.result]
 	local display = if itemMeta and itemMeta.name then itemMeta.name else tostring(recipe.result or recipe.id)
 	local unlocked = knowsRecipe(gd, recipe)
-	local afford = getAffordCount(recipe)
+	local afford = if hasInventoryData then getAffordCount(recipe) else 0
 	local owned = inventory[recipe.result] or 0
+	local stashed = stash[recipe.result] or 0
+	local _, benchStatus = getWorkbenchProximity()
 
-	return ("Item: %s (Owned: %d)\nUnlocked: %s | Craftable: up to %dx"):format(
+	local craftableText = if not hasInventoryData
+		then "Syncing Bag..."
+		elseif afford > 0 then ("Up to %dx"):format(afford)
+		else getMissingIngredientsSummary(gd, recipe)
+
+	return ("Item: %s (Bag: %d | Stash: %d)\nUnlocked: %s | Bench: %s\nCraftable: %s\nStatus: %s"):format(
 		display,
 		owned,
+		stashed,
 		if unlocked then "Yes" else "No",
-		afford
+		benchStatus,
+		craftableText,
+		lastCraftMsg
 	)
 end
 
@@ -4867,9 +5212,13 @@ function Automation:Destroy()
 	destroyed = true
 	researchConfig.AutoEnabled = false
 	craftConfig.AutoEnabled = false
+	craftConfig.FastAssemble = false
 	researchLoopToken += 1
 	craftLoopToken += 1
-	stopMinigameSolver()
+	refreshSolverState()
+	if not craftBusy and LocalPlayer:GetAttribute("Crafting") == true then
+		LocalPlayer:SetAttribute("Crafting", false)
+	end
 	if researchLabMod and origResearchRun then
 		researchLabMod.run = origResearchRun
 		origResearchRun = nil
@@ -5216,11 +5565,22 @@ CraftTab:CreateSlider({
 })
 
 local tglFastAssemble = CraftTab:CreateToggle({
-	Name = "Fast Assemble (Instant CraftFinish)",
-	Description = "Uses assemble + CraftFinish('done') immediately, skipping minigame",
+	Name = "Fast Assemble (Auto-Finish / Bypass)",
+	Description = "Uses paced CraftFinish & auto-solves Workbench minigame",
 	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		Automation:SetFastAssemble(enabled)
+	end,
+})
+
+CraftTab:CreateSlider({
+	Name = "Fast Assemble Delay",
+	Range = { 0, 15 },
+	Increment = 0.5,
+	Suffix = "s",
+	CurrentValue = 3.5,
+	Callback = function(value: number)
+		Automation:SetAssembleDelay(value)
 	end,
 })
 
@@ -5228,7 +5588,7 @@ CraftTab:CreateSection("Execution")
 
 local tglAutoCraft = CraftTab:CreateToggle({
 	Name = "Enable Auto Craft Loop",
-	Description = "Continuously craft the selected item while materials are available",
+	Description = "Continuously craft the selected item while near a Workbench",
 	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		Automation:SetAutoCraft(enabled)
@@ -5242,10 +5602,11 @@ local tglAutoCraft = CraftTab:CreateToggle({
 })
 
 CraftTab:CreateButton({
-	Name = "Quick Craft Now (1x)",
-	Description = "Craft the selected recipe immediately with current settings",
+	Name = "Quick Craft Now",
+	Description = "Craft the selected recipe immediately with current quantity & settings",
 	Callback = function()
 		local ok, msg = Automation:CraftOnce(nil)
+		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
 		Window:Notify({
 			Title = "Quick Craft",
 			Content = msg,
