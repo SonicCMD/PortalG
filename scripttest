@@ -1,20 +1,15 @@
---[[
-	Rayfield Client Menu (Single-File DeltaX Mobile & Client Script)
-	Features: Material Scanner + Auto Fly & Collect (Noclip) | Player ESP | Auto Research (3-Minigame Solver) | Fast Craft (Workbench Auto-Solver) | Home (Garage) Teleport | Settings
-]]
-
-if not game:IsLoaded() then
-	game.Loaded:Wait()
+-- Rayfield Menu + Material + ESP + Auto Research + Fast Craft + Combat/Guardian/Mission (Low-End Optimized DeltaX & PC Bundle)
+local __modules = {}
+local __cache = {}
+local function __req(name)
+	if __cache[name] ~= nil then return __cache[name] end
+	local fn = __modules[name]
+	if not fn then error('Missing bundled module: ' .. tostring(name)) end
+	local res = fn()
+	__cache[name] = res
+	return res
 end
-
-local prevCleanup = rawget(_G, "__RayfieldMenuCleanup")
-if type(prevCleanup) == "function" then
-	pcall(prevCleanup)
-end
-
-local RunService = game:GetService("RunService")
-
-local Rayfield = (function()
+__modules["RayfieldLib"] = function()
 --[[
 	RayfieldLib
 	Native Luau UI Framework inspired by Rayfield Interface Suite.
@@ -42,25 +37,46 @@ local function getExecGlobal(name)
 	return rawget(_G, name)
 end
 
-local function resolveGuiParent()
-	local gethuiFn = getExecGlobal("gethui")
-	if type(gethuiFn) ~= "function" then
+local function tryCloneRef(inst: Instance): Instance
+	local cr = getExecGlobal("cloneref") or getExecGlobal("clonereference")
+	if type(cr) ~= "function" then
 		local okDirect, direct = pcall(function()
-			return typeof(gethui) == "function" and gethui or nil
+			return typeof(cloneref) == "function" and cloneref or nil
 		end)
 		if okDirect and type(direct) == "function" then
-			gethuiFn = direct
+			cr = direct
 		end
 	end
-	if type(gethuiFn) == "function" then
-		local okHui, hui = pcall(gethuiFn)
-		if okHui and typeof(hui) == "Instance" then
-			return hui
+	if type(cr) == "function" then
+		local okC, res = pcall(cr, inst)
+		if okC and typeof(res) == "Instance" then
+			return res
+		end
+	end
+	return inst
+end
+
+local function resolveGuiParent()
+	for _, fnName in ipairs({ "gethui", "get_hidden_gui", "gethiddengui" }) do
+		local gethuiFn = getExecGlobal(fnName)
+		if type(gethuiFn) ~= "function" and fnName == "gethui" then
+			local okDirect, direct = pcall(function()
+				return typeof(gethui) == "function" and gethui or nil
+			end)
+			if okDirect and type(direct) == "function" then
+				gethuiFn = direct
+			end
+		end
+		if type(gethuiFn) == "function" then
+			local okHui, hui = pcall(gethuiFn)
+			if okHui and typeof(hui) == "Instance" then
+				return hui
+			end
 		end
 	end
 
 	local okCore, coreGui = pcall(function()
-		return game:GetService("CoreGui")
+		return tryCloneRef(game:GetService("CoreGui"))
 	end)
 	if okCore and coreGui then
 		local okAccess = pcall(function()
@@ -109,6 +125,12 @@ local TWEEN_FAST = TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirecti
 local TWEEN_MED = TweenInfo.new(0.24, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 
 local RayfieldLib = {}
+local lowEndMode = false
+local isTouchOnly = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
+
+function RayfieldLib:SetLowEndMode(enabled: boolean)
+	lowEndMode = enabled == true
+end
 
 local function makeCorner(parent: Instance, radius: number): UICorner
 	local corner = Instance.new("UICorner")
@@ -137,7 +159,15 @@ local function makePadding(parent: Instance, top: number, bottom: number, left: 
 	return pad
 end
 
-local function tween(inst: Instance, info: TweenInfo, props: { [string]: any }): Tween
+local function tween(inst: Instance, info: TweenInfo, props: { [string]: any }): Tween?
+	if lowEndMode then
+		for k, v in pairs(props) do
+			pcall(function()
+				(inst :: any)[k] = v
+			end)
+		end
+		return nil
+	end
 	local t = TweenService:Create(inst, info, props)
 	t:Play()
 	return t
@@ -347,12 +377,14 @@ function RayfieldLib:CreateWindow(config)
 		makeCorner(btn, 6)
 		makeStroke(btn, THEME.Stroke, 1, 0.4)
 
-		track(btn.MouseEnter:Connect(function()
-			tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardHover, TextColor3 = THEME.Text })
-		end))
-		track(btn.MouseLeave:Connect(function()
-			tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardBg, TextColor3 = THEME.SubText })
-		end))
+		if not isTouchOnly then
+			track(btn.MouseEnter:Connect(function()
+				tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardHover, TextColor3 = THEME.Text })
+			end))
+			track(btn.MouseLeave:Connect(function()
+				tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardBg, TextColor3 = THEME.SubText })
+			end))
+		end
 		return btn
 	end
 
@@ -461,6 +493,10 @@ function RayfieldLib:CreateWindow(config)
 		end))
 	end
 
+	local activeTabName = ""
+	local onTabChangedCb: ((string) -> ())? = nil
+	local Window = {}
+
 	-- Drag + click logic for TogglePill
 	do
 		local pillInput: InputObject? = nil
@@ -513,12 +549,27 @@ function RayfieldLib:CreateWindow(config)
 			if pillDragMoved then
 				return
 			end
-			mainFrame.Visible = true
-			togglePill.Visible = false
+			Window:SetVisible(true)
 		end))
 	end
 
-	local Window = {}
+	-- Window methods
+
+	function Window:IsVisible(): boolean
+		return (not destroyed) and isVisible
+	end
+
+	function Window:IsMinimized(): boolean
+		return isMinimized
+	end
+
+	function Window:GetActiveTabName(): string
+		return activeTabName
+	end
+
+	function Window:OnTabChanged(cb: (string) -> ())
+		onTabChangedCb = cb
+	end
 
 	function Window:SetVisible(visible: boolean)
 		if destroyed then
@@ -527,6 +578,9 @@ function RayfieldLib:CreateWindow(config)
 		isVisible = visible
 		mainFrame.Visible = visible
 		togglePill.Visible = not visible
+		if visible and onTabChangedCb and activeTabName ~= "" then
+			task.defer(onTabChangedCb, activeTabName)
+		end
 	end
 
 	function Window:SetMinimized(minimized: boolean)
@@ -537,6 +591,9 @@ function RayfieldLib:CreateWindow(config)
 		minimizeBtn.Text = if minimized then "+" else "−"
 		local targetHeight = if minimized then TOPBAR_H else WINDOW_H
 		tween(mainFrame, TWEEN_MED, { Size = UDim2.fromOffset(WINDOW_W, targetHeight) })
+		if not minimized and onTabChangedCb and activeTabName ~= "" then
+			task.defer(onTabChangedCb, activeTabName)
+		end
 	end
 
 	function Window:Notify(notifyCfg)
@@ -547,6 +604,21 @@ function RayfieldLib:CreateWindow(config)
 		local content = notifyCfg.Content or ""
 		local duration = notifyCfg.Duration or 3.5
 		local accent = notifyCfg.Color or THEME.Accent
+
+		local existingToasts = 0
+		for _, ch in ipairs(notifyContainer:GetChildren()) do
+			if ch:IsA("Frame") then
+				existingToasts += 1
+			end
+		end
+		if existingToasts >= 3 then
+			for _, ch in ipairs(notifyContainer:GetChildren()) do
+				if ch:IsA("Frame") then
+					ch:Destroy()
+					break
+				end
+			end
+		end
 
 		local card = Instance.new("Frame")
 		card.Size = UDim2.new(1, 0, 0, 62)
@@ -608,7 +680,9 @@ function RayfieldLib:CreateWindow(config)
 			tween(strip, TWEEN_FAST, { BackgroundTransparency = 1 })
 			tween(nTitle, TWEEN_FAST, { TextTransparency = 1 })
 			local fadeOut = tween(nBody, TWEEN_FAST, { TextTransparency = 1 })
-			fadeOut.Completed:Wait()
+			if fadeOut then
+				fadeOut.Completed:Wait()
+			end
 			if card.Parent then
 				card:Destroy()
 			end
@@ -651,20 +725,29 @@ function RayfieldLib:CreateWindow(config)
 		end
 	end))
 
-	local tabs: { { button: TextButton, indicator: Frame, page: ScrollingFrame } } = {}
+	local tabs: { { name: string, button: TextButton, indicator: Frame, page: ScrollingFrame } } = {}
 	local tabOrder = 0
 
 	local function selectTab(targetPage: ScrollingFrame)
 		for _, item in ipairs(tabs) do
+			local wasVisible = item.page.Visible
 			local active = (item.page == targetPage)
-			item.page.Visible = active
-			tween(item.button, TWEEN_FAST, {
-				BackgroundColor3 = if active then THEME.CardBg else THEME.SidebarBg,
-				TextColor3 = if active then THEME.Text else THEME.SubText,
-			})
-			tween(item.indicator, TWEEN_FAST, {
-				BackgroundTransparency = if active then 0 else 1,
-			})
+			if active then
+				activeTabName = item.name
+			end
+			if wasVisible ~= active then
+				item.page.Visible = active
+				tween(item.button, TWEEN_FAST, {
+					BackgroundColor3 = if active then THEME.CardBg else THEME.SidebarBg,
+					TextColor3 = if active then THEME.Text else THEME.SubText,
+				})
+				tween(item.indicator, TWEEN_FAST, {
+					BackgroundTransparency = if active then 0 else 1,
+				})
+			end
+		end
+		if onTabChangedCb and activeTabName ~= "" then
+			task.spawn(onTabChangedCb, activeTabName)
 		end
 	end
 
@@ -714,6 +797,7 @@ function RayfieldLib:CreateWindow(config)
 		pageLayout.Parent = page
 
 		table.insert(tabs, {
+			name = tabName,
 			button = tabBtn,
 			indicator = indicator,
 			page = page,
@@ -790,12 +874,16 @@ function RayfieldLib:CreateWindow(config)
 			pBody.TextXAlignment = Enum.TextXAlignment.Left
 			pBody.Parent = card
 
+			local lastTitle = paraCfg.Title or ""
+			local lastContent = paraCfg.Content or ""
 			local handle = {}
 			function handle:Set(newCfg: { Title: string?, Content: string? })
-				if newCfg.Title ~= nil then
+				if newCfg.Title ~= nil and newCfg.Title ~= lastTitle then
+					lastTitle = newCfg.Title
 					pTitle.Text = newCfg.Title
 				end
-				if newCfg.Content ~= nil then
+				if newCfg.Content ~= nil and newCfg.Content ~= lastContent then
+					lastContent = newCfg.Content
 					pBody.Text = newCfg.Content
 				end
 			end
@@ -854,12 +942,14 @@ function RayfieldLib:CreateWindow(config)
 			badge.Parent = btn
 			makeCorner(badge, 6)
 
-			track(btn.MouseEnter:Connect(function()
-				tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardHover })
-			end))
-			track(btn.MouseLeave:Connect(function()
-				tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardBg })
-			end))
+			if not isTouchOnly then
+				track(btn.MouseEnter:Connect(function()
+					tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardHover })
+				end))
+				track(btn.MouseLeave:Connect(function()
+					tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardBg })
+				end))
+			end
 			track(btn.Activated:Connect(function()
 				tween(badge, TWEEN_FAST, { BackgroundColor3 = THEME.Accent, TextColor3 = THEME.WindowBg })
 				task.delay(0.15, function()
@@ -965,12 +1055,14 @@ function RayfieldLib:CreateWindow(config)
 				return value
 			end
 
-			track(card.MouseEnter:Connect(function()
-				tween(card, TWEEN_FAST, { BackgroundColor3 = THEME.CardHover })
-			end))
-			track(card.MouseLeave:Connect(function()
-				tween(card, TWEEN_FAST, { BackgroundColor3 = THEME.CardBg })
-			end))
+			if not isTouchOnly then
+				track(card.MouseEnter:Connect(function()
+					tween(card, TWEEN_FAST, { BackgroundColor3 = THEME.CardHover })
+				end))
+				track(card.MouseLeave:Connect(function()
+					tween(card, TWEEN_FAST, { BackgroundColor3 = THEME.CardBg })
+				end))
+			end
 			track(card.Activated:Connect(function()
 				handle:Set(not value, false)
 			end))
@@ -1252,13 +1344,18 @@ function RayfieldLib:CreateWindow(config)
 			optLayout.Parent = optScroll
 
 			local optButtons: { [string]: TextButton } = {}
+			local lastStyledOption = ""
 
 			local function refreshOptionVisuals()
 				selectedLbl.Text = selected
-				for optName, optBtn in pairs(optButtons) do
-					local isSel = (optName == selected)
-					optBtn.BackgroundColor3 = if isSel then THEME.AccentDark else THEME.ControlBg
-					optBtn.TextColor3 = THEME.Text
+				if lastStyledOption ~= "" and optButtons[lastStyledOption] then
+					optButtons[lastStyledOption].BackgroundColor3 = THEME.ControlBg
+				end
+				if optButtons[selected] then
+					optButtons[selected].BackgroundColor3 = THEME.AccentDark
+					lastStyledOption = selected
+				else
+					lastStyledOption = ""
 				end
 			end
 
@@ -1330,9 +1427,8 @@ function RayfieldLib:CreateWindow(config)
 end
 
 return RayfieldLib
-end)()
-
-local Esp = (function()
+end
+__modules["EspModule"] = function()
 --[[
 	EspModule
 	Client-side Player ESP / Visual Tracker using Highlight + BillboardGui.
@@ -1350,10 +1446,25 @@ while not LocalPlayer do
 	LocalPlayer = Players.LocalPlayer
 end
 
-local MAX_HIGHLIGHTS = 24
-local UPDATE_INTERVAL = 0.08
+local maxHighlights = 14
+local updateInterval = 0.16
+
+local HP_COLOR_HIGH = Color3.fromRGB(74, 222, 128)
+local HP_COLOR_MID = Color3.fromRGB(250, 204, 21)
+local HP_COLOR_LOW = Color3.fromRGB(248, 113, 113)
+local COLOR_WHITE = Color3.new(1, 1, 1)
 
 local Esp = {}
+
+function Esp:SetLowEndMode(enabled: boolean)
+	if enabled then
+		maxHighlights = 4
+		updateInterval = 0.32
+	else
+		maxHighlights = 14
+		updateInterval = 0.16
+	end
+end
 
 local config = {
 	Enabled = false,
@@ -1371,11 +1482,18 @@ local config = {
 type PlayerEntry = {
 	player: Player,
 	character: Model?,
+	adornee: BasePart?,
+	humanoid: Humanoid?,
 	highlight: Highlight?,
 	billboard: BillboardGui?,
 	nameLabel: TextLabel?,
 	hpContainer: Frame?,
 	hpFill: Frame?,
+	lastNameText: string?,
+	lastColor: Color3?,
+	lastNameVis: boolean?,
+	lastHpVis: boolean?,
+	lastHpPct: number?,
 	conns: { RBXScriptConnection },
 }
 
@@ -1413,9 +1531,16 @@ local function clearVisuals(entry: PlayerEntry)
 		entry.billboard:Destroy()
 		entry.billboard = nil
 	end
+	entry.adornee = nil
+	entry.humanoid = nil
 	entry.nameLabel = nil
 	entry.hpContainer = nil
 	entry.hpFill = nil
+	entry.lastNameText = nil
+	entry.lastColor = nil
+	entry.lastNameVis = nil
+	entry.lastHpVis = nil
+	entry.lastHpPct = nil
 end
 
 local function resolveAdorneePart(character: Model): BasePart?
@@ -1615,13 +1740,15 @@ local function getOriginPosition(): Vector3?
 	return nil
 end
 
+local visibleCandidates: { { entry: PlayerEntry, dist: number } } = {}
+
 local function updateAllEntries()
 	if not config.Enabled then
 		return
 	end
 
 	local origin = getOriginPosition()
-	local visibleCandidates: { { entry: PlayerEntry, dist: number } } = {}
+	table.clear(visibleCandidates)
 
 	for _, entry in pairs(entries) do
 		local char = entry.character
@@ -1641,7 +1768,11 @@ local function updateAllEntries()
 			continue
 		end
 
-		local adornee = resolveAdorneePart(char)
+		local adornee = entry.adornee
+		if not adornee or not adornee.Parent or adornee.Parent ~= char then
+			adornee = resolveAdorneePart(char)
+			entry.adornee = adornee
+		end
 		if not adornee then
 			if entry.billboard then
 				entry.billboard.Enabled = false
@@ -1665,32 +1796,60 @@ local function updateAllEntries()
 		local color = getTargetColor(entry.player)
 
 		if entry.billboard then
-			entry.billboard.Adornee = adornee
-			entry.billboard.MaxDistance = config.MaxDistance
-			entry.billboard.Enabled = config.ShowNameDistance or config.ShowHealth
+			if entry.billboard.Adornee ~= adornee then
+				entry.billboard.Adornee = adornee
+			end
+			if entry.billboard.MaxDistance ~= config.MaxDistance then
+				entry.billboard.MaxDistance = config.MaxDistance
+			end
+			local bbOn = config.ShowNameDistance or config.ShowHealth
+			if entry.billboard.Enabled ~= bbOn then
+				entry.billboard.Enabled = bbOn
+			end
 		end
 
 		if entry.nameLabel then
-			entry.nameLabel.Visible = config.ShowNameDistance
+			if entry.lastNameVis ~= config.ShowNameDistance then
+				entry.lastNameVis = config.ShowNameDistance
+				entry.nameLabel.Visible = config.ShowNameDistance
+			end
 			if config.ShowNameDistance then
-				entry.nameLabel.TextColor3 = color
-				entry.nameLabel.Text = ("%s [%dm]"):format(entry.player.DisplayName, math.round(dist))
+				if entry.lastColor ~= color then
+					entry.lastColor = color
+					entry.nameLabel.TextColor3 = color
+				end
+				local nextText = ("%s [%dm]"):format(entry.player.DisplayName, math.round(dist))
+				if entry.lastNameText ~= nextText then
+					entry.lastNameText = nextText
+					entry.nameLabel.Text = nextText
+				end
 			end
 		end
 
 		if entry.hpContainer and entry.hpFill then
-			local humanoid = char:FindFirstChildOfClass("Humanoid")
+			local humanoid = entry.humanoid
+			if not humanoid or not humanoid.Parent or humanoid.Parent ~= char then
+				humanoid = char:FindFirstChildOfClass("Humanoid")
+				entry.humanoid = humanoid
+			end
 			local showHp = config.ShowHealth and humanoid ~= nil and humanoid.MaxHealth > 0
-			entry.hpContainer.Visible = showHp
+			if entry.lastHpVis ~= showHp then
+				entry.lastHpVis = showHp
+				entry.hpContainer.Visible = showHp
+			end
 			if showHp and humanoid then
 				local ratio = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
-				entry.hpFill.Size = UDim2.fromScale(ratio, 1)
-				if ratio > 0.6 then
-					entry.hpFill.BackgroundColor3 = Color3.fromRGB(74, 222, 128)
-				elseif ratio > 0.3 then
-					entry.hpFill.BackgroundColor3 = Color3.fromRGB(250, 204, 21)
-				else
-					entry.hpFill.BackgroundColor3 = Color3.fromRGB(248, 113, 113)
+				local pct = math.round(ratio * 100)
+				if entry.lastHpPct ~= pct then
+					entry.lastHpPct = pct
+					entry.hpFill.Size = UDim2.fromScale(ratio, 1)
+					if ratio > 0.6 then
+						entry.hpFill.BackgroundColor3 = HP_COLOR_HIGH
+					elseif ratio > 0.3 then
+						entry.hpFill.BackgroundColor3 = HP_COLOR_MID
+					else
+						entry.hpFill.BackgroundColor3 = HP_COLOR_LOW
+					end
 				end
 			end
 		end
@@ -1711,12 +1870,12 @@ local function updateAllEntries()
 		for idx, item in ipairs(visibleCandidates) do
 			local entry = item.entry
 			local char = entry.character
-			if idx <= MAX_HIGHLIGHTS and char then
+			if idx <= maxHighlights and char then
 				ensureHighlight(entry, char)
 				if entry.highlight then
 					local color = getTargetColor(entry.player)
 					entry.highlight.FillColor = color
-					entry.highlight.OutlineColor = Color3.new(1, 1, 1)
+					entry.highlight.OutlineColor = COLOR_WHITE
 					entry.highlight.FillTransparency = config.FillTransparency
 					entry.highlight.OutlineTransparency = config.OutlineTransparency
 					entry.highlight.Enabled = true
@@ -1741,10 +1900,10 @@ local function startLoop()
 			bindCharacter(entry, plr.Character)
 		end
 	end
-	elapsedAcc = UPDATE_INTERVAL
-	renderConn = RunService.RenderStepped:Connect(function(dt: number)
+	elapsedAcc = updateInterval
+	renderConn = RunService.Heartbeat:Connect(function(dt: number)
 		elapsedAcc += dt
-		if elapsedAcc < UPDATE_INTERVAL then
+		if elapsedAcc < updateInterval then
 			return
 		end
 		elapsedAcc = 0
@@ -1861,9 +2020,8 @@ function Esp:Destroy()
 end
 
 return Esp
-end)()
-
-local Material = (function()
+end
+__modules["MaterialModule"] = function()
 --[[
 	MaterialModule
 	Auto scan, ESP/guide beam visualization, and Auto Fly + Collect for Materials in PortalG.
@@ -1885,8 +2043,35 @@ end
 
 local Material = {}
 
-local MAX_HIGHLIGHTS = 16
-local VISUAL_INTERVAL = 0.12
+local maxHighlights = 14
+local visualInterval = 0.25
+local lowEndMode = false
+
+local COLOR_WHITE = Color3.new(1, 1, 1)
+local COLOR_BLACK = Color3.new(0, 0, 0)
+
+local sharedDownParams = RaycastParams.new()
+sharedDownParams.FilterType = Enum.RaycastFilterType.Include
+sharedDownParams.RespectCanCollide = true
+
+local sharedHouseParams = RaycastParams.new()
+sharedHouseParams.FilterType = Enum.RaycastFilterType.Include
+sharedHouseParams.RespectCanCollide = true
+
+local sharedFloorParams = RaycastParams.new()
+sharedFloorParams.FilterType = Enum.RaycastFilterType.Exclude
+sharedFloorParams.RespectCanCollide = true
+
+function Material:SetLowEndMode(enabled: boolean)
+	lowEndMode = enabled == true
+	if lowEndMode then
+		maxHighlights = 4
+		visualInterval = 0.50
+	else
+		maxHighlights = 14
+		visualInterval = 0.25
+	end
+end
 
 local WILD_BIOMES = {
 	MagmaShard = "volcano",
@@ -1935,7 +2120,90 @@ local notifyCallback = nil
 local beforeTeleportCallback = nil
 local teleportInProgress = false
 local lastHomeMsg = "Ready"
+local savedReturnCFrame: CFrame? = nil
+local savedReturnDim: any = nil
+local cachedGarageSpot: Vector3? = nil
+local cachedGarageLook: Vector3? = nil
+local cachedHomeOrigin: Vector3? = nil
+local missionSafeFilter = false
+local teleportForceToken = 0
+local worldInfoChecked = false
+local cachedWorldInfo: any = nil
+local nodeInfoCache: { [Instance]: { anchorPart: BasePart?, prompt: ProximityPrompt?, isAttach: boolean?, attachObj: Attachment? } } = {}
+local charPartsCache: { BasePart } = {}
+local charCachedRef: Model? = nil
+local cachedOffAvail = 0
+local cachedOffClock = 0
 local elapsedAcc = 0
+
+local function getWorldInfo(): any
+	if not worldInfoChecked then
+		worldInfoChecked = true
+		local mod = ReplicatedStorage:FindFirstChild("WorldInfo")
+		if mod and mod:IsA("ModuleScript") then
+			local ok, wi = pcall(require, mod)
+			if ok and type(wi) == "table" then
+				cachedWorldInfo = wi
+			end
+		end
+	end
+	return cachedWorldInfo
+end
+
+local function isPositionSafeForDimension(pos: Vector3, allowSpace: boolean?): (boolean, string?)
+	local wi = getWorldInfo()
+	local curDim = LocalPlayer:GetAttribute("CurrentDimension")
+	if wi and curDim and not allowSpace then
+		local okAlt, alt = pcall(wi.altitude, curDim, pos)
+		if okAlt and type(alt) == "number" then
+			if alt > 1150 then
+				return false, "Unsafe altitude (Space zone)"
+			end
+			if alt < -1050 then
+				return false, "Unsafe altitude (Void depth)"
+			end
+		end
+	elseif pos.Y < -20500 then
+		return false, "Unsafe Void depth"
+	end
+
+	local dimBounds = ReplicatedStorage:FindFirstChild("DimensionBounds")
+	if dimBounds and curDim ~= nil then
+		local key = tostring(curDim):gsub("[^%w_]", "_"):sub(1, 88)
+		local c = dimBounds:GetAttribute(key .. "_C")
+		local h = dimBounds:GetAttribute(key .. "_H")
+		if typeof(c) == "Vector3" and typeof(h) == "Vector3" then
+			if math.abs(pos.X - c.X) > h.X + 450 or math.abs(pos.Z - c.Z) > h.Z + 450 then
+				return false, "Outside dimension bounds"
+			end
+		end
+	elseif curDim ~= nil then
+		local proc = workspace:FindFirstChild("Proc_" .. tostring(curDim))
+		if proc then
+			local zc = proc:GetAttribute("ZoneCenter")
+			local zh = proc:GetAttribute("ZoneHalf")
+			if typeof(zc) == "Vector3" and typeof(zh) == "Vector3" then
+				if math.abs(pos.X - zc.X) > zh.X + 450 or math.abs(pos.Z - zc.Z) > zh.Z + 450 then
+					return false, "Outside world zone"
+				end
+			end
+		end
+	end
+
+	return true, nil
+end
+
+function Material:GetDimensionAltitude(pos: Vector3): number?
+	local wi = getWorldInfo()
+	local curDim = LocalPlayer:GetAttribute("CurrentDimension")
+	if wi and curDim then
+		local okAlt, alt = pcall(wi.altitude, curDim, pos)
+		if okAlt and type(alt) == "number" then
+			return alt
+		end
+	end
+	return nil
+end
 
 local function resolveFirePromptFn()
 	local okEnv, genv = pcall(function()
@@ -2007,26 +2275,46 @@ local function getRootPart(): BasePart?
 end
 
 local function resolveNodePartAndPrompt(node: Instance): (BasePart?, ProximityPrompt?, Vector3?)
+	local cached = nodeInfoCache[node]
+	if cached then
+		local p = cached.prompt
+		local a = cached.anchorPart
+		if (p == nil or p.Parent ~= nil) and (a == nil or a.Parent ~= nil) then
+			if cached.isAttach and cached.attachObj and cached.attachObj.Parent then
+				return a, p, cached.attachObj.WorldPosition
+			elseif a then
+				return a, p, a.Position
+			end
+		end
+		nodeInfoCache[node] = nil
+	end
+
 	local prompt = node:FindFirstChild("HarvestPrompt", true)
 	local validPrompt: ProximityPrompt? = if prompt and prompt:IsA("ProximityPrompt") then prompt else nil
 
 	if node:IsA("BasePart") then
+		nodeInfoCache[node] = { anchorPart = node, prompt = validPrompt }
 		return node, validPrompt, node.Position
 	end
 
 	local anchor = node:FindFirstChild("HarvestAnchor", true)
 	if anchor then
 		if anchor:IsA("Attachment") and anchor.Parent and anchor.Parent:IsA("BasePart") then
+			nodeInfoCache[node] = { anchorPart = anchor.Parent, prompt = validPrompt, isAttach = true, attachObj = anchor }
 			return anchor.Parent, validPrompt, anchor.WorldPosition
 		elseif anchor:IsA("BasePart") then
+			nodeInfoCache[node] = { anchorPart = anchor, prompt = validPrompt }
 			return anchor, validPrompt, anchor.Position
 		end
 	end
 
 	if validPrompt and validPrompt.Parent then
 		if validPrompt.Parent:IsA("Attachment") and validPrompt.Parent.Parent and validPrompt.Parent.Parent:IsA("BasePart") then
-			return validPrompt.Parent.Parent, validPrompt, validPrompt.Parent.WorldPosition
+			local att = validPrompt.Parent
+			nodeInfoCache[node] = { anchorPart = att.Parent, prompt = validPrompt, isAttach = true, attachObj = att }
+			return att.Parent, validPrompt, att.WorldPosition
 		elseif validPrompt.Parent:IsA("BasePart") then
+			nodeInfoCache[node] = { anchorPart = validPrompt.Parent, prompt = validPrompt }
 			return validPrompt.Parent, validPrompt, validPrompt.Parent.Position
 		end
 	end
@@ -2034,6 +2322,7 @@ local function resolveNodePartAndPrompt(node: Instance): (BasePart?, ProximityPr
 	if node:IsA("Model") then
 		local part = node.PrimaryPart or node:FindFirstChildWhichIsA("BasePart", true)
 		if part then
+			nodeInfoCache[node] = { anchorPart = part, prompt = validPrompt }
 			return part, validPrompt, part.Position
 		end
 	end
@@ -2081,24 +2370,26 @@ local function scanMatchingNodes(includeSkipped)
 
 	local results = {}
 	local countsByName: { [string]: number } = {}
-	local seenNodes: { [Instance]: boolean } = {}
 	local now = os.clock()
+	local cacheCount = 0
 
 	for _, node in ipairs(CollectionService:GetTagged("ResourceNode")) do
 		if not node:IsDescendantOf(workspace) then
 			continue
 		end
-		seenNodes[node] = true
 
 		local itemId = tostring(node:GetAttribute("Item") or "")
 		if itemId == "" then
 			continue
 		end
+		-- Early exit for non-matching node when a specific item filter is active
+		local wantThis = (config.SelectedItem == "ALL" or config.SelectedItem == itemId)
 		if not includeSkipped and skippedNodes[node] and skippedNodes[node] > now then
 			continue
 		end
 
 		local anchorPart, prompt, pos = resolveNodePartAndPrompt(node)
+		cacheCount += 1
 		if not pos then
 			continue
 		end
@@ -2110,11 +2401,17 @@ local function scanMatchingNodes(includeSkipped)
 		if dist > config.MaxDistance then
 			continue
 		end
+		if missionSafeFilter and wantThis then
+			local safeOk = isPositionSafeForDimension(pos, false)
+			if not safeOk then
+				continue
+			end
+		end
 
 		local itemName, itemColor = getItemMeta(itemId)
 		countsByName[itemName] = (countsByName[itemName] or 0) + 1
 
-		if config.SelectedItem == "ALL" or config.SelectedItem == itemId then
+		if wantThis then
 			table.insert(results, {
 				node = node,
 				itemId = itemId,
@@ -2125,6 +2422,15 @@ local function scanMatchingNodes(includeSkipped)
 				pos = pos,
 				dist = dist,
 			})
+		end
+	end
+
+	-- Prune stale nodeInfoCache entries periodically on long sessions
+	if cacheCount > 450 then
+		for k in pairs(nodeInfoCache) do
+			if not k.Parent then
+				nodeInfoCache[k] = nil
+			end
 		end
 	end
 
@@ -2340,27 +2646,39 @@ local function updateVisuals()
 				lbl.TextColor3 = info.color
 				lbl.Parent = bb
 
-				vis = { bb = bb, lbl = lbl, hl = nil }
+				vis = { bb = bb, lbl = lbl, hl = nil, lastText = "", lastColor = info.color, lastMaxDist = config.MaxDistance }
 				nodeVisuals[info.node] = vis
 			end
 
-			vis.bb.Adornee = adornee
-			vis.bb.MaxDistance = config.MaxDistance
-			vis.lbl.TextColor3 = info.color
-			vis.lbl.Text = ("%s [%.0fm]"):format(info.name, info.dist)
+			if vis.bb.Adornee ~= adornee then
+				vis.bb.Adornee = adornee
+			end
+			if vis.lastMaxDist ~= config.MaxDistance then
+				vis.lastMaxDist = config.MaxDistance
+				vis.bb.MaxDistance = config.MaxDistance
+			end
+			if vis.lastColor ~= info.color then
+				vis.lastColor = info.color
+				vis.lbl.TextColor3 = info.color
+			end
+			local nextTxt = ("%s [%.0fm]"):format(info.name, info.dist)
+			if vis.lastText ~= nextTxt then
+				vis.lastText = nextTxt
+				vis.lbl.Text = nextTxt
+			end
 
-			if idx <= MAX_HIGHLIGHTS and info.node:IsA("Model") then
+			if idx <= maxHighlights and info.node:IsA("Model") then
 				if not vis.hl or not vis.hl.Parent then
 					local hl = Instance.new("Highlight")
 					hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 					hl.FillColor = info.color
-					hl.OutlineColor = Color3.new(1, 1, 1)
+					hl.OutlineColor = COLOR_WHITE
 					hl.FillTransparency = 0.6
 					hl.OutlineTransparency = 0.15
 					hl.Adornee = info.node
 					hl.Parent = folder
 					vis.hl = hl
-				else
+				elseif vis.hl.FillColor ~= info.color then
 					vis.hl.FillColor = info.color
 				end
 			elseif vis.hl then
@@ -2457,10 +2775,10 @@ end
 local function refreshLoopState()
 	local needsVisualLoop = (config.ScanEsp or config.ShowBeam) and not destroyed
 	if needsVisualLoop and not renderConn then
-		elapsedAcc = VISUAL_INTERVAL
-		renderConn = RunService.RenderStepped:Connect(function(dt: number)
+		elapsedAcc = visualInterval
+		renderConn = RunService.Heartbeat:Connect(function(dt: number)
 			elapsedAcc += dt
-			if elapsedAcc < VISUAL_INTERVAL then
+			if elapsedAcc < visualInterval then
 				return
 			end
 			elapsedAcc = 0
@@ -2488,6 +2806,16 @@ local function setNoclipEnabled(enabled)
 		return
 	end
 
+	local function rebuildCharParts(char: Model)
+		table.clear(charPartsCache)
+		charCachedRef = char
+		for _, desc in ipairs(char:GetDescendants()) do
+			if desc:IsA("BasePart") then
+				table.insert(charPartsCache, desc)
+			end
+		end
+	end
+
 	if not noclipConn then
 		noclipConn = RunService.Stepped:Connect(function()
 			if not flyActive or config.MoveMode ~= "FlyNoclip" or destroyed then
@@ -2495,14 +2823,24 @@ local function setNoclipEnabled(enabled)
 			end
 			local char = LocalPlayer.Character
 			if not char then
+				charCachedRef = nil
+				table.clear(charPartsCache)
 				return
 			end
-			for _, desc in ipairs(char:GetDescendants()) do
-				if desc:IsA("BasePart") then
-					if savedCollide[desc] == nil then
-						savedCollide[desc] = desc.CanCollide
+			if charCachedRef ~= char then
+				rebuildCharParts(char)
+			end
+			for i = #charPartsCache, 1, -1 do
+				local p = charPartsCache[i]
+				if not p.Parent then
+					table.remove(charPartsCache, i)
+				else
+					if savedCollide[p] == nil then
+						savedCollide[p] = p.CanCollide
 					end
-					desc.CanCollide = false
+					if p.CanCollide then
+						p.CanCollide = false
+					end
 				end
 			end
 		end)
@@ -2746,8 +3084,7 @@ local function moveTowardsTarget(targetPos: Vector3, stopDist: number, token: nu
 	end
 end
 
-local function triggerPromptSafe(targetInfo, token: number): boolean
-	local prompt = targetInfo.prompt
+local function fireOrHoldPrompt(prompt: ProximityPrompt, shouldContinue: () -> boolean, acceptDisabledAsSuccess: boolean?): boolean
 	if not prompt or not prompt.Parent or not prompt.Enabled then
 		return false
 	end
@@ -2758,9 +3095,115 @@ local function triggerPromptSafe(targetInfo, token: number): boolean
 	end)
 
 	local origLOS = prompt.RequiresLineOfSight
+	local origExcl = prompt.Exclusivity
+	local origMaxDist = prompt.MaxActivationDistance
+	local pParent = prompt.Parent
+	local pWorldPos: Vector3? = if pParent:IsA("Attachment")
+		then pParent.WorldPosition
+		elseif pParent:IsA("BasePart") then pParent.Position
+		else nil
+	local rootPart = getRootPart()
+	local rootPos: Vector3? = if rootPart then rootPart.Position else nil
+	local neededDist = if rootPos and pWorldPos then math.max(10, (pWorldPos - rootPos).Magnitude + 3.5) else 12
+	local bumpedDist = false
+
+	local function ensurePromptReachable()
+		if prompt.Parent and prompt.MaxActivationDistance < neededDist then
+			pcall(function()
+				prompt.MaxActivationDistance = neededDist
+			end)
+			bumpedDist = true
+		end
+	end
+
 	pcall(function()
 		prompt.RequiresLineOfSight = false
+		prompt.Exclusivity = Enum.ProximityPromptExclusivity.AlwaysShow
 	end)
+	ensurePromptReachable()
+
+	local firePromptFn = resolveFirePromptFn()
+	if (origMaxDist <= 0.2 or origExcl ~= Enum.ProximityPromptExclusivity.AlwaysShow) and not firePromptFn then
+		-- Let ProximityPromptService promote this prompt immediately even when another [E] station is nearby
+		RunService.Heartbeat:Wait()
+		ensurePromptReachable()
+	end
+
+	for attempt = 1, 2 do
+		if not shouldContinue() or not prompt.Parent or not prompt.Enabled or triggered then
+			break
+		end
+
+		ensurePromptReachable()
+		if firePromptFn then
+			pcall(firePromptFn, prompt)
+			local fastWaitEnd = os.clock() + 0.18
+			while os.clock() < fastWaitEnd do
+				if triggered or not prompt.Parent or not prompt.Enabled or not shouldContinue() then
+					break
+				end
+				ensurePromptReachable()
+				task.wait(0.03)
+			end
+		end
+
+		if not triggered and prompt.Parent and prompt.Enabled and shouldContinue() then
+			ensurePromptReachable()
+			pcall(function()
+				prompt:InputHoldBegin()
+			end)
+			local holdDur = math.max(0.08, prompt.HoldDuration + 0.16)
+			local endWait = os.clock() + holdDur
+			while os.clock() < endWait do
+				if triggered or not shouldContinue() or not prompt.Parent or not prompt.Enabled then
+					break
+				end
+				ensurePromptReachable()
+				task.wait(0.04)
+			end
+			pcall(function()
+				prompt:InputHoldEnd()
+			end)
+			task.wait(0.12)
+		end
+
+		if triggered or not prompt.Parent or not prompt.Enabled then
+			break
+		end
+		if attempt == 1 then
+			task.wait(0.06)
+		end
+	end
+
+	pcall(function()
+		if prompt.Parent then
+			prompt.RequiresLineOfSight = origLOS
+			prompt.Exclusivity = origExcl
+			if bumpedDist and origMaxDist > 0.5 then
+				prompt.MaxActivationDistance = origMaxDist
+			end
+		end
+	end)
+	conn:Disconnect()
+
+	if triggered then
+		return true
+	end
+	if acceptDisabledAsSuccess then
+		return not prompt.Enabled or not prompt.Parent
+	end
+	return false
+end
+
+local function triggerPromptSafe(targetInfo, token: number): boolean
+	local prompt = targetInfo.prompt
+	if not prompt or not prompt.Parent or not prompt.Enabled then
+		return false
+	end
+
+	local function stillActive(): boolean
+		return (not destroyed) and config.AutoCollect and (token == autoLoopToken)
+	end
 
 	-- Maintain hover position & zero velocity during HoldDuration while using Fly mode
 	local hoverConn = nil
@@ -2769,7 +3212,7 @@ local function triggerPromptSafe(targetInfo, token: number): boolean
 		local hoverY = math.min(2.6, math.max(1.2, maxAct * 0.38))
 		local hoverPos = targetInfo.pos + Vector3.new(0, hoverY, 0)
 		hoverConn = RunService.Heartbeat:Connect(function()
-			if destroyed or not config.AutoCollect or token ~= autoLoopToken or config.MoveMode == "Walk" then
+			if not stillActive() or config.MoveMode == "Walk" then
 				return
 			end
 			local root = getRootPart()
@@ -2786,63 +3229,12 @@ local function triggerPromptSafe(targetInfo, token: number): boolean
 		end)
 	end
 
-	local firePromptFn = resolveFirePromptFn()
-
-	for attempt = 1, 2 do
-		if destroyed or not config.AutoCollect or token ~= autoLoopToken or not prompt.Parent or not prompt.Enabled or triggered then
-			break
-		end
-
-		if firePromptFn then
-			pcall(firePromptFn, prompt)
-			local fastWaitEnd = os.clock() + 0.18
-			while os.clock() < fastWaitEnd do
-				if triggered or not prompt.Parent or not prompt.Enabled or destroyed or not config.AutoCollect or token ~= autoLoopToken then
-					break
-				end
-				task.wait(0.03)
-			end
-		end
-
-		if not triggered and prompt.Parent and prompt.Enabled and config.AutoCollect and token == autoLoopToken and not destroyed then
-			pcall(function()
-				prompt:InputHoldBegin()
-			end)
-
-			local holdDur = math.max(0.08, prompt.HoldDuration + 0.14)
-			local endWait = os.clock() + holdDur
-			while os.clock() < endWait do
-				if triggered or destroyed or not config.AutoCollect or token ~= autoLoopToken or not prompt.Parent or not prompt.Enabled then
-					break
-				end
-				task.wait(0.04)
-			end
-
-			pcall(function()
-				prompt:InputHoldEnd()
-			end)
-			task.wait(0.14)
-		end
-
-		if triggered or not prompt.Parent or not prompt.Enabled then
-			break
-		end
-		if attempt == 1 then
-			task.wait(0.08)
-		end
-	end
-
+	local ok = fireOrHoldPrompt(prompt, stillActive, true)
 	if hoverConn then
 		hoverConn:Disconnect()
 		hoverConn = nil
 	end
-	pcall(function()
-		if prompt.Parent then
-			prompt.RequiresLineOfSight = origLOS
-		end
-	end)
-	conn:Disconnect()
-	return triggered or not prompt.Enabled or not prompt.Parent
+	return ok
 end
 
 function Material:ScanNow(): string
@@ -3130,10 +3522,8 @@ local function findLocalPlayerBase(): Model?
 end
 
 local function isSafeGarageFloorPoint(house: Model, garage: Instance, floorY: number, cx: number, cz: number): (boolean, Vector3?)
-	local downParams = RaycastParams.new()
-	downParams.FilterType = Enum.RaycastFilterType.Include
-	downParams.FilterDescendantsInstances = { garage }
-	downParams.RespectCanCollide = true
+	sharedDownParams.FilterDescendantsInstances = { garage }
+	local downParams = sharedDownParams
 
 	local downHit = workspace:Raycast(Vector3.new(cx, floorY + 6.5, cz), Vector3.new(0, -10, 0), downParams)
 	if not downHit or not downHit.Instance then
@@ -3146,10 +3536,8 @@ local function isSafeGarageFloorPoint(house: Model, garage: Instance, floorY: nu
 		return false, nil
 	end
 
-	local houseParams = RaycastParams.new()
-	houseParams.FilterType = Enum.RaycastFilterType.Include
-	houseParams.FilterDescendantsInstances = { house }
-	houseParams.RespectCanCollide = true
+	sharedHouseParams.FilterDescendantsInstances = { house }
+	local houseParams = sharedHouseParams
 
 	local upHit = workspace:Raycast(downHit.Position + Vector3.new(0, 0.5, 0), Vector3.new(0, 6.2, 0), houseParams)
 	if upHit then
@@ -3351,6 +3739,14 @@ local function pivotCharacterSafely(destPos: Vector3, lookAtPos: Vector3?): bool
 	return true
 end
 
+function Material:IsPositionSafeForMove(pos: Vector3, allowSpace: boolean?): (boolean, string?)
+	return isPositionSafeForDimension(pos, allowSpace)
+end
+
+function Material:SetMissionSafeFilter(enabled: boolean)
+	missionSafeFilter = (enabled == true)
+end
+
 function Material:GetHomeStatusText(): string
 	local curDim = tostring(LocalPlayer:GetAttribute("CurrentDimension") or "C137")
 	local homeDimAttr = LocalPlayer:GetAttribute("HomeDimension")
@@ -3371,10 +3767,14 @@ function Material:GetHomeStatusText(): string
 			end
 		end
 	end
+	if targetPos and (homeDimAttr == nil or curDim == homeDim) then
+		cachedGarageSpot = findGarageSpot(house) or targetPos
+	end
 	if not targetPos then
 		local hp = LocalPlayer:GetAttribute("HomePos")
 		if typeof(hp) == "Vector3" then
 			targetPos = hp
+			cachedHomeOrigin = hp
 		end
 	end
 
@@ -3565,14 +3965,753 @@ function Material:TeleportToHome(useServerOnly: boolean?): (boolean, string)
 	return finalOk, finalMsg
 end
 
+local QUICK_STATIONS = {
+	workbench = {
+		label = "Rick's Workbench",
+		modelNames = { "GarageWorkbench", "Workbench" },
+		promptNames = { "CraftPrompt" },
+		tagFallback = "CraftingStation",
+		maxDist = 8.0,
+		opensFullUi = true,
+	},
+	fluid = {
+		label = "Fluid Station",
+		modelNames = { "FluidStation" },
+		promptNames = { "ProximityPrompt" },
+		maxDist = 7.2,
+		opensFullUi = false,
+	},
+	scanner = {
+		label = "Dimension Scanner",
+		modelNames = { "DimensionScanner" },
+		promptNames = { "ScanPrompt" },
+		maxDist = 8.0,
+		opensFullUi = true,
+	},
+	fridge = {
+		label = "Rick's Fridge",
+		modelNames = { "BeerFridge" },
+		promptNames = { "FridgePrompt" },
+		maxDist = 7.2,
+		opensFullUi = false,
+	},
+	terminal = {
+		label = "Garage Terminal",
+		modelNames = { "GarageTerminal" },
+		promptNames = { "GarageCustomPrompt" },
+		maxDist = 7.2,
+		opensFullUi = true,
+	},
+}
+
+local function getPromptWorldPos(prompt: ProximityPrompt): Vector3?
+	local p = prompt.Parent
+	if not p then
+		return nil
+	end
+	if p:IsA("Attachment") then
+		return p.WorldPosition
+	elseif p:IsA("BasePart") then
+		return p.Position
+	end
+	local model = p:FindFirstAncestorWhichIsA("Model")
+	if model then
+		local ok, cf = pcall(function()
+			return model:GetPivot()
+		end)
+		if ok and cf then
+			return cf.Position
+		end
+	end
+	return nil
+end
+
+local function findPromptInContainer(container: Instance, promptNames: { string }): ProximityPrompt?
+	for _, pName in ipairs(promptNames) do
+		local found = container:FindFirstChild(pName, true)
+		if found and found:IsA("ProximityPrompt") and found.Enabled then
+			return found
+		end
+	end
+	for _, d in ipairs(container:GetDescendants()) do
+		if d:IsA("ProximityPrompt") and d.Enabled then
+			return d
+		end
+	end
+	return nil
+end
+
+local function findStationPromptInHouse(house: Model?, spec: any, nearRootPos: Vector3?): (ProximityPrompt?, Vector3?)
+	if house then
+		for _, mName in ipairs(spec.modelNames) do
+			local model = house:FindFirstChild(mName, true)
+			if model then
+				local prompt = findPromptInContainer(model, spec.promptNames)
+				if prompt then
+					return prompt, getPromptWorldPos(prompt)
+				end
+			end
+		end
+	end
+	if spec.tagFallback and nearRootPos then
+		local bestPrompt: ProximityPrompt? = nil
+		local bestPos: Vector3? = nil
+		local bestDist = math.huge
+		for _, inst in ipairs(CollectionService:GetTagged(spec.tagFallback)) do
+			if inst:IsDescendantOf(workspace) then
+				local prompt = findPromptInContainer(inst, spec.promptNames)
+				local pPos = if prompt then getPromptWorldPos(prompt) else nil
+				if prompt and pPos then
+					local d = (pPos - nearRootPos).Magnitude
+					if d < bestDist then
+						bestDist = d
+						bestPrompt = prompt
+						bestPos = pPos
+					end
+				end
+			end
+		end
+		if bestPrompt then
+			return bestPrompt, bestPos
+		end
+	end
+	return nil, nil
+end
+
+local function findCleanSpotNearTarget(
+	house: Model,
+	targetPos: Vector3,
+	maxPromptDist: number,
+	targetPrompt: ProximityPrompt?
+): Vector3?
+	local scale = getCharacterScale()
+	local garage = house:FindFirstChild("Garage") or house:FindFirstChild("Garage", true)
+	local container: Instance = garage or house
+
+	local rivalPositions: { Vector3 } = {}
+	if garage then
+		local targetKey = if targetPrompt then targetPrompt.KeyboardKeyCode else Enum.KeyCode.E
+		for _, d in ipairs(garage:GetDescendants()) do
+			if d:IsA("ProximityPrompt") and d ~= targetPrompt and d.Enabled and d.KeyboardKeyCode == targetKey then
+				local pPos = getPromptWorldPos(d)
+				if pPos and (pPos - targetPos).Magnitude <= 18 then
+					table.insert(rivalPositions, pPos)
+				end
+			end
+		end
+	end
+
+	local floorParts: { BasePart } = {}
+	for _, ch in ipairs(container:GetDescendants()) do
+		if ch:IsA("BasePart") and ch.Name == "Floor" and ch.CanCollide and (ch.Position - targetPos).Magnitude < 45 then
+			table.insert(floorParts, ch)
+		end
+	end
+
+	local floorY = targetPos.Y - 4.0
+	if #floorParts > 0 then
+		local sumY = 0
+		for _, fp in ipairs(floorParts) do
+			sumY += fp.Position.Y
+		end
+		floorY = sumY / #floorParts
+	end
+
+	sharedHouseParams.FilterDescendantsInstances = { house }
+	local houseParams = sharedHouseParams
+
+	sharedDownParams.FilterDescendantsInstances = { container }
+	local downParams = sharedDownParams
+
+	local feelDirs: { Vector3 } = {}
+	for k = 0, 7 do
+		local a = (k / 8) * math.pi * 2
+		table.insert(feelDirs, Vector3.new(math.cos(a) * 1.3 * scale, 0, math.sin(a) * 1.3 * scale))
+	end
+
+	local bestTier = 99
+	local bestDist = math.huge
+	local bestSpot: Vector3? = nil
+
+	local function testSurfaceHit(hit: RaycastResult?)
+		if not hit or not hit.Instance or hit.Normal.Y < 0.85 then
+			return
+		end
+		if hit.Position.Y < floorY - 1.5 or hit.Position.Y > targetPos.Y + 2.0 then
+			return
+		end
+		local isElevated = (hit.Position.Y > targetPos.Y + 0.6)
+		local surfName = hit.Instance.Name
+		local isFloor = (surfName == "Floor" or surfName == "Cover") and not isElevated
+
+		-- Bidirectional headroom check catches thin undersides even when ray origin is inside a mesh
+		local upHit = workspace:Raycast(hit.Position + Vector3.new(0, 0.45, 0), Vector3.new(0, 5.4 * scale, 0), houseParams)
+		if upHit then
+			return
+		end
+		local downHeadHit = workspace:Raycast(hit.Position + Vector3.new(0, 5.6 * scale, 0), Vector3.new(0, -5.2 * scale, 0), houseParams)
+		if downHeadHit then
+			return
+		end
+
+		for _, hOff in ipairs({ 1.8 * scale, 3.2 * scale }) do
+			local origin = hit.Position + Vector3.new(0, hOff, 0)
+			for _, dir in ipairs(feelDirs) do
+				local sideHit = workspace:Raycast(origin, dir, houseParams)
+				if sideHit and sideHit.Instance and sideHit.Instance ~= hit.Instance and sideHit.Instance.Name ~= "Floor" and sideHit.Instance.Name ~= "Cover" then
+					return
+				end
+			end
+		end
+
+		local candPos = hit.Position + Vector3.new(0, 3.1 * scale, 0)
+		local dTarget = (candPos - targetPos).Magnitude
+		if dTarget > maxPromptDist or dTarget < 1.6 then
+			return
+		end
+
+		local winsPrompt = true
+		for _, rPos in ipairs(rivalPositions) do
+			if (candPos - rPos).Magnitude <= dTarget + 0.15 then
+				winsPrompt = false
+				break
+			end
+		end
+
+		local tier = if isElevated
+			then (if winsPrompt then 4 else 5)
+			elseif winsPrompt and isFloor then 0
+			elseif winsPrompt then 1
+			elseif isFloor then 2
+			else 3
+
+		if tier < bestTier or (tier == bestTier and dTarget < bestDist) then
+			bestTier = tier
+			bestDist = dTarget
+			bestSpot = candPos
+		end
+	end
+
+	local radii = { 2.4, 3.1, 3.9, 4.8, 5.8, 7.0, 8.0 }
+	for _, r in ipairs(radii) do
+		if r <= maxPromptDist + 1.5 then
+			for step = 0, 15 do
+				local ang = (step / 16) * math.pi * 2
+				local px = targetPos.X + math.cos(ang) * r
+				local pz = targetPos.Z + math.sin(ang) * r
+				local lowHit = workspace:Raycast(Vector3.new(px, floorY + 4.8, pz), Vector3.new(0, -8.5, 0), downParams)
+				testSurfaceHit(lowHit)
+				local highHit = workspace:Raycast(Vector3.new(px, targetPos.Y + 2.2, pz), Vector3.new(0, -10, 0), downParams)
+				if highHit and (not lowHit or highHit.Instance ~= lowHit.Instance) then
+					testSurfaceHit(highHit)
+				end
+			end
+		end
+	end
+
+	if bestSpot then
+		return bestSpot
+	end
+
+	-- Fallback toward Garage center so we never land inside outer walls or hovering above Floor
+	local genPos = findGarageSpot(house)
+	if genPos then
+		if (genPos - targetPos).Magnitude <= maxPromptDist then
+			return genPos
+		end
+		local dir = Vector3.new(genPos.X - targetPos.X, 0, genPos.Z - targetPos.Z)
+		if dir.Magnitude > 0.2 then
+			return Vector3.new(targetPos.X, floorY + 3.2 * scale, targetPos.Z) + dir.Unit * 3.0
+		end
+	end
+	return Vector3.new(targetPos.X - 2.6, floorY + 3.2 * scale, targetPos.Z)
+end
+
+local function prepareForTeleport(disableAutoCollectMsg: string?): (boolean, string)
+	if config.AutoCollect then
+		config.AutoCollect = false
+		autoLoopToken += 1
+		lastCollectMsg = disableAutoCollectMsg or "Disabled (Teleported)"
+		if beforeTeleportCallback then
+			pcall(beforeTeleportCallback)
+		end
+		refreshLoopState()
+	end
+	stopFlightSession()
+
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local root = getRootPart()
+	if not char or not hum or not root or hum.Health <= 0 then
+		return false, "Character not ready"
+	end
+	if hum.Sit or hum.SeatPart then
+		hum.Sit = false
+		task.wait(0.08)
+	end
+	return true, "ok"
+end
+
+function Material:QuickInteract(stationKey: string): (boolean, string, boolean)
+	if destroyed then
+		return false, "Menu unloaded", false
+	end
+	local spec = QUICK_STATIONS[stationKey]
+	if not spec then
+		return false, "Unknown station: " .. tostring(stationKey), false
+	end
+	if teleportInProgress then
+		return false, "Teleport already in progress", false
+	end
+	teleportInProgress = true
+
+	local finalOk = false
+	local finalMsg = "Quick interact failed"
+
+	local runOk, runErr = pcall(function()
+		local readyOk, readyErr = prepareForTeleport("Paused (Quick Interact)")
+		if not readyOk then
+			finalOk = false
+			finalMsg = readyErr
+			lastHomeMsg = finalMsg
+			sendNotice("Quick Interact", finalMsg, Color3.fromRGB(248, 113, 113))
+			return
+		end
+
+		local root = getRootPart()
+		if not root then
+			finalOk = false
+			finalMsg = "HumanoidRootPart not found"
+			return
+		end
+
+		local curDim = LocalPlayer:GetAttribute("CurrentDimension")
+		local homeDim = LocalPlayer:GetAttribute("HomeDimension")
+		local homePos = LocalPlayer:GetAttribute("HomePos")
+		local inOrbit = LocalPlayer:GetAttribute("InOrbit") == true
+		local inOtherDim = (homeDim ~= nil and curDim ~= nil and curDim ~= homeDim) or inOrbit
+
+		local localHouse = findLocalPlayerBase()
+		local nearPrompt, nearPos = findStationPromptInHouse(localHouse, spec, root.Position)
+		if nearPrompt and nearPos and not inOtherDim then
+			local nearMax = if nearPrompt.MaxActivationDistance > 1 then nearPrompt.MaxActivationDistance else spec.maxDist
+			local maxAct = math.min(spec.maxDist, nearMax - 0.5)
+			if (nearPos - root.Position).Magnitude <= maxAct then
+				local okTrig = fireOrHoldPrompt(nearPrompt, function()
+					return not destroyed
+				end, false)
+				finalOk = okTrig
+				if okTrig then
+					finalMsg = "Opened " .. spec.label
+					lastHomeMsg = finalMsg
+					sendNotice("Quick Interact", finalMsg, Color3.fromRGB(52, 211, 153))
+				else
+					finalMsg = "Could not trigger " .. spec.label .. " prompt"
+					lastHomeMsg = finalMsg
+					sendNotice("Quick Interact", finalMsg, Color3.fromRGB(248, 113, 113))
+				end
+				return
+			end
+		end
+
+		-- Save return spot when teleporting from afar (> 28 studs from HomePos/House)
+		local originHousePos: Vector3? = if typeof(homePos) == "Vector3"
+			then homePos
+			elseif localHouse then localHouse:GetPivot().Position
+			else nil
+		if inOtherDim or not originHousePos or (root.Position - originHousePos).Magnitude > 28 then
+			savedReturnCFrame = root.CFrame
+			savedReturnDim = curDim
+		end
+
+		if inOtherDim then
+			local goHome = ReplicatedStorage:FindFirstChild("GoHome")
+			if goHome and goHome:IsA("RemoteEvent") then
+				pcall(function()
+					goHome:FireServer("start")
+				end)
+				lastHomeMsg = "Returning home for " .. spec.label .. "..."
+				sendNotice("Quick Interact", lastHomeMsg, Color3.fromRGB(56, 189, 248))
+
+				local waitStart = os.clock()
+				while not destroyed and os.clock() - waitStart < 8.5 do
+					task.wait(0.2)
+					local nowDim = LocalPlayer:GetAttribute("CurrentDimension")
+					local nowOrbit = LocalPlayer:GetAttribute("InOrbit") == true
+					if (homeDim == nil or nowDim == homeDim) and not nowOrbit and findLocalPlayerBase() then
+						break
+					end
+				end
+			end
+		end
+
+		local house = findLocalPlayerBase()
+		if not house and typeof(homePos) == "Vector3" then
+			lastHomeMsg = "Streaming Garage..."
+			pcall(function()
+				LocalPlayer:RequestStreamAroundAsync(homePos, 5)
+			end)
+			pivotCharacterSafely(homePos + Vector3.new(0, 6, 0), nil)
+			root = getRootPart()
+			if root then
+				root.Anchored = true
+				local tStart = os.clock()
+				while not destroyed and os.clock() - tStart < 1.8 do
+					house = findLocalPlayerBase()
+					if house and (house:FindFirstChild("Garage") or house:FindFirstChild("Garage", true)) then
+						break
+					end
+					task.wait(0.15)
+				end
+				if root.Parent then
+					root.Anchored = false
+				end
+			end
+		end
+
+		local rNow = getRootPart()
+		local prompt, stationPos = findStationPromptInHouse(house, spec, rNow and rNow.Position or nil)
+		if not prompt or not stationPos then
+			finalOk = false
+			finalMsg = spec.label .. " prompt not found (must be built in Garage)"
+			lastHomeMsg = finalMsg
+			sendNotice("Quick Interact", finalMsg, Color3.fromRGB(248, 113, 113))
+			return
+		end
+
+		local rawPromptMax = if prompt.MaxActivationDistance > 1 then prompt.MaxActivationDistance else spec.maxDist
+		local maxUseDist = math.max(4.5, math.min(spec.maxDist, rawPromptMax - 0.8))
+		local destPos = if house then findCleanSpotNearTarget(house, stationPos, maxUseDist, prompt) else (stationPos + Vector3.new(-3.2, 0.8, 0))
+		if destPos then
+			pcall(function()
+				LocalPlayer:RequestStreamAroundAsync(destPos, 3)
+			end)
+			pivotCharacterSafely(destPos, stationPos)
+			RunService.Heartbeat:Wait()
+		end
+
+		local rAfter = getRootPart()
+		if rAfter then
+			rAfter.Anchored = false
+			rAfter.AssemblyLinearVelocity = Vector3.zero
+			rAfter.AssemblyAngularVelocity = Vector3.zero
+		end
+
+		local okTrig = fireOrHoldPrompt(prompt, function()
+			return not destroyed
+		end, false)
+		finalOk = okTrig
+		if okTrig then
+			finalMsg = "Opened " .. spec.label
+			lastHomeMsg = finalMsg
+			sendNotice("Quick Interact", finalMsg, Color3.fromRGB(52, 211, 153))
+		else
+			finalMsg = "Could not trigger " .. spec.label .. " prompt"
+			lastHomeMsg = finalMsg
+			sendNotice("Quick Interact", finalMsg, Color3.fromRGB(248, 113, 113))
+		end
+	end)
+
+	teleportInProgress = false
+	if not runOk then
+		local rRecover = getRootPart()
+		if rRecover then
+			rRecover.Anchored = false
+		end
+		lastHomeMsg = "Error: " .. tostring(runErr)
+		return false, lastHomeMsg, false
+	end
+	return finalOk, finalMsg, (finalOk and spec.opensFullUi == true)
+end
+
+function Material:ReturnToSavedSpot(): (boolean, string)
+	if destroyed then
+		return false, "Menu unloaded"
+	end
+	if not savedReturnCFrame then
+		return false, "No previous spot saved yet"
+	end
+	if teleportInProgress then
+		return false, "Teleport already in progress"
+	end
+	local curDim = LocalPlayer:GetAttribute("CurrentDimension")
+	if savedReturnDim ~= nil and curDim ~= nil and curDim ~= savedReturnDim then
+		return false, ("Switch back to dimension %s first"):format(tostring(savedReturnDim))
+	end
+
+	teleportInProgress = true
+	local targetCF = savedReturnCFrame
+	local finalOk = false
+	local finalMsg = "Return failed"
+
+	pcall(function()
+		local readyOk, readyErr = prepareForTeleport("Paused (Returned)")
+		if not readyOk then
+			finalMsg = readyErr
+			return
+		end
+		pcall(function()
+			LocalPlayer:RequestStreamAroundAsync(targetCF.Position, 3)
+		end)
+		local moved = pivotCharacterSafely(targetCF.Position, targetCF.Position + targetCF.LookVector * 10)
+		if moved then
+			RunService.Heartbeat:Wait()
+			savedReturnCFrame = nil
+			savedReturnDim = nil
+			finalOk = true
+			finalMsg = "Returned to previous location"
+			lastHomeMsg = finalMsg
+			sendNotice("Return", finalMsg, Color3.fromRGB(52, 211, 153))
+		end
+	end)
+
+	teleportInProgress = false
+	return finalOk, finalMsg
+end
+
+function Material:ForceSendHomeNow(): (boolean, string)
+	if destroyed then
+		return false, "Menu unloaded"
+	end
+
+	-- Preempt any active AutoCollect or stalled teleport immediately
+	teleportForceToken += 1
+	local myForceToken = teleportForceToken
+	teleportInProgress = true
+
+	local finalOk = false
+	local finalMsg = "Force Home failed"
+
+	local runOk, runErr = pcall(function()
+		local readyOk, readyErr = prepareForTeleport("Paused (Forced Home)")
+		if not readyOk then
+			finalMsg = readyErr
+			lastHomeMsg = finalMsg
+			sendNotice("Force Home", finalMsg, Color3.fromRGB(248, 113, 113))
+			return
+		end
+
+		local char = LocalPlayer.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local root = getRootPart()
+		if not char or not hum or not root or hum.Health <= 0 then
+			finalMsg = "Character not ready"
+			return
+		end
+
+		-- Force-clear physics traps / ragdolls / zero-G before warping
+		hum.Sit = false
+		hum.PlatformStand = false
+		pcall(function()
+			char:SetAttribute("FallRagdoll", nil)
+			char:SetAttribute("LocalLimp", nil)
+			if workspace.Gravity < 100 then
+				workspace.Gravity = 196.2
+			end
+		end)
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+
+		local curDim = LocalPlayer:GetAttribute("CurrentDimension")
+		local homeDim = LocalPlayer:GetAttribute("HomeDimension")
+		local homePos = LocalPlayer:GetAttribute("HomePos")
+		local inOrbit = LocalPlayer:GetAttribute("InOrbit") == true
+		local inOtherDim = (homeDim ~= nil and curDim ~= nil and curDim ~= homeDim) or inOrbit
+
+		local localHouse = findLocalPlayerBase()
+		if localHouse then
+			local gSpot, gLook = findGarageSpot(localHouse)
+			if gSpot then
+				cachedGarageSpot = gSpot
+				cachedGarageLook = gLook
+			end
+		end
+		if typeof(homePos) == "Vector3" then
+			cachedHomeOrigin = homePos
+		end
+
+		-- Save return spot when escaping from afar
+		local originHousePos: Vector3? = if typeof(homePos) == "Vector3"
+			then homePos
+			elseif localHouse then localHouse:GetPivot().Position
+			else cachedGarageSpot
+		if inOtherDim or not originHousePos or (root.Position - originHousePos).Magnitude > 28 then
+			savedReturnCFrame = root.CFrame
+			savedReturnDim = curDim
+		end
+
+		local destPos: Vector3? = if localHouse then findGarageSpot(localHouse) else nil
+		local lookPos: Vector3? = cachedGarageLook
+		if not destPos then
+			destPos = cachedGarageSpot
+		end
+		if not destPos and typeof(homePos) == "Vector3" then
+			destPos = homePos + Vector3.new(0, 3.5 * getCharacterScale(), 0)
+		end
+		if not destPos and cachedHomeOrigin then
+			destPos = cachedHomeOrigin + Vector3.new(0, 3.5 * getCharacterScale(), 0)
+		end
+		if not destPos and homeDim ~= nil then
+			local wi = getWorldInfo()
+			if wi and type(wi.origin) == "function" then
+				local okO, wOrig = pcall(wi.origin, homeDim)
+				if okO and typeof(wOrig) == "Vector3" then
+					destPos = wOrig + Vector3.new(0, 5, 0)
+				end
+			end
+		end
+
+		if not destPos then
+			-- Last resort: fire official server GoHome / CruiserHome cleanly
+			if inOrbit then
+				local ch = ReplicatedStorage:FindFirstChild("CruiserHome")
+				if ch and ch:IsA("RemoteFunction") then
+					task.spawn(function() pcall(function() ch:InvokeServer() end) end)
+				end
+			end
+			local gh = ReplicatedStorage:FindFirstChild("GoHome")
+			if gh and gh:IsA("RemoteEvent") then
+				pcall(function() gh:FireServer("start") end)
+			end
+			finalOk = false
+			finalMsg = "Home coords unavailable; triggered Server GoHome"
+			lastHomeMsg = finalMsg
+			return
+		end
+
+		-- Force-unveil dimension locally + dispatch server sync in parallel (0s client wait)
+		if inOtherDim then
+			task.spawn(function()
+				if inOrbit then
+					local ch = ReplicatedStorage:FindFirstChild("CruiserHome")
+					if ch and ch:IsA("RemoteFunction") then
+						local okC = pcall(function() ch:InvokeServer() end)
+						if okC then
+							return
+						end
+					end
+				end
+				local gh = ReplicatedStorage:FindFirstChild("GoHome")
+				if gh and gh:IsA("RemoteEvent") then
+					pcall(function() gh:FireServer("start") end)
+				end
+			end)
+			pcall(function()
+				LocalPlayer:SetAttribute("InOrbit", nil)
+				if homeDim ~= nil then
+					LocalPlayer:SetAttribute("CurrentDimension", homeDim)
+				end
+			end)
+		end
+
+		-- Unveil hidden house visibility if veiled by DimensionVisibility
+		local hCheck = findLocalPlayerBase()
+		if hCheck then
+			if hCheck.Parent ~= workspace then
+				hCheck.Parent = workspace
+			end
+			local gPart = hCheck:FindFirstChild("Garage")
+			if gPart then
+				for _, d in ipairs(gPart:GetDescendants()) do
+					if d:IsA("BasePart") and d.LocalTransparencyModifier > 0.5 then
+						d.LocalTransparencyModifier = 0
+					end
+				end
+			end
+		end
+
+		-- Instant anchor + pre-stream + floor snap (Void-proof)
+		root.Anchored = true
+		pcall(function()
+			LocalPlayer:RequestStreamAroundAsync(destPos :: Vector3, 4)
+		end)
+		pivotCharacterSafely((destPos :: Vector3) + Vector3.new(0, 1.5, 0), lookPos)
+
+		sharedFloorParams.FilterDescendantsInstances = { char }
+		local floorParams = sharedFloorParams
+
+		local groundHit: RaycastResult? = nil
+		local streamEnd = os.clock() + 1.0
+		while not destroyed and myForceToken == teleportForceToken and os.clock() < streamEnd do
+			local houseNow = findLocalPlayerBase()
+			if houseNow then
+				local cleanSpot, cleanLook = findGarageSpot(houseNow)
+				if cleanSpot then
+					destPos = cleanSpot
+					lookPos = cleanLook
+					cachedGarageSpot = cleanSpot
+					cachedGarageLook = cleanLook
+				end
+			end
+			groundHit = workspace:Raycast((destPos :: Vector3) + Vector3.new(0, 6, 0), Vector3.new(0, -18, 0), floorParams)
+			if groundHit and groundHit.Instance then
+				break
+			end
+			task.wait(0.04)
+		end
+
+		local scale = getCharacterScale()
+		local finalSpot = if groundHit then (groundHit.Position + Vector3.new(0, 3.1 * scale, 0)) else (destPos :: Vector3)
+		pivotCharacterSafely(finalSpot, lookPos)
+		root = getRootPart()
+		if root and root.Parent then
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.AssemblyAngularVelocity = Vector3.zero
+			root.Anchored = false
+		end
+
+		-- Post-warp stability lock (0.55s) prevents Void fall or leftover momentum
+		task.spawn(function()
+			local guardEnd = os.clock() + 0.55
+			while not destroyed and myForceToken == teleportForceToken and os.clock() < guardEnd do
+				local r = getRootPart()
+				if not r then break end
+				if (r.Position - finalSpot).Magnitude > 35 then
+					break
+				end
+				if r.AssemblyLinearVelocity.Y < -20 then
+					r.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+					pivotCharacterSafely(finalSpot, lookPos)
+				end
+				task.wait(0.05)
+			end
+		end)
+
+		finalOk = true
+		finalMsg = if inOtherDim then "Forced Home (Garage) + Sync Sent" else "Force Warped to Garage!"
+		lastHomeMsg = finalMsg
+		sendNotice("Force Home", finalMsg, Color3.fromRGB(52, 211, 153))
+	end)
+
+	teleportInProgress = false
+	if not runOk then
+		local rRec = getRootPart()
+		if rRec then
+			rRec.Anchored = false
+		end
+		lastHomeMsg = "Force Home error: " .. tostring(runErr)
+		return false, lastHomeMsg
+	end
+	return finalOk, finalMsg
+end
+
+function Material:IsAutoCollecting(): boolean
+	return config.AutoCollect == true
+end
+
 function Material:GetStatusText(): string
 	if not (config.ScanEsp or config.ShowBeam or config.AutoCollect) then
-		local _, countsByName = scanMatchingNodes(true)
-		local totalAvail = 0
-		for _, c in pairs(countsByName) do
-			totalAvail += c
+		local now = os.clock()
+		if now - cachedOffClock >= 2.5 then
+			cachedOffClock = now
+			local _, countsByName = scanMatchingNodes(true)
+			local totalAvail = 0
+			for _, c in pairs(countsByName) do
+				totalAvail += c
+			end
+			cachedOffAvail = totalAvail
 		end
-		return ("Nearby: %d materials ready | Collected: %d\nStatus: OFF"):format(totalAvail, collectedCount)
+		return ("Nearby: %d materials ready | Collected: %d\nStatus: OFF"):format(cachedOffAvail, collectedCount)
 	end
 	return ("%s\nAuto Fly & Collect: %s (Collected: %d)"):format(lastSummaryText, lastCollectMsg, collectedCount)
 end
@@ -3586,13 +4725,15 @@ function Material:Destroy()
 	stopFlightSession()
 	refreshLoopState()
 	clearAllVisuals()
+	table.clear(nodeInfoCache)
+	table.clear(charPartsCache)
+	charCachedRef = nil
 end
 
 return Material
 
-end)()
-
-local Automation = (function()
+end
+__modules["AutomationModule"] = function()
 --[[
 	AutomationModule
 	Fast Auto Research & Auto Craft module for PortalG.
@@ -3664,6 +4805,21 @@ local assemblyBenchMod: any = nil
 local origAssemblyRun: any = nil
 
 local solverConn: RBXScriptConnection? = nil
+local solverAcc = 0
+local solverInterval = 0.065
+local lowEndMode = false
+
+local signalConnCache: { [any]: { [string]: { clock: number, conns: { any } } } } = {}
+local cachedLabHudRef: Instance? = nil
+local cachedLabHudClock = 0
+local cachedLabLabels: { TextLabel } = {}
+local cachedLabFolderRef: Instance? = nil
+local cachedLabFolderClock = 0
+local cachedLabFolderLabels: { TextLabel } = {}
+local cachedAsmHudRef: Instance? = nil
+local cachedAsmHudClock = 0
+local cachedAsmLabels: { TextLabel } = {}
+
 local mixHoldActive = false
 local mixHoldFakeInput: any = nil
 local mixHoldViaVim = false
@@ -3717,25 +4873,65 @@ local function detectInputCapability(): boolean
 	return hasGetConnections() ~= nil or canUseVirtualInput()
 end
 
+function Automation:SetLowEndMode(enabled: boolean)
+	lowEndMode = enabled == true
+	solverInterval = if lowEndMode then 0.11 else 0.065
+end
+
 local function findScriptInputConns(signal: RBXScriptSignal, scriptNeedle: string): { any }
 	local gc = hasGetConnections()
 	if not gc then
 		return {}
 	end
+	local now = os.clock()
+	local sigBucket = signalConnCache[signal]
+	if sigBucket then
+		local entry = sigBucket[scriptNeedle]
+		if entry and (now - entry.clock) < 1.2 then
+			local valid = true
+			for _, c in ipairs(entry.conns) do
+				if c and c.Connected == false then
+					valid = false
+					break
+				end
+			end
+			if valid then
+				return entry.conns
+			end
+		end
+	else
+		sigBucket = {}
+		signalConnCache[signal] = sigBucket
+	end
+
 	local ok, conns = pcall(gc, signal)
 	if not ok or type(conns) ~= "table" then
 		return {}
 	end
+	local debugInfoFn = if type(debug) == "table" and type(debug.info) == "function" then debug.info else nil
+	local debugGetInfoFn = if type(debug) == "table" and type(debug.getinfo) == "function" then debug.getinfo else getExecFunc("getinfo")
 	local matched = {}
 	for _, conn in ipairs(conns) do
 		local fn = conn and conn.Function
 		if type(fn) == "function" then
-			local okInfo, fnSrc = pcall(debug.info, fn, "s")
-			if okInfo and type(fnSrc) == "string" and string.find(fnSrc, scriptNeedle, 1, true) then
+			local fnSrc: string? = nil
+			if debugInfoFn then
+				local okInfo, srcRes = pcall(debugInfoFn, fn, "s")
+				if okInfo and type(srcRes) == "string" then
+					fnSrc = srcRes
+				end
+			elseif type(debugGetInfoFn) == "function" then
+				local okInfo, infoTbl = pcall(debugGetInfoFn, fn)
+				if okInfo and type(infoTbl) == "table" and type(infoTbl.source) == "string" then
+					fnSrc = infoTbl.source
+				end
+			end
+			if fnSrc and string.find(fnSrc, scriptNeedle, 1, true) then
 				table.insert(matched, conn)
 			end
 		end
 	end
+	sigBucket[scriptNeedle] = { clock = now, conns = matched }
 	return matched
 end
 
@@ -3883,13 +5079,30 @@ local function sendLabHold(holdDown: boolean, screenX: number, screenY: number)
 	end
 end
 
+local function getCachedLabels(container: Instance, cacheRef: Instance?, cacheClock: number, cacheList: { TextLabel }): ({ TextLabel }, Instance, number)
+	local now = os.clock()
+	if cacheRef == container and (now - cacheClock) < 0.45 and #cacheList > 0 then
+		return cacheList, container, cacheClock
+	end
+	table.clear(cacheList)
+	for _, desc in ipairs(container:GetDescendants()) do
+		if desc:IsA("TextLabel") then
+			table.insert(cacheList, desc)
+		end
+	end
+	return cacheList, container, now
+end
+
 local function detectLabStageAndProgress(labFolder: Instance, hud: Instance): (string?, number?, number?)
 	local stage: string? = nil
 	local doneCount: number? = nil
 	local totalCount: number? = nil
 
-	for _, desc in ipairs(hud:GetDescendants()) do
-		if desc:IsA("TextLabel") then
+	local hudLabels: { TextLabel }
+	hudLabels, cachedLabHudRef, cachedLabHudClock = getCachedLabels(hud, cachedLabHudRef, cachedLabHudClock, cachedLabLabels)
+
+	for _, desc in ipairs(hudLabels) do
+		if desc.Parent then
 			local txt = desc.Text
 			if txt and txt ~= "" then
 				local lower = string.lower(txt)
@@ -3914,8 +5127,10 @@ local function detectLabStageAndProgress(labFolder: Instance, hud: Instance): (s
 	end
 
 	if not stage then
-		for _, desc in ipairs(labFolder:GetDescendants()) do
-			if desc:IsA("TextLabel") then
+		local folderLabels: { TextLabel }
+		folderLabels, cachedLabFolderRef, cachedLabFolderClock = getCachedLabels(labFolder, cachedLabFolderRef, cachedLabFolderClock, cachedLabFolderLabels)
+		for _, desc in ipairs(folderLabels) do
+			if desc.Parent then
 				local upper = string.upper(desc.Text or "")
 				if string.find(upper, "BREAKTHROUGH", 1, true) then
 					return "breakthrough", doneCount, totalCount
@@ -4093,8 +5308,10 @@ local function releaseAssemblyHold()
 end
 
 local function detectAssemblyStage(hud: Instance): string?
-	for _, desc in ipairs(hud:GetDescendants()) do
-		if desc:IsA("TextLabel") then
+	local labels: { TextLabel }
+	labels, cachedAsmHudRef, cachedAsmHudClock = getCachedLabels(hud, cachedAsmHudRef, cachedAsmHudClock, cachedAsmLabels)
+	for _, desc in ipairs(labels) do
+		if desc.Parent then
 			local txt = desc.Text
 			if txt and txt ~= "" then
 				local lower = string.lower(txt)
@@ -4204,13 +5421,28 @@ local function refreshSolverState()
 		table.clear(finishedMixLabels)
 		table.clear(clickedScanAt)
 		table.clear(clickedCircuitIdxAt)
+		table.clear(signalConnCache)
+		cachedLabHudRef = nil
+		cachedLabFolderRef = nil
+		cachedAsmHudRef = nil
+		table.clear(cachedLabLabels)
+		table.clear(cachedLabFolderLabels)
+		table.clear(cachedAsmLabels)
 		return
 	end
 	if not solverConn then
 		table.clear(finishedMixLabels)
 		table.clear(clickedScanAt)
 		table.clear(clickedCircuitIdxAt)
-		solverConn = RunService.RenderStepped:Connect(stepAllSolvers)
+		solverAcc = solverInterval
+		solverConn = RunService.Heartbeat:Connect(function(dt: number)
+			solverAcc += dt
+			if solverAcc < solverInterval then
+				return
+			end
+			solverAcc = 0
+			stepAllSolvers()
+		end)
 	end
 end
 
@@ -4360,15 +5592,27 @@ local function getGameData(): any
 	return cachedGameData
 end
 
+local attrRawCache: { [string]: string } = {}
+local attrDecodedCache: { [string]: { [string]: any } } = {}
+local cachedResDoneRaw = ""
+local cachedResDoneCount = 0
+
 local function decodeAttrTable(attrName: string): { [string]: any }
 	local raw = LocalPlayer:GetAttribute(attrName)
 	if type(raw) ~= "string" or raw == "" then
+		attrRawCache[attrName] = ""
+		attrDecodedCache[attrName] = {}
 		return {}
+	end
+	if attrRawCache[attrName] == raw and attrDecodedCache[attrName] then
+		return attrDecodedCache[attrName]
 	end
 	local ok, decoded = pcall(function()
 		return HttpService:JSONDecode(raw)
 	end)
 	if ok and type(decoded) == "table" then
+		attrRawCache[attrName] = raw
+		attrDecodedCache[attrName] = decoded
 		return decoded
 	end
 	return {}
@@ -4518,7 +5762,7 @@ local function isResearchEligible(
 	return true, "Ready"
 end
 
-local function pickEligibleCandidates(): ({ any }, string)
+local function pickEligibleCandidates(preferredId: string?): ({ any }, string)
 	local gd = getGameData()
 	if not gd or type(gd.Research) ~= "table" then
 		return {}, "GameData.Research not found"
@@ -4587,6 +5831,13 @@ local function pickEligibleCandidates(): ({ any }, string)
 	end
 
 	table.sort(candidates, function(a: any, b: any)
+		if preferredId and preferredId ~= "" then
+			local aMatch = (a.id == preferredId)
+			local bMatch = (b.id == preferredId)
+			if aMatch ~= bMatch then
+				return aMatch
+			end
+		end
 		local la = a.level or 1
 		local lb = b.level or 1
 		if la ~= lb then
@@ -4598,7 +5849,7 @@ local function pickEligibleCandidates(): ({ any }, string)
 	return candidates, "Ready"
 end
 
-function Automation:RunResearchOnce(): (boolean, string)
+function Automation:RunResearchOnce(targetResearchId: string?): (boolean, string)
 	if researchBusy or notebookLabBusy then
 		return false, "Research request in progress..."
 	end
@@ -4627,7 +5878,7 @@ function Automation:RunResearchOnce(): (boolean, string)
 	end
 	refreshStash(true)
 
-	local candidates, emptyReason = pickEligibleCandidates()
+	local candidates, emptyReason = pickEligibleCandidates(targetResearchId)
 	if #candidates == 0 then
 		lastResearchMsg = emptyReason
 		return false, emptyReason
@@ -4802,13 +6053,19 @@ function Automation:GetResearchStatusText(): string
 	local totalQi = tonumber(LocalPlayer:GetAttribute("TotalQI")) or 0
 	local lv = if gd.GeniusLevel then gd.GeniusLevel(totalQi) else 1
 
-	local doneCount = 0
 	local totalCount = #gd.Research
-	for _, r in ipairs(gd.Research) do
-		if known[r.id] then
-			doneCount += 1
+	local resRaw = tostring(LocalPlayer:GetAttribute("Research") or "")
+	if resRaw ~= cachedResDoneRaw then
+		cachedResDoneRaw = resRaw
+		local cnt = 0
+		for _, r in ipairs(gd.Research) do
+			if known[r.id] then
+				cnt += 1
+			end
 		end
+		cachedResDoneCount = cnt
 	end
+	local doneCount = cachedResDoneCount
 
 	local activeStr = "None"
 	if researching.id then
@@ -5172,6 +6429,33 @@ function Automation:GetRecipeOptions(): ({ string }, { [string]: string })
 	return options, labelToId
 end
 
+function Automation:GetCraftReadinessForItem(itemId: string): (boolean, string?, string?, string?)
+	initInventorySync()
+	refreshStash(false, false)
+	local gd = getGameData()
+	local recipe = findRecipeById(itemId)
+	if not gd or not recipe then
+		return false, nil, "Recipe not found for " .. tostring(itemId), nil
+	end
+	local reqResearch = gd.RecipeResearch and gd.RecipeResearch[recipe.id]
+	if reqResearch and not knowsRecipe(gd, recipe) then
+		return false, nil, "Research locked: " .. tostring(reqResearch), recipe.id
+	end
+	if hasInventoryData and type(recipe.ingredients) == "table" then
+		for _, ing in ipairs(recipe.ingredients) do
+			local need = ing.count or 1
+			if totalOwned(ing.item) < need then
+				return false, ing.item, ("Need %d more %s"):format(need - totalOwned(ing.item), tostring(ing.item)), recipe.id
+			end
+		end
+	end
+	local nearBench = getWorkbenchProximity()
+	if not nearBench then
+		return false, nil, "Need Workbench", recipe.id
+	end
+	return true, nil, "Ready", recipe.id
+end
+
 function Automation:GetCraftStatusText(): string
 	initInventorySync()
 	refreshStash(false, false)
@@ -5236,7 +6520,1590 @@ function Automation:Destroy()
 end
 
 return Automation
-end)()
+end
+__modules["CombatModule"] = function()
+--[[
+	CombatModule
+	Character Guardian (Anti-Void, Auto-Heal/Regen, Auto Emergency Force-Home),
+	Mob Hunter + Kill Aura (legitimate Tool / CyberArm / EvilTech attacks + drop pickup),
+	and Mission-Aware Auto Quest Runner for PortalG.
+	Zero idle CPU when toggles are OFF. Compatible with Studio and DeltaX Mobile.
+]]
+
+local CollectionService = game:GetService("CollectionService")
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+while not LocalPlayer do
+	Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+	LocalPlayer = Players.LocalPlayer
+end
+
+local Combat = {}
+
+local guardConfig = {
+	AntiVoid = false,
+	AutoHeal = false,
+	HealAtPct = 70,
+	AutoEscapeHome = false,
+	EscapeAtPct = 30,
+	EscapeOnHazard = true,
+}
+
+local mobConfig = {
+	KillAura = false,
+	AuraRange = 18,
+	AutoHunt = false,
+	HuntFilter = "ALL",
+	MaxHuntDist = 1800,
+	MobEsp = false,
+	AutoPickupDrops = true,
+	SafeStandoff = true,
+}
+
+local missionConfig = {
+	AutoEnabled = false,
+	AutoCollectMats = true,
+	AutoQuickBench = true,
+	AllowUnsafeBiomes = false,
+}
+
+local MELEE_TOOLS: { [string]: number } = {
+	ScaryTerryClaws = 5,
+	KMKnife = 4,
+	RatBlades = 3,
+	Armothy = 2,
+	SummerBat = 1,
+}
+
+local RANGED_TOOLS: { [string]: number } = {
+	AntimatterGun = 9,
+	PrimeBlaster = 8,
+	SpaceBethRifle = 7,
+	EvilBlaster = 6,
+	PlasmaShotgun = 5,
+	TwinCannon = 4,
+	GromflomiteBlaster = 3,
+	DoofusPistol = 2,
+	LaserGun = 1,
+}
+
+local HEAL_ITEMS = {
+	"SurgeonKit",
+	"ArmorGoo",
+	"JerryApple",
+	"Beer",
+}
+
+local WILD_SUITS: { [string]: { suit: string, biome: string } } = {
+	MagmaShard = { suit = "HeatSuit", biome = "Volcanic Lands" },
+	FrostGem = { suit = "ThermalSuit", biome = "Snow Mountains" },
+	DeepQuartz = { suit = "MinerSuit", biome = "Red Canyons / Caves" },
+}
+
+local ENEMY_DEFAULT_DIM: { [string]: string } = {
+	Zigerion = "J197",
+	Cronenberg = "Prime",
+	DeathStalker = "Wasteland",
+	CopRick = "Citadel",
+	EvilMortyGuard = "EvilMorty",
+	SecurityDrone = "Worldender",
+	Purger = "PurgePlanet",
+}
+
+local ITEM_REQUIRED_DIM: { [string]: string } = {
+	GreenCrystals = "Citadel",
+	PureCesium = "J197",
+	PlutonicQuarks = "35C",
+	Antimatter = "EvilMorty",
+	PurgeCrystal = "PurgePlanet",
+	Isotope322 = "Wasteland",
+	CromulonGem = "Wasteland",
+}
+
+local destroyed = false
+local matMod: any = nil
+local autoMod: any = nil
+local notifyCallback: ((string, string, Color3?) -> ())? = nil
+local stateSyncCallback: (() -> ())? = nil
+
+local cachedGameData: any = nil
+local gameDataChecked = false
+local attrRawCache: { [string]: string } = {}
+local attrDecCache: { [string]: { [any]: any } } = {}
+
+local guardConn: RBXScriptConnection? = nil
+local guardAcc = 0
+local lastSafeGroundCF: CFrame? = nil
+local lastSafeGroundDim: any = nil
+local lastRegenClock = 0
+local lastItemClock: { [string]: number } = {}
+local lastEscapeClock = 0
+
+local auraAcc = 0
+local lastSwingClock = 0
+local lastArmStrikeClock = 0
+local lastAimClickClock = 0
+local lastDropSweepClock = 0
+
+local mobEspFolder: Folder? = nil
+local mobEspVisuals: { [Model]: { bb: BillboardGui, lbl: TextLabel, hl: Highlight, lastTxt: string } } = {}
+local mobEspAcc = 0
+
+local lowEndMode = false
+local guardInterval = 0.14
+local auraInterval = 0.16
+local mobEspInterval = 0.28
+local maxMobEspHighlights = 12
+local dropSweepInterval = 0.75
+local lastFallbackMobScanClock = 0
+
+local MOB_HL_FILL = Color3.fromRGB(248, 113, 113)
+local MOB_HL_OUTLINE = Color3.fromRGB(254, 202, 202)
+local COLOR_BLACK = Color3.new(0, 0, 0)
+
+local sharedSafeRayParams = RaycastParams.new()
+sharedSafeRayParams.FilterType = Enum.RaycastFilterType.Exclude
+sharedSafeRayParams.RespectCanCollide = true
+local cachedRayChar: Model? = nil
+
+local function getSafeRayParams(char: Model?): RaycastParams
+	if char ~= cachedRayChar then
+		cachedRayChar = char
+		sharedSafeRayParams.FilterDescendantsInstances = if char then { char } else {}
+	end
+	return sharedSafeRayParams
+end
+
+function Combat:SetLowEndMode(enabled: boolean)
+	lowEndMode = enabled == true
+	if lowEndMode then
+		guardInterval = 0.20
+		auraInterval = 0.22
+		mobEspInterval = 0.55
+		maxMobEspHighlights = 4
+		dropSweepInterval = 1.35
+	else
+		guardInterval = 0.14
+		auraInterval = 0.16
+		mobEspInterval = 0.28
+		maxMobEspHighlights = 12
+		dropSweepInterval = 0.75
+	end
+end
+
+local huntToken = 0
+local killedCount = 0
+local lastMobMsg = "Idle"
+
+local missionToken = 0
+local lastMissionMsg = "Disabled"
+local ownedSubMode: string? = nil -- "harvest" | "hunt" | "craft" | "research"
+
+local function sendNotice(title: string, msg: string, color: Color3?)
+	if notifyCallback then
+		notifyCallback(title, msg, color)
+	end
+end
+
+function Combat:SetDependencies(materialRef: any, automationRef: any)
+	matMod = materialRef
+	autoMod = automationRef
+end
+
+function Combat:SetNotifyCallback(cb: (string, string, Color3?) -> ())
+	notifyCallback = cb
+end
+
+function Combat:SetStateSyncCallback(cb: () -> ())
+	stateSyncCallback = cb
+end
+
+local function getGameData(): any
+	if not gameDataChecked then
+		gameDataChecked = true
+		local mod = ReplicatedStorage:FindFirstChild("GameData") or ReplicatedStorage:WaitForChild("GameData", 3)
+		if mod and mod:IsA("ModuleScript") then
+			local ok, gd = pcall(require, mod)
+			if ok and type(gd) == "table" then
+				cachedGameData = gd
+			end
+		end
+	end
+	return cachedGameData
+end
+
+local function decodeAttrTable(attrName: string): { [any]: any }
+	local raw = LocalPlayer:GetAttribute(attrName)
+	if type(raw) ~= "string" or raw == "" then
+		return {}
+	end
+	if attrRawCache[attrName] == raw and attrDecCache[attrName] ~= nil then
+		return attrDecCache[attrName]
+	end
+	local ok, res = pcall(function()
+		return HttpService:JSONDecode(raw)
+	end)
+	local decoded = if ok and type(res) == "table" then res else {}
+	attrRawCache[attrName] = raw
+	attrDecCache[attrName] = decoded
+	return decoded
+end
+
+local function getCharParts(): (Model?, Humanoid?, BasePart?)
+	local char = LocalPlayer.Character
+	if not char then
+		return nil, nil, nil
+	end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	local root = char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
+	if not hum or not root or not root:IsA("BasePart") then
+		return char, hum, nil
+	end
+	return char, hum, root
+end
+
+local function isHouseDescendant(inst: Instance): boolean
+	local cur: Instance? = inst
+	while cur and cur ~= workspace do
+		if cur.Name:sub(1, 10) == "SmithHouse" or cur.Name == "CloneCapsules" or CollectionService:HasTag(cur, "PlayerBase") then
+			return true
+		end
+		cur = cur.Parent
+	end
+	return false
+end
+
+local function isSafePointInWorld(pos: Vector3, allowAirFallback: boolean?): (boolean, Vector3?)
+	if matMod and type(matMod.IsPositionSafeForMove) == "function" then
+		local ok, reason = matMod:IsPositionSafeForMove(pos, false)
+		if not ok then
+			return false, nil
+		end
+	elseif pos.Y < -20500 then
+		return false, nil
+	end
+
+	local char = LocalPlayer.Character
+	local rp = getSafeRayParams(char)
+
+	local hit = workspace:Raycast(pos + Vector3.new(0, 26, 0), Vector3.new(0, -130, 0), rp)
+	if hit and hit.Instance then
+		return true, hit.Position
+	end
+	if allowAirFallback then
+		return true, pos
+	end
+	return false, nil
+end
+
+local function isHostileMob(m: Instance): (boolean, string, Humanoid?, BasePart?)
+	if not m or not m:IsA("Model") or not m:IsDescendantOf(workspace) then
+		return false, "", nil, nil
+	end
+	if m == LocalPlayer.Character or Players:GetPlayerFromCharacter(m) then
+		return false, "", nil, nil
+	end
+	if m.Name == "FloatingClone" or isHouseDescendant(m) then
+		return false, "", nil, nil
+	end
+
+	local hum = m:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then
+		return false, "", nil, nil
+	end
+
+	local root = m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart or m:FindFirstChild("Torso") or m:FindFirstChild("UpperTorso") or m:FindFirstChild("Head")
+	if not root or not root:IsA("BasePart") then
+		return false, "", nil, nil
+	end
+
+	local gd = getGameData()
+	local isTaggedEnemy = CollectionService:HasTag(m, "Enemy")
+	local hasEnemyAttr = m:GetAttribute("Enemy") ~= nil or m:GetAttribute("EnemyType") ~= nil or m:GetAttribute("EnemyId") ~= nil or m:GetAttribute("HuntTarget") ~= nil
+	local enemyKey = tostring(m:GetAttribute("EnemyType") or m:GetAttribute("EnemyId") or m.Name)
+	local knownInData = (gd and gd.Enemies and gd.Enemies[enemyKey] ~= nil) or false
+
+	if not (isTaggedEnemy or hasEnemyAttr or knownInData) then
+		return false, "", nil, nil
+	end
+
+	return true, enemyKey, hum, root
+end
+
+local function scanMobs(filterEnemyId: string?, maxDist: number?, requireSafeBounds: boolean?): { { model: Model, id: string, displayName: string, hum: Humanoid, root: BasePart, dist: number, isRanged: boolean } }
+	local _, _, myRoot = getCharParts()
+	local originPos = if myRoot then myRoot.Position else (workspace.CurrentCamera and workspace.CurrentCamera.CFrame.Position or Vector3.zero)
+	local limit = maxDist or mobConfig.MaxHuntDist
+	local wantFilter = filterEnemyId and filterEnemyId ~= "" and filterEnemyId ~= "ALL"
+	local gd = getGameData()
+
+	local seen: { [Model]: boolean } = {}
+	local out = {}
+
+	local function consider(m: Instance)
+		if not m:IsA("Model") or seen[m] then
+			return
+		end
+		seen[m] = true
+		local okMob, eId, hum, mRoot = isHostileMob(m)
+		if not okMob or not hum or not mRoot then
+			return
+		end
+		if wantFilter and eId ~= filterEnemyId and m.Name ~= filterEnemyId then
+			return
+		end
+		local dist = (mRoot.Position - originPos).Magnitude
+		if dist > limit then
+			return
+		end
+		if requireSafeBounds then
+			local safeOk = isSafePointInWorld(mRoot.Position, false)
+			if not safeOk then
+				return
+			end
+		end
+
+		local meta = gd and gd.Enemies and gd.Enemies[eId]
+		local dName = if meta and meta.name then tostring(meta.name) else eId
+		local isRanged = meta and meta.attack == "ranged" or false
+		table.insert(out, {
+			model = m,
+			id = eId,
+			displayName = dName,
+			hum = hum,
+			root = mRoot,
+			dist = dist,
+			isRanged = isRanged,
+		})
+	end
+
+	for _, tagged in ipairs(CollectionService:GetTagged("Enemy")) do
+		consider(tagged)
+	end
+	if #out == 0 then
+		local now = os.clock()
+		if now - lastFallbackMobScanClock >= 0.7 then
+			lastFallbackMobScanClock = now
+			for _, ch in ipairs(workspace:GetChildren()) do
+				if ch:IsA("Model") then
+					consider(ch)
+				elseif ch:IsA("Folder") or ch.Name:sub(1, 4) == "Dim_" or ch.Name:sub(1, 5) == "Proc_" then
+					for _, sub in ipairs(ch:GetChildren()) do
+						if sub:IsA("Model") then
+							consider(sub)
+						end
+					end
+				end
+			end
+		end
+	end
+
+	table.sort(out, function(a, b)
+		return a.dist < b.dist
+	end)
+	return out
+end
+
+--====================================================
+-- MOB ESP VISUALS (ZERO ALLOC WHEN OFF)
+--====================================================
+local function clearMobEsp()
+	for m, vis in pairs(mobEspVisuals) do
+		vis.bb:Destroy()
+		vis.hl:Destroy()
+		mobEspVisuals[m] = nil
+	end
+	if mobEspFolder then
+		mobEspFolder:Destroy()
+		mobEspFolder = nil
+	end
+end
+
+local function updateMobEsp()
+	if not mobConfig.MobEsp or destroyed then
+		clearMobEsp()
+		return
+	end
+	local cam = workspace.CurrentCamera
+	if not cam then
+		return
+	end
+	if not mobEspFolder or mobEspFolder.Parent ~= cam then
+		mobEspFolder = Instance.new("Folder")
+		mobEspFolder.Name = "RayfieldMobESP"
+		mobEspFolder.Parent = cam
+	end
+
+	local list = scanMobs(mobConfig.HuntFilter, mobConfig.MaxHuntDist, false)
+	local active: { [Model]: boolean } = {}
+	for i = 1, math.min(maxMobEspHighlights, #list) do
+		local entry = list[i]
+		active[entry.model] = true
+		local vis = mobEspVisuals[entry.model]
+		if not vis then
+			local hl = Instance.new("Highlight")
+			hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+			hl.FillColor = MOB_HL_FILL
+			hl.OutlineColor = MOB_HL_OUTLINE
+			hl.FillTransparency = 0.65
+			hl.Adornee = entry.model
+			hl.Parent = mobEspFolder
+
+			local bb = Instance.new("BillboardGui")
+			bb.AlwaysOnTop = true
+			bb.LightInfluence = 0
+			bb.Size = UDim2.fromOffset(180, 32)
+			bb.StudsOffsetWorldSpace = Vector3.new(0, 3.6, 0)
+			bb.MaxDistance = mobConfig.MaxHuntDist
+			bb.Adornee = entry.root
+			bb.Parent = mobEspFolder
+
+			local lbl = Instance.new("TextLabel")
+			lbl.Size = UDim2.fromScale(1, 1)
+			lbl.BackgroundTransparency = 1
+			lbl.Font = Enum.Font.GothamBold
+			lbl.TextSize = 13
+			lbl.TextColor3 = MOB_HL_OUTLINE
+			lbl.TextStrokeColor3 = COLOR_BLACK
+			lbl.TextStrokeTransparency = 0.25
+			lbl.Parent = bb
+
+			vis = { bb = bb, lbl = lbl, hl = hl, lastTxt = "" }
+			mobEspVisuals[entry.model] = vis
+		end
+		local nextTxt = ("%s [%.0f/%.0f] (%.0fm)"):format(entry.displayName, entry.hum.Health, entry.hum.MaxHealth, entry.dist)
+		if nextTxt ~= vis.lastTxt then
+			vis.lastTxt = nextTxt
+			vis.lbl.Text = nextTxt
+		end
+	end
+	for m, vis in pairs(mobEspVisuals) do
+		if not active[m] or not m.Parent then
+			vis.bb:Destroy()
+			vis.hl:Destroy()
+			mobEspVisuals[m] = nil
+		end
+	end
+end
+
+--====================================================
+-- CHARACTER GUARDIAN (PROTECTIONS + ANTI-VOID + ESCAPE)
+--====================================================
+local function tryUseBestHeal(hpPct: number)
+	local now = os.clock()
+	if now - lastRegenClock >= 2.6 then
+		lastRegenClock = now
+		local reqRegen = ReplicatedStorage:FindFirstChild("RequestRegen")
+		if reqRegen and reqRegen:IsA("RemoteEvent") then
+			pcall(function()
+				reqRegen:FireServer()
+			end)
+		end
+	end
+
+	local bag = decodeAttrTable("Bag")
+	local char, hum = getCharParts()
+	local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+	local useItem = ReplicatedStorage:FindFirstChild("UseItem")
+
+	for _, itemId in ipairs(HEAL_ITEMS) do
+		if now - (lastItemClock[itemId] or 0) >= 5.0 then
+			local inBag = (tonumber(bag[itemId]) or 0) > 0
+			local toolObj = (char and char:FindFirstChild(itemId)) or (bp and bp:FindFirstChild(itemId))
+			if inBag or toolObj then
+				lastItemClock[itemId] = now
+				if useItem and useItem:IsA("RemoteEvent") then
+					pcall(function()
+						useItem:FireServer(itemId)
+					end)
+				end
+				if toolObj and toolObj:IsA("Tool") and char and hum and hum.Health > 0 then
+					pcall(function()
+						if toolObj.Parent ~= char then
+							hum:EquipTool(toolObj)
+						end
+						toolObj:Activate()
+					end)
+				end
+				break
+			end
+		end
+	end
+end
+
+local function stepGuardian(dt: number)
+	guardAcc += dt
+	if guardAcc < guardInterval then
+		return
+	end
+	guardAcc = 0
+
+	local char, hum, root = getCharParts()
+	if not char or not hum or not root or hum.Health <= 0 then
+		return
+	end
+
+	local curDim = LocalPlayer:GetAttribute("CurrentDimension")
+	local inOrbit = LocalPlayer:GetAttribute("InOrbit") == true
+	local inLava = LocalPlayer:GetAttribute("InLava") == true
+	local exposure = tonumber(LocalPlayer:GetAttribute("Exposure")) or 0
+	local starHeat = tonumber(LocalPlayer:GetAttribute("StarHeat")) or 0
+	local hpPct = (hum.Health / math.max(1, hum.MaxHealth)) * 100
+
+	-- Track safe ground checkpoint whenever upright on solid floor
+	if not hum.SeatPart and hum.FloorMaterial ~= Enum.Material.Air and not inLava and exposure < 65 then
+		local okSafe = isSafePointInWorld(root.Position, false)
+		if okSafe then
+			lastSafeGroundCF = root.CFrame
+			lastSafeGroundDim = curDim
+		end
+	end
+
+	-- 1) Emergency Force-Home before dying or melting in hazard/void
+	if guardConfig.AutoEscapeHome then
+		local hazardCrit = guardConfig.EscapeOnHazard and (inLava or exposure >= 85 or starHeat >= 0.85)
+		if (hpPct <= guardConfig.EscapeAtPct) or hazardCrit then
+			if guardConfig.AutoHeal and hpPct <= guardConfig.HealAtPct then
+				tryUseBestHeal(hpPct)
+			end
+			if os.clock() - lastEscapeClock >= 4.5 then
+				lastEscapeClock = os.clock()
+				if mobConfig.AutoHunt then
+					Combat:SetAutoHunt(false)
+				end
+				if missionConfig.AutoEnabled then
+					Combat:SetAutoMission(false)
+				end
+				if stateSyncCallback then
+					task.defer(stateSyncCallback)
+				end
+				task.spawn(function()
+					if matMod and type(matMod.ForceSendHomeNow) == "function" then
+						matMod:ForceSendHomeNow()
+					else
+						local goHome = ReplicatedStorage:FindFirstChild("GoHome")
+						if goHome and goHome:IsA("RemoteEvent") then
+							pcall(function() goHome:FireServer("start") end)
+						end
+						local ch = ReplicatedStorage:FindFirstChild("CruiserHome")
+						if ch and ch:IsA("RemoteFunction") then
+							pcall(function() ch:InvokeServer() end)
+						end
+					end
+				end)
+				return
+			end
+		end
+	end
+
+	-- 2) Anti-Void, Fall-Damage Softener, Lava Lift, Ragdoll Recovery
+	if guardConfig.AntiVoid then
+		pcall(function()
+			if char:GetAttribute("FallRagdoll") then
+				char:SetAttribute("FallRagdoll", nil)
+			end
+			if char:GetAttribute("LocalLimp") then
+				char:SetAttribute("LocalLimp", nil)
+			end
+		end)
+		if hum.PlatformStand and not hum.SeatPart then
+			hum.PlatformStand = false
+		end
+
+		if inLava then
+			root.AssemblyLinearVelocity = Vector3.new(root.AssemblyLinearVelocity.X, 45, root.AssemblyLinearVelocity.Z)
+			root.CFrame = root.CFrame + Vector3.new(0, 6, 0)
+		end
+
+		local vel = root.AssemblyLinearVelocity
+		if vel.Y < -60 then
+			local rp = getSafeRayParams(char)
+			local nearGround = workspace:Raycast(root.Position, Vector3.new(0, -16, 0), rp)
+			if nearGround then
+				root.AssemblyLinearVelocity = Vector3.new(vel.X, -22, vel.Z)
+			end
+		end
+
+		local needVoidRescue = false
+		if not inOrbit and not hum.SeatPart and LocalPlayer:GetAttribute("JetsFlying") ~= true then
+			local safeCheck = if matMod and type(matMod.IsPositionSafeForMove) == "function"
+				then select(1, matMod:IsPositionSafeForMove(root.Position, false))
+				else (root.Position.Y > -20500)
+			local dimAlt = if matMod and type(matMod.GetDimensionAltitude) == "function"
+				then matMod:GetDimensionAltitude(root.Position)
+				else nil
+			if not safeCheck then
+				needVoidRescue = true
+			else
+				local rp = getSafeRayParams(char)
+				if dimAlt and dimAlt < -220 then
+					local floorHit = workspace:Raycast(root.Position + Vector3.new(0, 8, 0), Vector3.new(0, -320, 0), rp)
+					if not floorHit then
+						needVoidRescue = true
+					end
+				elseif vel.Y < -45 then
+					local below = workspace:Raycast(root.Position, Vector3.new(0, -550, 0), rp)
+					if not below then
+						needVoidRescue = true
+					end
+				end
+			end
+		end
+
+		if needVoidRescue then
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.AssemblyAngularVelocity = Vector3.zero
+			if lastSafeGroundCF and (lastSafeGroundDim == nil or curDim == lastSafeGroundDim) then
+				char:PivotTo(lastSafeGroundCF + Vector3.new(0, 2.5, 0))
+				sendNotice("Guardian", "Rescued from Void fall!", Color3.fromRGB(52, 211, 153))
+			elseif matMod and type(matMod.ForceSendHomeNow) == "function" then
+				task.spawn(function()
+					matMod:ForceSendHomeNow()
+				end)
+			end
+		end
+	end
+
+	-- 3) Auto-Heal + Regen + Body-Armor Goo
+	if guardConfig.AutoHeal and hpPct <= guardConfig.HealAtPct then
+		tryUseBestHeal(hpPct)
+	end
+end
+
+--====================================================
+-- GENUINE PLAYER ATTACK ENGINE (KILL AURA + AUTO HUNT)
+--====================================================
+local function pickBestWeaponTool(dist: number): Tool?
+	local char, _, _ = getCharParts()
+	local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+	local bestMelee: Tool? = nil
+	local bestMeleeScore = -1
+	local bestRanged: Tool? = nil
+	local bestRangedScore = -1
+
+	local function inspectContainer(c: Instance?)
+		if not c then
+			return
+		end
+		for _, ch in ipairs(c:GetChildren()) do
+			if ch:IsA("Tool") then
+				local ms = MELEE_TOOLS[ch.Name]
+				if ms and ms > bestMeleeScore then
+					bestMeleeScore = ms
+					bestMelee = ch
+				end
+				local rs = RANGED_TOOLS[ch.Name]
+				if rs and rs > bestRangedScore then
+					bestRangedScore = rs
+					bestRanged = ch
+				end
+			end
+		end
+	end
+
+	inspectContainer(char)
+	inspectContainer(bp)
+
+	if dist <= 11.5 then
+		return bestMelee or bestRanged
+	end
+	return bestRanged or bestMelee
+end
+
+local function isPortalGunTool(tool: Tool?): boolean
+	if not tool then
+		return false
+	end
+	return tool.Name == "PortalGun" or tool.Name == "GoldenPortalGun" or tool.Name == "PortalGunJr"
+end
+
+local function performGenuineAttack(targetModel: Model, targetRoot: BasePart, isAura: boolean)
+	local char, hum, root = getCharParts()
+	if not char or not hum or not root or hum.Health <= 0 then
+		return
+	end
+
+	local targetPos = targetRoot.Position
+	local dist = (targetPos - root.Position).Magnitude
+
+	-- Face enemy on horizontal plane so melee & gun rays align cleanly
+	local lookXZ = Vector3.new(targetPos.X - root.Position.X, 0, targetPos.Z - root.Position.Z)
+	if lookXZ.Magnitude > 0.2 then
+		root.CFrame = CFrame.lookAt(root.Position, root.Position + lookXZ)
+	end
+
+	local now = os.clock()
+	local held = char:FindFirstChildOfClass("Tool")
+	local bestWeapon = pickBestWeaponTool(dist)
+
+	-- Equip real weapon when we have one (or unequip PortalGun before melee)
+	if bestWeapon and held ~= bestWeapon then
+		pcall(function()
+			hum:EquipTool(bestWeapon)
+		end)
+		held = bestWeapon
+	elseif isPortalGunTool(held) then
+		pcall(function()
+			hum:UnequipTools()
+		end)
+		held = nil
+	end
+
+	-- 1) Weapon Tool Activation (server processes player damage/kill/rewards)
+	if held and not isPortalGunTool(held) and (not MELEE_TOOLS[held.Name] or dist <= 13.5) then
+		if now - lastSwingClock >= 0.22 then
+			lastSwingClock = now
+			pcall(function()
+				LocalPlayer:SetAttribute("AimCenter", true)
+				held:Activate()
+			end)
+			task.delay(0.08, function()
+				pcall(function()
+					if held and held.Parent == char then
+						held:Deactivate()
+					end
+					LocalPlayer:SetAttribute("AimCenter", nil)
+				end)
+			end)
+		end
+	end
+
+	-- 2) Mech Arms Attack (CyberArm:FireServer("strike", aimPos))
+	local mechLevel = tonumber(char:GetAttribute("MechLevel")) or 0
+	if mechLevel > 0 and dist <= 22 then
+		local cyberArm = ReplicatedStorage:FindFirstChild("CyberArm")
+		if cyberArm and cyberArm:IsA("RemoteEvent") then
+			if char:GetAttribute("MechDeployed") ~= true and now - lastArmStrikeClock >= 0.6 then
+				lastArmStrikeClock = now
+				pcall(function()
+					cyberArm:FireServer("toggle", nil)
+				end)
+			elseif now - lastArmStrikeClock >= 0.48 then
+				lastArmStrikeClock = now
+				pcall(function()
+					cyberArm:FireServer("aim", targetPos)
+					cyberArm:FireServer("strike", targetPos)
+				end)
+			end
+		end
+	end
+
+	-- 3) Evil Eye Powers when equipped & off cooldown
+	if LocalPlayer:GetAttribute("EyePatchOn") == true then
+		local evilTech = ReplicatedStorage:FindFirstChild("EvilTech")
+		local eyeLevel = tonumber(LocalPlayer:GetAttribute("EyeLevel")) or 0
+		local srvNow = workspace:GetServerTimeNow()
+		if evilTech and evilTech:IsA("RemoteEvent") then
+			if eyeLevel >= 3 and (tonumber(LocalPlayer:GetAttribute("EvilReady_hack")) or 0) <= srvNow and dist <= 85 then
+				pcall(function()
+					evilTech:FireServer("hack", targetModel)
+				end)
+			end
+			if eyeLevel >= 5 and (tonumber(LocalPlayer:GetAttribute("EvilReady_blast")) or 0) <= srvNow and dist <= 120 then
+				local dir = (targetPos - root.Position).Unit
+				pcall(function()
+					evilTech:FireServer("blast", dir)
+				end)
+			end
+		end
+	end
+
+	-- 4) Optional Unarmed Click when completely without weapon/mech & AutoHunt is running
+	if not held and mechLevel <= 0 and dist <= 8.5 and now - lastAimClickClock >= 0.35 then
+		lastAimClickClock = now
+		local clickFn = rawget(_G, "mouse1click")
+		if type(clickFn) == "function" and not isAura then
+			pcall(clickFn)
+		end
+	end
+end
+
+local function sweepNearbyDrops()
+	if not mobConfig.AutoPickupDrops or not matMod then
+		return
+	end
+	if os.clock() - lastDropSweepClock < dropSweepInterval then
+		return
+	end
+	lastDropSweepClock = os.clock()
+
+	local _, _, root = getCharParts()
+	if not root then
+		return
+	end
+	local firePromptFn = rawget(_G, "fireproximityprompt")
+	for _, node in ipairs(CollectionService:GetTagged("ResourceNode")) do
+		if node:IsDescendantOf(workspace) then
+			local pr = node:FindFirstChildWhichIsA("ProximityPrompt", true)
+			if pr and pr.Enabled then
+				local pPos = if pr.Parent and pr.Parent:IsA("BasePart")
+					then pr.Parent.Position
+					elseif pr.Parent and pr.Parent:IsA("Attachment") then pr.Parent.WorldPosition
+					else nil
+				if pPos and (pPos - root.Position).Magnitude <= 26 then
+					if type(firePromptFn) == "function" then
+						pcall(firePromptFn, pr)
+					else
+						pcall(function()
+							pr:InputHoldBegin()
+							task.delay(math.max(0.08, pr.HoldDuration + 0.08), function()
+								pcall(function() pr:InputHoldEnd() end)
+							end)
+						end)
+					end
+				end
+			end
+		end
+	end
+end
+
+local function stepKillAura(dt: number)
+	if not mobConfig.KillAura then
+		return
+	end
+	auraAcc += dt
+	if auraAcc < auraInterval then
+		return
+	end
+	auraAcc = 0
+
+	local nearby = scanMobs(mobConfig.HuntFilter, mobConfig.AuraRange, false)
+	if #nearby > 0 then
+		local t = nearby[1]
+		performGenuineAttack(t.model, t.root, true)
+		sweepNearbyDrops()
+	end
+end
+
+local function refreshRuntimeLoop()
+	local needLoop = (not destroyed) and (guardConfig.AntiVoid or guardConfig.AutoHeal or guardConfig.AutoEscapeHome or mobConfig.KillAura or mobConfig.MobEsp)
+	if needLoop and not guardConn then
+		guardConn = RunService.Heartbeat:Connect(function(dt: number)
+			if destroyed then
+				return
+			end
+			stepGuardian(dt)
+			stepKillAura(dt)
+			if mobConfig.MobEsp then
+				mobEspAcc += dt
+				if mobEspAcc >= mobEspInterval then
+					mobEspAcc = 0
+					updateMobEsp()
+				end
+			end
+		end)
+	elseif not needLoop and guardConn then
+		guardConn:Disconnect()
+		guardConn = nil
+		if not mobConfig.MobEsp then
+			clearMobEsp()
+		end
+	end
+end
+
+--====================================================
+-- AUTO HUNT & KILL MOBS LOOP (SAFE GROUNDED STANDOFF)
+--====================================================
+local function startAutoHuntLoop(myToken: number)
+	task.spawn(function()
+		while mobConfig.AutoHunt and myToken == huntToken and not destroyed do
+			local char, hum, root = getCharParts()
+			if not char or not hum or not root or hum.Health <= 0 then
+				lastMobMsg = "Waiting for character..."
+				task.wait(0.4)
+				continue
+			end
+
+			local targets = scanMobs(mobConfig.HuntFilter, mobConfig.MaxHuntDist, true)
+			if #targets == 0 then
+				lastMobMsg = ("No %s nearby"):format(if mobConfig.HuntFilter == "ALL" then "mobs" else mobConfig.HuntFilter)
+				task.wait(0.6)
+				continue
+			end
+
+			local chosen = targets[1]
+			local targetModel = chosen.model
+			local targetHum = chosen.hum
+			local targetRoot = chosen.root
+			lastMobMsg = ("Hunting %s (%.0fm)"):format(chosen.displayName, chosen.dist)
+
+			local engageStart = os.clock()
+			local lastHuntStepClock = engageStart
+			while mobConfig.AutoHunt and myToken == huntToken and not destroyed
+				and targetModel.Parent and targetHum.Health > 0 and targetRoot.Parent
+				and os.clock() - engageStart < 30
+			do
+				local nowStep = os.clock()
+				local stepDt = math.clamp(nowStep - lastHuntStepClock, 0.03, 0.25)
+				lastHuntStepClock = nowStep
+				char, hum, root = getCharParts()
+				if not char or not hum or not root or hum.Health <= 0 then
+					break
+				end
+
+				local mobPos = targetRoot.Position
+				local safeOk, groundPos = isSafePointInWorld(mobPos, false)
+				if not safeOk then
+					lastMobMsg = "Skipped unsafe Void/Space mob"
+					break
+				end
+
+				local held = pickBestWeaponTool((mobPos - root.Position).Magnitude)
+				local wantDist = if held and RANGED_TOOLS[held.Name] then 13.5 elseif mobConfig.SafeStandoff then 5.2 else 3.8
+				local mobBack = -targetRoot.CFrame.LookVector
+				local toMe = Vector3.new(root.Position.X - mobPos.X, 0, root.Position.Z - mobPos.Z)
+				local toMeUnit = if toMe.Magnitude > 0.2 then toMe.Unit else mobBack
+				local dirs = {
+					Vector3.new(mobBack.X, 0, mobBack.Z),
+					Vector3.new(toMeUnit.X, 0, toMeUnit.Z),
+					Vector3.new(-mobBack.X, 0, -mobBack.Z),
+					Vector3.new(targetRoot.CFrame.RightVector.X, 0, targetRoot.CFrame.RightVector.Z),
+					Vector3.new(-targetRoot.CFrame.RightVector.X, 0, -targetRoot.CFrame.RightVector.Z),
+				}
+				local standoffPos = mobPos + Vector3.new(toMeUnit.X, 0, toMeUnit.Z) * wantDist
+				local standY = if groundPos then math.max(groundPos.Y + 3.4, mobPos.Y + 0.5) else (mobPos.Y + 1.2)
+				standoffPos = Vector3.new(standoffPos.X, standY, standoffPos.Z)
+				for _, d in ipairs(dirs) do
+					if d.Magnitude > 0.1 then
+						local candRaw = mobPos + d.Unit * wantDist
+						local candProbe = Vector3.new(candRaw.X, mobPos.Y + 1.2, candRaw.Z)
+						local cSafe, cGround = isSafePointInWorld(candProbe, false)
+						if cSafe then
+							local cY = if cGround then math.max(cGround.Y + 3.4, mobPos.Y + 0.5) else standY
+							standoffPos = Vector3.new(candRaw.X, cY, candRaw.Z)
+							break
+						end
+					end
+				end
+
+				local curDist = (standoffPos - root.Position).Magnitude
+				if curDist > 4.0 then
+					local stepDist = math.min(curDist, 95 * stepDt)
+					local nextPos = root.Position + (standoffPos - root.Position).Unit * stepDist
+					local safeStep = isSafePointInWorld(nextPos, true)
+					if safeStep then
+						root.AssemblyLinearVelocity = Vector3.zero
+						root.AssemblyAngularVelocity = Vector3.zero
+						root.CFrame = CFrame.lookAt(nextPos, Vector3.new(mobPos.X, nextPos.Y, mobPos.Z))
+					else
+						break
+					end
+				else
+					root.AssemblyLinearVelocity = Vector3.zero
+					root.CFrame = CFrame.lookAt(standoffPos, Vector3.new(mobPos.X, standoffPos.Y, mobPos.Z))
+				end
+
+				performGenuineAttack(targetModel, targetRoot, false)
+				lastMobMsg = ("Attacking %s (HP %.0f)"):format(chosen.displayName, math.max(0, targetHum.Health))
+				task.wait(if lowEndMode then 0.11 else 0.08)
+			end
+
+			if targetHum.Health <= 0 or not targetModel.Parent then
+				killedCount += 1
+				lastMobMsg = ("Defeated %s (#%d)"):format(chosen.displayName, killedCount)
+				sweepNearbyDrops()
+				task.wait(0.25)
+			end
+		end
+		if not mobConfig.AutoHunt then
+			lastMobMsg = "Idle"
+		end
+	end)
+end
+
+--====================================================
+-- MISSION TRACKER & AUTO MISSION RUNNER (VOID-SAFE)
+--====================================================
+function Combat:GetActiveMissionInfo(): {
+	source: string,
+	title: string,
+	goalType: string,
+	goalText: string,
+	have: number,
+	need: number,
+	item: string?,
+	enemy: string?,
+	dim: string?,
+	id: string?,
+	requiredDim: string?,
+	requiredSuit: string?,
+	suitOk: boolean,
+	whereText: string,
+	storyBlockedLv: number?,
+}
+	local gd = getGameData()
+	local emptyInfo = {
+		source = "None",
+		title = "No Active Mission",
+		goalType = "none",
+		goalText = "Open GameData / Quest first",
+		have = 0,
+		need = 1,
+		item = nil,
+		enemy = nil,
+		dim = nil,
+		id = nil,
+		requiredDim = nil,
+		requiredSuit = nil,
+		suitOk = true,
+		whereText = "",
+		storyBlockedLv = nil,
+	}
+	if not gd then
+		return emptyInfo
+	end
+
+	local quest = decodeAttrTable("Quest")
+	local bonus = decodeAttrTable("Bonus")
+	local bag = decodeAttrTable("Bag")
+	local totalQi = tonumber(LocalPlayer:GetAttribute("TotalQI")) or 0
+	local geniusLv = if gd.GeniusLevel then gd.GeniusLevel(totalQi) else (tonumber(LocalPlayer:GetAttribute("Genius")) or 1)
+
+	local storyQ = if type(gd.Quests) == "table" then gd.Quests[quest.i or 1] else nil
+	local storyBlockedLv: number? = nil
+	if storyQ and type(storyQ.goal) == "table" then
+		if storyQ.goal.type == "research" and gd.ResearchById and gd.ResearchById[storyQ.goal.id] then
+			local reqLv = gd.ResearchById[storyQ.goal.id].level or 1
+			if geniusLv < reqLv then
+				storyBlockedLv = reqLv
+			end
+		elseif storyQ.goal.type == "level" and storyQ.goal.n and geniusLv < storyQ.goal.n then
+			storyBlockedLv = storyQ.goal.n
+		end
+	end
+
+	local activeDef = nil
+	local source = "Story"
+	local have = 0
+	if storyQ and not storyBlockedLv then
+		activeDef = storyQ
+		source = ("Story #%d"):format(tonumber(quest.i) or 1)
+		have = tonumber(quest.n) or 0
+	else
+		local bonusDef = bonus.id and gd.DailyById and gd.DailyById[bonus.id]
+		if bonusDef then
+			activeDef = bonusDef
+			source = "Bonus"
+			have = tonumber(bonus.n) or 0
+		elseif storyQ then
+			activeDef = storyQ
+			source = ("Story #%d (Need Lv %d)"):format(tonumber(quest.i) or 1, storyBlockedLv or geniusLv)
+			have = tonumber(quest.n) or 0
+		end
+	end
+
+	if not activeDef or type(activeDef.goal) ~= "table" then
+		return emptyInfo
+	end
+
+	local g = activeDef.goal
+	local need = tonumber(g.n) or 1
+	local item = if g.item then tostring(g.item) else nil
+	local enemy = if g.enemy then tostring(g.enemy) else nil
+	local dim = if g.dim then tostring(g.dim) else nil
+	local gId = if g.id then tostring(g.id) else nil
+
+	local reqDim = dim
+	if not reqDim and enemy then
+		reqDim = ENEMY_DEFAULT_DIM[enemy]
+	elseif not reqDim and item then
+		reqDim = ITEM_REQUIRED_DIM[item]
+	end
+
+	local suitMeta = if item then WILD_SUITS[item] else nil
+	local reqSuit = if suitMeta then suitMeta.suit else nil
+	local suitOk = true
+	if reqSuit then
+		suitOk = (tonumber(bag[reqSuit]) or 0) > 0
+	end
+
+	local whereText = ""
+	if (g.type == "harvest" or g.type == "craft") and item and type(gd.WhereToFind) == "function" then
+		local okW, wRes = pcall(gd.WhereToFind, item)
+		if okW and type(wRes) == "string" then
+			whereText = wRes
+		end
+	end
+
+	local gText = tostring(g.type)
+	if g.type == "harvest" then
+		gText = "Collect " .. tostring(item or "items")
+	elseif g.type == "craft" then
+		gText = "Craft " .. tostring(item or "item")
+	elseif g.type == "kill" then
+		gText = "Defeat " .. tostring(enemy or "enemies")
+	elseif g.type == "research" then
+		gText = "Research " .. tostring(gId or "")
+	elseif g.type == "visit" then
+		gText = "Visit " .. tostring(dim or "")
+	elseif g.type == "build" then
+		gText = "Build " .. tostring(gId or "")
+	elseif g.type == "level" then
+		gText = "Reach Genius Lv " .. tostring(need)
+	end
+
+	return {
+		source = source,
+		title = tostring(activeDef.name or "Mission"),
+		goalType = tostring(g.type),
+		goalText = gText,
+		have = math.min(have, need),
+		need = need,
+		item = item,
+		enemy = enemy,
+		dim = dim,
+		id = gId,
+		requiredDim = reqDim,
+		requiredSuit = reqSuit,
+		suitOk = suitOk,
+		whereText = whereText,
+		storyBlockedLv = storyBlockedLv,
+	}
+end
+
+local function releaseMissionSubModes()
+	if ownedSubMode == "harvest" and matMod then
+		matMod:SetMissionSafeFilter(false)
+		matMod:SetAutoCollect(false)
+	elseif ownedSubMode == "hunt" then
+		mobConfig.AutoHunt = false
+		huntToken += 1
+	end
+	ownedSubMode = nil
+end
+
+local function stepAutoMissionOnce(): (boolean, string)
+	local info = Combat:GetActiveMissionInfo()
+	if info.goalType == "none" then
+		releaseMissionSubModes()
+		return false, "No active mission found"
+	end
+
+	local curDim = tostring(LocalPlayer:GetAttribute("CurrentDimension") or "")
+	local homeDim = tostring(LocalPlayer:GetAttribute("HomeDimension") or curDim)
+	local inOrbit = LocalPlayer:GetAttribute("InOrbit") == true
+
+	if inOrbit and info.goalType ~= "planet" and info.goalType ~= "harvestplanet" and info.goalType ~= "orbit" then
+		releaseMissionSubModes()
+		return false, "In Space Orbit - Force Home or land safely first"
+	end
+
+	-- Safety gate: never blindly teleport across dimensions into Void!
+	if info.requiredDim and info.requiredDim ~= "" then
+		local targetDim = info.requiredDim
+		local isHomeMatch = (targetDim == "C137" or targetDim == "Earth") and (curDim == homeDim)
+		if not isHomeMatch and curDim ~= targetDim then
+			releaseMissionSubModes()
+			-- Pre-fill Portal Gun TargetDimension if UI exists so player can shoot portal safely
+			local pg = LocalPlayer:FindFirstChild("PlayerGui")
+			local pgui = pg and pg:FindFirstChild("PortalGunUI")
+			local tdVal = pgui and pgui:FindFirstChild("TargetDimension")
+			if tdVal and tdVal:IsA("StringValue") then
+				tdVal.Value = targetDim
+			end
+			return false, ("Need Portal to [%s] first (Void-safe pause)"):format(targetDim)
+		end
+	end
+
+	-- Safety gate: suit requirement for Volcano / Snow / Caves
+	if info.requiredSuit and not info.suitOk and not missionConfig.AllowUnsafeBiomes then
+		releaseMissionSubModes()
+		if autoMod then
+			local canCraftSuit, missingMat, reason, recId = autoMod:GetCraftReadinessForItem(info.requiredSuit)
+			if canCraftSuit and recId then
+				if missionConfig.AutoQuickBench and matMod then
+					matMod:QuickInteract("workbench")
+				end
+				local okC, msgC = autoMod:CraftOnce(recId)
+				return okC, "Crafting safety suit: " .. tostring(msgC)
+			elseif missingMat and missionConfig.AutoCollectMats and matMod then
+				matMod:SetMissionSafeFilter(true)
+				matMod:SetSelectedItem(missingMat)
+				matMod:SetAutoCollect(true)
+				ownedSubMode = "harvest"
+				if stateSyncCallback then task.defer(stateSyncCallback) end
+				return true, ("Farming %s for %s"):format(missingMat, info.requiredSuit)
+			end
+			return false, ("Need %s before entering hazard (%s)"):format(info.requiredSuit, tostring(reason))
+		end
+		return false, ("Need %s before entering hazard"):format(info.requiredSuit)
+	end
+
+	-- Handle each Goal Type accurately
+	if info.goalType == "harvest" and info.item then
+		if mobConfig.AutoHunt then
+			mobConfig.AutoHunt = false
+			huntToken += 1
+		end
+		if matMod then
+			matMod:SetMissionSafeFilter(true)
+			matMod:SetSelectedItem(info.item)
+			matMod:SetAutoCollect(true)
+			ownedSubMode = "harvest"
+			if stateSyncCallback then task.defer(stateSyncCallback) end
+			return true, ("Harvesting %s (%d/%d)"):format(info.item, info.have, info.need)
+		end
+	elseif info.goalType == "kill" and info.enemy then
+		if matMod then
+			matMod:SetAutoCollect(false)
+		end
+		mobConfig.HuntFilter = info.enemy
+		if not mobConfig.KillAura then
+			mobConfig.KillAura = true
+		end
+		if not mobConfig.AutoHunt then
+			mobConfig.AutoHunt = true
+			huntToken += 1
+			startAutoHuntLoop(huntToken)
+		end
+		refreshRuntimeLoop()
+		ownedSubMode = "hunt"
+		if stateSyncCallback then task.defer(stateSyncCallback) end
+		return true, ("Hunting %s (%d/%d)"):format(info.enemy, info.have, info.need)
+	elseif info.goalType == "craft" and info.item and autoMod then
+		releaseMissionSubModes()
+		local canCraft, missingMat, reason, recId = autoMod:GetCraftReadinessForItem(info.item)
+		if canCraft and recId then
+			autoMod:SetCraftQuantity(math.max(1, info.need - info.have))
+			local okC, msgC = autoMod:CraftOnce(recId)
+			return okC, msgC
+		elseif reason == "Need Workbench" and missionConfig.AutoQuickBench and recId and matMod then
+			local okW = matMod:QuickInteract("workbench")
+			if okW then
+				autoMod:SetCraftQuantity(math.max(1, info.need - info.have))
+				return autoMod:CraftOnce(recId)
+			end
+		elseif missingMat and missionConfig.AutoCollectMats and matMod then
+			matMod:SetMissionSafeFilter(true)
+			matMod:SetSelectedItem(missingMat)
+			matMod:SetAutoCollect(true)
+			ownedSubMode = "harvest"
+			if stateSyncCallback then task.defer(stateSyncCallback) end
+			return true, ("Collecting missing %s for craft"):format(missingMat)
+		end
+		return false, tostring(reason or "Cannot craft mission item yet")
+	elseif info.goalType == "research" and info.id and autoMod then
+		releaseMissionSubModes()
+		local okR, msgR = autoMod:RunResearchOnce(info.id)
+		return okR, msgR
+	elseif info.goalType == "job" and matMod then
+		-- Find nearest NPC with TalkPrompt/JobPrompt in current dimension
+		local _, _, root = getCharParts()
+		if root then
+			local bestPrompt: ProximityPrompt? = nil
+			local bestPos: Vector3? = nil
+			local bestDist = 450
+			for _, npc in ipairs(CollectionService:GetTagged("NPC")) do
+				if npc:IsDescendantOf(workspace) then
+					local pr = npc:FindFirstChildWhichIsA("ProximityPrompt", true)
+					if pr and pr.Enabled then
+						local p = npc:FindFirstChild("HumanoidRootPart") or npc:FindFirstChildWhichIsA("BasePart")
+						if p and p:IsA("BasePart") then
+							local safeOk = isSafePointInWorld(p.Position, false)
+							local d = (p.Position - root.Position).Magnitude
+							if safeOk and d < bestDist then
+								bestDist = d
+								bestPrompt = pr
+								bestPos = p.Position
+							end
+						end
+					end
+				end
+			end
+			if bestPrompt and bestPos then
+				local char = LocalPlayer.Character
+				if char then
+					char:PivotTo(CFrame.new(bestPos + Vector3.new(0, 2, -4)))
+					task.wait(0.1)
+					local fireFn = rawget(_G, "fireproximityprompt")
+					if type(fireFn) == "function" then
+						pcall(fireFn, bestPrompt)
+					else
+						pcall(function() bestPrompt:InputHoldBegin() task.wait(0.25) bestPrompt:InputHoldEnd() end)
+					end
+					return true, "Talked to Odd Job NPC"
+				end
+			end
+		end
+		return false, "No Odd Job NPC nearby"
+	elseif info.goalType == "level" then
+		if mobConfig.HuntFilter ~= "ALL" then
+			mobConfig.HuntFilter = "ALL"
+		end
+		if not mobConfig.AutoHunt then
+			mobConfig.AutoHunt = true
+			huntToken += 1
+			startAutoHuntLoop(huntToken)
+			refreshRuntimeLoop()
+			ownedSubMode = "hunt"
+		end
+		return true, ("Farming IQ for Genius Lv %d"):format(info.need)
+	end
+
+	releaseMissionSubModes()
+	return false, ("Manual step needed: %s"):format(info.goalText)
+end
+
+--====================================================
+-- PUBLIC API
+--====================================================
+function Combat:SetAntiVoid(enabled: boolean)
+	guardConfig.AntiVoid = enabled
+	if enabled then
+		local _, hum, root = getCharParts()
+		if hum and root and hum.Health > 0 and not hum.SeatPart and hum.FloorMaterial ~= Enum.Material.Air then
+			if isSafePointInWorld(root.Position, false) then
+				lastSafeGroundCF = root.CFrame
+				lastSafeGroundDim = LocalPlayer:GetAttribute("CurrentDimension")
+			end
+		end
+	end
+	refreshRuntimeLoop()
+end
+
+function Combat:SetAutoHeal(enabled: boolean, thresholdPct: number?)
+	if thresholdPct ~= nil then
+		self:SetHealAtPct(thresholdPct)
+	end
+	guardConfig.AutoHeal = enabled
+	refreshRuntimeLoop()
+end
+
+function Combat:SetHealAtPct(pct: number)
+	guardConfig.HealAtPct = math.clamp(math.round(pct), 15, 95)
+end
+
+function Combat:SetAutoEscapeHome(enabled: boolean, thresholdPct: number?)
+	if thresholdPct ~= nil then
+		self:SetEscapeAtPct(thresholdPct)
+	end
+	guardConfig.AutoEscapeHome = enabled
+	refreshRuntimeLoop()
+end
+
+function Combat:SetEscapeAtPct(pct: number)
+	guardConfig.EscapeAtPct = math.clamp(math.round(pct), 10, 80)
+end
+
+function Combat:EnableAllGameProtections(): (boolean, string)
+	local pt = ReplicatedStorage:FindFirstChild("ProtectionToggle")
+	if not pt or not pt:IsA("RemoteFunction") then
+		return false, "ProtectionToggle remote not found"
+	end
+	local okCall, okRes, msgRes = pcall(function()
+		return pt:InvokeServer("all", nil, true)
+	end)
+	if not okCall then
+		return false, "Error: " .. tostring(okRes)
+	end
+	if okRes == false then
+		return false, tostring(msgRes or "No unlocked protections yet")
+	end
+	return true, "Enabled all unlocked protections"
+end
+
+function Combat:SetKillAura(enabled: boolean, rangeStuds: number?)
+	if rangeStuds ~= nil then
+		self:SetAuraRange(rangeStuds)
+	end
+	mobConfig.KillAura = enabled
+	refreshRuntimeLoop()
+end
+
+function Combat:SetAuraRange(studs: number)
+	mobConfig.AuraRange = math.clamp(math.round(studs), 8, 250)
+end
+
+function Combat:SetMobEsp(enabled: boolean)
+	mobConfig.MobEsp = enabled
+	if enabled then
+		updateMobEsp()
+	else
+		clearMobEsp()
+	end
+	refreshRuntimeLoop()
+end
+
+function Combat:SetAutoPickupDrops(enabled: boolean)
+	mobConfig.AutoPickupDrops = enabled
+end
+
+function Combat:SetHuntFilter(enemyId: string)
+	mobConfig.HuntFilter = if enemyId and enemyId ~= "" then enemyId else "ALL"
+end
+
+function Combat:SetAutoHunt(enabled: boolean, maxDist: number?)
+	if maxDist ~= nil then
+		mobConfig.MaxHuntDist = math.clamp(math.round(maxDist), 100, 5000)
+	end
+	mobConfig.AutoHunt = enabled
+	huntToken += 1
+	if enabled then
+		startAutoHuntLoop(huntToken)
+	else
+		lastMobMsg = "Idle"
+	end
+	refreshRuntimeLoop()
+end
+
+function Combat:GetEnemyFilterOptions(): ({ string }, { [string]: string })
+	local gd = getGameData()
+	local options = { "All Hostile Mobs" }
+	local labelToId: { [string]: string } = { ["All Hostile Mobs"] = "ALL" }
+	if gd and type(gd.Enemies) == "table" then
+		local temp = {}
+		for id, meta in pairs(gd.Enemies) do
+			local dName = if type(meta) == "table" and meta.name then tostring(meta.name) else tostring(id)
+			local label = ("%s [%s]"):format(dName, tostring(id))
+			table.insert(temp, { label = label, id = tostring(id) })
+		end
+		table.sort(temp, function(a, b) return a.label < b.label end)
+		for _, item in ipairs(temp) do
+			table.insert(options, item.label)
+			labelToId[item.label] = item.id
+		end
+	end
+	return options, labelToId
+end
+
+function Combat:SetAutoMission(enabled: boolean)
+	missionConfig.AutoEnabled = enabled
+	missionToken += 1
+	local myToken = missionToken
+	if not enabled then
+		releaseMissionSubModes()
+		lastMissionMsg = "Disabled"
+		return
+	end
+	task.spawn(function()
+		while missionConfig.AutoEnabled and myToken == missionToken and not destroyed do
+			local ok, msg = stepAutoMissionOnce()
+			lastMissionMsg = msg
+			task.wait(if ok then 1.5 else 2.2)
+		end
+	end)
+end
+
+function Combat:RunMissionStepOnce(): (boolean, string)
+	local ok, msg = stepAutoMissionOnce()
+	lastMissionMsg = msg
+	return ok, msg
+end
+
+function Combat:SetMissionAutoCollectMats(enabled: boolean)
+	missionConfig.AutoCollectMats = enabled
+end
+
+function Combat:SetMissionAutoQuickBench(enabled: boolean)
+	missionConfig.AutoQuickBench = enabled
+end
+
+function Combat:SetMissionAllowUnsafeBiomes(enabled: boolean)
+	missionConfig.AllowUnsafeBiomes = enabled
+end
+
+function Combat:GetToggleStates(): { [string]: boolean }
+	return {
+		AntiVoid = guardConfig.AntiVoid,
+		AutoHeal = guardConfig.AutoHeal,
+		AutoEscapeHome = guardConfig.AutoEscapeHome,
+		KillAura = mobConfig.KillAura,
+		AutoHunt = mobConfig.AutoHunt,
+		MobEsp = mobConfig.MobEsp,
+		AutoMission = missionConfig.AutoEnabled,
+	}
+end
+
+function Combat:GetCombatStatusText(): string
+	local char, hum = getCharParts()
+	local hpStr = if hum then ("%d/%d (%.0f%%)"):format(math.floor(hum.Health), math.floor(hum.MaxHealth), (hum.Health / math.max(1, hum.MaxHealth)) * 100) else "N/A"
+	local mobs = scanMobs(mobConfig.HuntFilter, mobConfig.MaxHuntDist, false)
+	local nearestStr = if mobs[1] then ("%s (%.0fm)"):format(mobs[1].displayName, mobs[1].dist) else "None"
+	return ("HP: %s | Nearby Mobs: %d | Nearest: %s\nGuardian: Void=%s Heal=%s AutoHome=%s | Kills: %d\nHunt Status: %s"):format(
+		hpStr,
+		#mobs,
+		nearestStr,
+		if guardConfig.AntiVoid then "ON" else "OFF",
+		if guardConfig.AutoHeal then "ON" else "OFF",
+		if guardConfig.AutoEscapeHome then "ON" else "OFF",
+		killedCount,
+		lastMobMsg
+	)
+end
+
+function Combat:GetMissionStatusText(): string
+	local info = self:GetActiveMissionInfo()
+	local curDim = tostring(LocalPlayer:GetAttribute("CurrentDimension") or "?")
+	local safetyNote = "Safe"
+	if info.requiredDim and info.requiredDim ~= "" and info.requiredDim ~= curDim then
+		local homeDim = tostring(LocalPlayer:GetAttribute("HomeDimension") or curDim)
+		if not ((info.requiredDim == "C137" or info.requiredDim == "Earth") and curDim == homeDim) then
+			safetyNote = "Need Portal: " .. info.requiredDim
+		end
+	elseif info.requiredSuit and not info.suitOk then
+		safetyNote = "Need Suit: " .. info.requiredSuit
+	end
+	return ("%s: %s (%d/%d)\nGoal: %s | Safety: %s\nStatus: %s"):format(
+		info.source,
+		info.title,
+		info.have,
+		info.need,
+		info.goalText,
+		safetyNote,
+		lastMissionMsg
+	)
+end
+
+function Combat:Destroy()
+	destroyed = true
+	guardConfig.AntiVoid = false
+	guardConfig.AutoHeal = false
+	guardConfig.AutoEscapeHome = false
+	mobConfig.KillAura = false
+	mobConfig.AutoHunt = false
+	mobConfig.MobEsp = false
+	missionConfig.AutoEnabled = false
+	huntToken += 1
+	missionToken += 1
+	releaseMissionSubModes()
+	clearMobEsp()
+	refreshRuntimeLoop()
+end
+
+return Combat
+
+end
+do
+--[[
+	RayfieldMenu (LocalScript)
+	Client controller in StarterPlayer.StarterPlayerScripts (and DeltaX Mobile single-file compatible).
+	Builds a Rayfield-style UI menu with Material (Fly & Collect), ESP, Research, Craft, Home, and Settings tabs.
+]]
+
+if not game:IsLoaded() then
+	game.Loaded:Wait()
+end
+
+local prevCleanup = rawget(_G, "__RayfieldMenuCleanup")
+if type(prevCleanup) == "function" then
+	pcall(prevCleanup)
+end
+
+local Lighting = game:GetService("Lighting")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local Rayfield = __req("RayfieldLib")
+local Esp = __req("EspModule")
+local Material = __req("MaterialModule")
+local Automation = __req("AutomationModule")
+local Combat = __req("CombatModule")
+
+Combat:SetDependencies(Material, Automation)
 
 local ESP_COLORS: { [string]: Color3 } = {
 	Cyan = Color3.fromRGB(56, 189, 248),
@@ -5264,6 +8131,15 @@ Automation:SetNotifyCallback(function(title: string, content: string, color: Col
 end)
 
 Material:SetNotifyCallback(function(title: string, content: string, color: Color3?)
+	Window:Notify({
+		Title = title,
+		Content = content,
+		Duration = 2.5,
+		Color = color,
+	})
+end)
+
+Combat:SetNotifyCallback(function(title: string, content: string, color: Color3?)
 	Window:Notify({
 		Title = title,
 		Content = content,
@@ -5601,6 +8477,35 @@ local tglAutoCraft = CraftTab:CreateToggle({
 	end,
 })
 
+local function triggerQuickStation(stationKey: string)
+	local ok, msg, openedFullUi = Material:QuickInteract(stationKey)
+	if ok and openedFullUi then
+		Window:SetVisible(false)
+		Window:Notify({
+			Title = "Quick Interact",
+			Content = msg .. " (Tap 'RF Menu' to reopen menu)",
+			Duration = 3,
+			Color = Color3.fromRGB(52, 211, 153),
+		})
+	elseif not ok then
+		Window:Notify({
+			Title = "Quick Interact",
+			Content = msg,
+			Duration = 3,
+			Color = Color3.fromRGB(248, 113, 113),
+		})
+	end
+end
+
+CraftTab:CreateButton({
+	Name = "Quick Open Rick's Workbench",
+	Description = "Move to your Garage Workbench & open it immediately in 1 click",
+	Callback = function()
+		triggerQuickStation("workbench")
+		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
+	end,
+})
+
 CraftTab:CreateButton({
 	Name = "Quick Craft Now",
 	Description = "Craft the selected recipe immediately with current quantity & settings",
@@ -5621,7 +8526,196 @@ Material:SetBeforeTeleportCallback(function()
 end)
 
 --====================================================
--- TAB 5: HOME / TELEPORT
+-- TAB 5: COMBAT & GUARDIAN
+--====================================================
+local CombatTab = Window:CreateTab("Combat")
+
+CombatTab:CreateSection("Character & Mob Radar")
+local combatStatus = CombatTab:CreateParagraph({
+	Title = "Guardian & Combat Status",
+	Content = Combat:GetCombatStatusText(),
+})
+
+CombatTab:CreateSection("Character Guardian (Survival & Anti-Void)")
+CombatTab:CreateParagraph({
+	Title = "Server-Authoritative Protection Note",
+	Content = "HP/Damage is validated by the game server: Guardian protects you using instant Anti-Void snapback, Fall Softener, Lava lift, Auto-Regen, Auto-Healing/Armor items, and Emergency Force-Home.",
+})
+
+local tglAntiVoid = CombatTab:CreateToggle({
+	Name = "Anti-Void & Fall Guard",
+	Description = "Prevents falling into Void/Lava, softens extreme falls, clears ragdoll traps",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Combat:SetAntiVoid(enabled)
+		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+	end,
+})
+
+local tglAutoHeal = CombatTab:CreateToggle({
+	Name = "Auto-Heal & Auto-Regen",
+	Description = "Fires RequestRegen and uses SurgeonKit / ArmorGoo / food when hurt",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Combat:SetAutoHeal(enabled)
+		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+	end,
+})
+
+CombatTab:CreateSlider({
+	Name = "Auto-Heal Trigger HP %",
+	Range = { 20, 95 },
+	Increment = 5,
+	Suffix = "%",
+	CurrentValue = 70,
+	Callback = function(val: number)
+		Combat:SetHealAtPct(val)
+	end,
+})
+
+local tglAutoEscapeHome = CombatTab:CreateToggle({
+	Name = "Auto Emergency Force-Home",
+	Description = "Instantly forces you to Garage before lethal HP or critical hazard",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Combat:SetAutoEscapeHome(enabled)
+		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+	end,
+})
+
+CombatTab:CreateSlider({
+	Name = "Emergency Escape Below HP %",
+	Range = { 10, 75 },
+	Increment = 5,
+	Suffix = "%",
+	CurrentValue = 30,
+	Callback = function(val: number)
+		Combat:SetEscapeAtPct(val)
+	end,
+})
+
+CombatTab:CreateButton({
+	Name = "Enable All Unlocked Game Protections",
+	Description = "Activates all suits & implants you unlocked via ProtectionToggle",
+	Callback = function()
+		local ok, msg = Combat:EnableAllGameProtections()
+		Window:Notify({
+			Title = "Protections",
+			Content = msg,
+			Duration = 2.5,
+			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
+		})
+	end,
+})
+
+CombatTab:CreateSection("Mob Hunter & Kill Aura")
+
+local enemyOpts, enemyMap = Combat:GetEnemyFilterOptions()
+CombatTab:CreateDropdown({
+	Name = "Target Mob Filter",
+	Options = enemyOpts,
+	CurrentOption = enemyOpts[1],
+	Callback = function(opt: string)
+		Combat:SetHuntFilter(enemyMap[opt] or "ALL")
+		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+	end,
+})
+
+local tglKillAura = CombatTab:CreateToggle({
+	Name = "Kill Aura (Genuine Player Attack)",
+	Description = "Attacks nearby mobs using your equipped Tool / CyberArm / EvilTech so drops & mission kills count",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Combat:SetKillAura(enabled)
+		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+	end,
+})
+
+CombatTab:CreateSlider({
+	Name = "Kill Aura Range",
+	Range = { 8, 40 },
+	Increment = 2,
+	Suffix = "m",
+	CurrentValue = 18,
+	Callback = function(val: number)
+		Combat:SetAuraRange(val)
+	end,
+})
+
+local tglAutoHunt = CombatTab:CreateToggle({
+	Name = "Auto Hunt & Kill Mobs",
+	Description = "Flies to safe standoff behind matching mobs, kills with your real weapons, sweeps nearby drops",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Combat:SetAutoHunt(enabled)
+		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+	end,
+})
+
+local tglMobEsp = CombatTab:CreateToggle({
+	Name = "Mob ESP Highlights",
+	Description = "Highlight hostile mobs with live HP & distance",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Combat:SetMobEsp(enabled)
+	end,
+})
+
+--====================================================
+-- TAB 6: AUTO MISSION
+--====================================================
+local MissionTab = Window:CreateTab("Mission")
+
+MissionTab:CreateSection("Active Mission Tracker")
+local missionStatus = MissionTab:CreateParagraph({
+	Title = "Current Story / Bonus Mission",
+	Content = Combat:GetMissionStatusText(),
+})
+
+MissionTab:CreateSection("Mission Automation (Void & Space Safe)")
+
+local tglAutoMission = MissionTab:CreateToggle({
+	Name = "Enable Auto Mission",
+	Description = "Follows active Mission (Harvest / Kill / Craft / Research / Job) strictly inside safe dimension bounds",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Combat:SetAutoMission(enabled)
+		missionStatus:Set({ Content = Combat:GetMissionStatusText() })
+		Window:Notify({
+			Title = "Auto Mission",
+			Content = if enabled then "Auto Mission STARTED." else "Auto Mission STOPPED.",
+			Duration = 2.5,
+			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
+		})
+	end,
+})
+
+local tglMissionUnsafe = MissionTab:CreateToggle({
+	Name = "Allow Hazard Biomes Without Suit",
+	Description = "Skip Volcano/Snow/Cave suit safety check (NOT recommended unless healed)",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Combat:SetMissionAllowUnsafeBiomes(enabled)
+	end,
+})
+
+MissionTab:CreateButton({
+	Name = "Run Current Mission Step Once",
+	Description = "Execute one safe step toward your current mission goal",
+	Callback = function()
+		local ok, msg = Combat:RunMissionStepOnce()
+		missionStatus:Set({ Content = Combat:GetMissionStatusText() })
+		Window:Notify({
+			Title = "Mission Step",
+			Content = msg,
+			Duration = 2.5,
+			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
+		})
+	end,
+})
+
+--====================================================
+-- TAB 7: HOME / TELEPORT
 --====================================================
 local HomeTab = Window:CreateTab("Home")
 
@@ -5629,6 +8723,55 @@ HomeTab:CreateSection("Home & Garage")
 local homeStatus = HomeTab:CreateParagraph({
 	Title = "Garage Location",
 	Content = Material:GetHomeStatusText(),
+})
+
+HomeTab:CreateSection("Instant Force-Send Home (Hotkey: Home)")
+
+HomeTab:CreateButton({
+	Name = "FORCE HOME NOW (Instant Garage)",
+	Description = "Force-ejects seats/ragdoll & snaps immediately onto Garage floor without waiting (Void-proof)",
+	Callback = function()
+		Material:ForceSendHomeNow()
+		homeStatus:Set({ Content = Material:GetHomeStatusText() })
+	end,
+})
+
+HomeTab:CreateSection("Quick Interact (1-Click Open)")
+
+HomeTab:CreateButton({
+	Name = "Open Rick's Workbench",
+	Description = "Jump to Workbench from anywhere & trigger Craft UI immediately",
+	Callback = function()
+		triggerQuickStation("workbench")
+		homeStatus:Set({ Content = Material:GetHomeStatusText() })
+	end,
+})
+
+HomeTab:CreateButton({
+	Name = "Refill Portal Fluid",
+	Description = "Jump to Fluid Station & refill Portal Fluid",
+	Callback = function()
+		triggerQuickStation("fluid")
+		homeStatus:Set({ Content = Material:GetHomeStatusText() })
+	end,
+})
+
+HomeTab:CreateButton({
+	Name = "Open Dimension Scanner",
+	Description = "Jump to Dimension Scanner & open Multiverse Scanner",
+	Callback = function()
+		triggerQuickStation("scanner")
+		homeStatus:Set({ Content = Material:GetHomeStatusText() })
+	end,
+})
+
+HomeTab:CreateButton({
+	Name = "Grab Fleeb Juice (Fridge)",
+	Description = "Jump to Rick's Fridge & collect Fleeb Juice",
+	Callback = function()
+		triggerQuickStation("fridge")
+		homeStatus:Set({ Content = Material:GetHomeStatusText() })
+	end,
 })
 
 HomeTab:CreateSection("Teleport Actions")
@@ -5639,6 +8782,23 @@ HomeTab:CreateButton({
 	Callback = function()
 		Material:TeleportToHome(false)
 		homeStatus:Set({ Content = Material:GetHomeStatusText() })
+	end,
+})
+
+HomeTab:CreateButton({
+	Name = "Return to Last Location",
+	Description = "Return to where you were before using Quick Interact",
+	Callback = function()
+		local ok, msg = Material:ReturnToSavedSpot()
+		homeStatus:Set({ Content = Material:GetHomeStatusText() })
+		if not ok then
+			Window:Notify({
+				Title = "Return",
+				Content = msg,
+				Duration = 2.5,
+				Color = Color3.fromRGB(251, 191, 36),
+			})
+		end
 	end,
 })
 
@@ -5660,6 +8820,122 @@ SettingsTab:CreateSection("Quick Guide")
 SettingsTab:CreateParagraph({
 	Title = "Controls & Keybinds",
 	Content = "• Press RightShift to toggle the menu.\n• Drag the top bar freely anywhere on screen.\n• When hidden, tap 'RF Menu' on the left to reopen (Mobile supported).",
+})
+
+SettingsTab:CreateSection("Performance & Weak Device")
+
+local monitorInterval = 0.45
+local savedGraphicsState: {
+	captured: boolean,
+	shadows: boolean?,
+	quality: any,
+	fx: { { inst: Instance, prop: string, val: boolean } },
+} = {
+	captured = false,
+	shadows = nil,
+	quality = nil,
+	fx = {},
+}
+
+local function applyAllLowEndMode(enabled: boolean)
+	Rayfield:SetLowEndMode(enabled)
+	Esp:SetLowEndMode(enabled)
+	Material:SetLowEndMode(enabled)
+	Automation:SetLowEndMode(enabled)
+	Combat:SetLowEndMode(enabled)
+	monitorInterval = if enabled then 1.1 else 0.45
+end
+
+local function isOwnEffect(inst: Instance): boolean
+	local cur: Instance? = inst
+	while cur and cur ~= workspace do
+		if cur.Name == "RayfieldMaterialESP" or cur.Name == "RayfieldESP" or cur.Name == "RayfieldMobESP" then
+			return true
+		end
+		cur = cur.Parent
+	end
+	return false
+end
+
+local tglLowEndMode = SettingsTab:CreateToggle({
+	Name = "Low-End Device Mode (Potato / Weak Exec)",
+	Description = "Disables UI Tweens, limits ESP Highlights to 4, relaxes scan intervals to maximize FPS",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		applyAllLowEndMode(enabled)
+		Window:Notify({
+			Title = "Performance Mode",
+			Content = if enabled then "Low-End Mode ON (Tweens off, Highlights <= 4, Throttled loops)." else "Low-End Mode OFF (Balanced defaults).",
+			Duration = 2.5,
+			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(56, 189, 248),
+		})
+	end,
+})
+
+SettingsTab:CreateButton({
+	Name = "One-Click FPS Booster (Reduce Game Lag)",
+	Description = "Safely lowers client shadows, quality & extra particles in chunked steps (Reversible)",
+	Callback = function()
+		if not savedGraphicsState.captured then
+			savedGraphicsState.captured = true
+			pcall(function() savedGraphicsState.shadows = Lighting.GlobalShadows end)
+			pcall(function() savedGraphicsState.quality = settings().Rendering.QualityLevel end)
+		end
+		pcall(function() Lighting.GlobalShadows = false end)
+		pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
+
+		local trimmed = 0
+		local descs = workspace:GetDescendants()
+		for i = 1, #descs do
+			local d = descs[i]
+			if d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Sparkles") or d:IsA("Fire") or d:IsA("Smoke") then
+				if d.Enabled and not isOwnEffect(d) then
+					table.insert(savedGraphicsState.fx, { inst = d, prop = "Enabled", val = true })
+					pcall(function() d.Enabled = false end)
+					trimmed += 1
+				end
+			end
+			if i % 450 == 0 then
+				task.wait()
+			end
+		end
+
+		Window:Notify({
+			Title = "FPS Booster",
+			Content = ("Boost applied: Shadows OFF, Low Quality, %d FX disabled."):format(trimmed),
+			Duration = 3,
+			Color = Color3.fromRGB(52, 211, 153),
+		})
+	end,
+})
+
+SettingsTab:CreateButton({
+	Name = "Restore Game Graphics",
+	Description = "Restores client shadows, render quality & particles changed by FPS Booster",
+	Callback = function()
+		if savedGraphicsState.shadows ~= nil then
+			pcall(function() Lighting.GlobalShadows = savedGraphicsState.shadows :: boolean end)
+		end
+		if savedGraphicsState.quality ~= nil then
+			pcall(function() settings().Rendering.QualityLevel = savedGraphicsState.quality end)
+		end
+		local restored = 0
+		for i, entry in ipairs(savedGraphicsState.fx) do
+			if entry.inst and entry.inst.Parent then
+				pcall(function() (entry.inst :: any)[entry.prop] = entry.val end)
+				restored += 1
+			end
+			if i % 450 == 0 then
+				task.wait()
+			end
+		end
+		table.clear(savedGraphicsState.fx)
+		Window:Notify({
+			Title = "Graphics Restored",
+			Content = ("Restored %d effects & client lighting."):format(restored),
+			Duration = 2.5,
+		})
+	end,
 })
 
 SettingsTab:CreateSection("Reset & Cleanup")
@@ -5693,21 +8969,86 @@ SettingsTab:CreateButton({
 		tglAutoCraft:Set(false, true)
 		tglFastAssemble:Set(false, true)
 
+		Combat:SetAntiVoid(false)
+		Combat:SetAutoHeal(false)
+		Combat:SetAutoEscapeHome(false)
+		Combat:SetKillAura(false)
+		Combat:SetAutoHunt(false)
+		Combat:SetMobEsp(false)
+		Combat:SetAutoMission(false)
+		Combat:SetMissionAllowUnsafeBiomes(false)
+		tglAntiVoid:Set(false, true)
+		tglAutoHeal:Set(false, true)
+		tglAutoEscapeHome:Set(false, true)
+		tglKillAura:Set(false, true)
+		tglAutoHunt:Set(false, true)
+		tglMobEsp:Set(false, true)
+		tglAutoMission:Set(false, true)
+		tglMissionUnsafe:Set(false, true)
+
+		applyAllLowEndMode(false)
+		tglLowEndMode:Set(false, true)
+
 		Window:Notify({
 			Title = "Reset",
-			Content = "Disabled all Material, ESP, Auto Research & Auto Craft features.",
+			Content = "Disabled all Material, ESP, Research, Craft, Combat & Mission features.",
 			Duration = 2.5,
 		})
 	end,
 })
 
-local monitorConn: RBXScriptConnection? = nil
+local monitorActive = true
+
+local function refreshActiveTabStatus(tabName: string)
+	if not monitorActive then
+		return
+	end
+	if tabName == "Material" then
+		materialStatus:Set({ Content = Material:GetStatusText() })
+	elseif tabName == "Research" then
+		researchStatus:Set({ Content = Automation:GetResearchStatusText() })
+	elseif tabName == "Craft" then
+		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
+	elseif tabName == "Combat" then
+		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+	elseif tabName == "Mission" then
+		missionStatus:Set({ Content = Combat:GetMissionStatusText() })
+	elseif tabName == "Home" then
+		homeStatus:Set({ Content = Material:GetHomeStatusText() })
+	end
+end
+
+Combat:SetStateSyncCallback(function()
+	if not monitorActive then
+		return
+	end
+	tglMatAutoCollect:Set(Material:IsAutoCollecting(), true)
+	local st = Combat:GetToggleStates()
+	tglKillAura:Set(st.KillAura, true)
+	tglAutoHunt:Set(st.AutoHunt, true)
+	tglAutoMission:Set(st.AutoMission, true)
+	refreshActiveTabStatus(Window:GetActiveTabName())
+end)
+
+Window:OnTabChanged(refreshActiveTabStatus)
+
+local homeKeyConn: RBXScriptConnection? = UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+	if gameProcessed or UserInputService:GetFocusedTextBox() then
+		return
+	end
+	if input.KeyCode == Enum.KeyCode.Home then
+		Material:ForceSendHomeNow()
+		homeStatus:Set({ Content = Material:GetHomeStatusText() })
+	end
+end)
 
 local function unloadAll()
-	if monitorConn then
-		monitorConn:Disconnect()
-		monitorConn = nil
+	monitorActive = false
+	if homeKeyConn then
+		homeKeyConn:Disconnect()
+		homeKeyConn = nil
 	end
+	Combat:Destroy()
 	Material:Destroy()
 	Esp:Destroy()
 	Automation:Destroy()
@@ -5726,6 +9067,7 @@ rawset(_G, "RayfieldMenu", {
 	Material = Material,
 	Esp = Esp,
 	Automation = Automation,
+	Combat = Combat,
 	Unload = unloadAll,
 })
 
@@ -5735,27 +9077,14 @@ SettingsTab:CreateButton({
 	Callback = unloadAll,
 })
 
--- Live Material, Research & Craft monitor
-local elapsed = 0
-monitorConn = RunService.RenderStepped:Connect(function(dt: number)
-	elapsed += dt
-	if elapsed < 0.25 then
-		return
+-- Lightweight tab-aware background monitor (0% CPU when menu hidden/minimized or on static tabs)
+task.spawn(function()
+	while monitorActive do
+		task.wait(monitorInterval)
+		if monitorActive and Window:IsVisible() and not Window:IsMinimized() then
+			refreshActiveTabStatus(Window:GetActiveTabName())
+		end
 	end
-	elapsed = 0
-
-	materialStatus:Set({
-		Content = Material:GetStatusText(),
-	})
-	researchStatus:Set({
-		Content = Automation:GetResearchStatusText(),
-	})
-	craftStatus:Set({
-		Content = Automation:GetCraftStatusText(),
-	})
-	homeStatus:Set({
-		Content = Material:GetHomeStatusText(),
-	})
 end)
 
 Window:Notify({
@@ -5763,3 +9092,4 @@ Window:Notify({
 	Content = "Press RightShift to toggle the menu anytime.",
 	Duration = 4,
 })
+end
