@@ -94,18 +94,18 @@ local function protectGuiIfSupported(gui)
 end
 
 local THEME = {
-	WindowBg = Color3.fromRGB(20, 22, 28),
-	SidebarBg = Color3.fromRGB(16, 17, 22),
-	TopbarBg = Color3.fromRGB(25, 28, 36),
-	CardBg = Color3.fromRGB(29, 32, 41),
-	CardHover = Color3.fromRGB(37, 41, 53),
-	ControlBg = Color3.fromRGB(43, 48, 62),
-	Stroke = Color3.fromRGB(54, 60, 78),
+	WindowBg = Color3.fromRGB(16, 18, 24),
+	SidebarBg = Color3.fromRGB(13, 15, 20),
+	TopbarBg = Color3.fromRGB(21, 24, 32),
+	CardBg = Color3.fromRGB(25, 28, 38),
+	CardHover = Color3.fromRGB(33, 37, 50),
+	ControlBg = Color3.fromRGB(39, 44, 59),
+	Stroke = Color3.fromRGB(48, 55, 74),
 	Accent = Color3.fromRGB(56, 189, 248),
 	AccentDark = Color3.fromRGB(14, 116, 144),
 	Text = Color3.fromRGB(240, 244, 250),
-	SubText = Color3.fromRGB(156, 165, 184),
-	ToggleOff = Color3.fromRGB(66, 72, 90),
+	SubText = Color3.fromRGB(152, 162, 182),
+	ToggleOff = Color3.fromRGB(64, 70, 88),
 	Knob = Color3.fromRGB(248, 250, 252),
 	Success = Color3.fromRGB(52, 211, 153),
 	Warning = Color3.fromRGB(251, 191, 36),
@@ -220,6 +220,9 @@ function RayfieldLib:CreateWindow(config)
 	local screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "RayfieldMenuGui"
 	screenGui.IgnoreGuiInset = true
+	pcall(function()
+		(screenGui :: any).ScreenInsets = Enum.ScreenInsets.None
+	end)
 	screenGui.ResetOnSpawn = false
 	screenGui.DisplayOrder = displayOrder
 	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
@@ -253,16 +256,21 @@ function RayfieldLib:CreateWindow(config)
 	notifyLayout.Padding = UDim.new(0, 8)
 	notifyLayout.Parent = notifyContainer
 
-	-- Main Window
-	local WINDOW_W = 550
-	local WINDOW_H = 390
-	local TOPBAR_H = 46
+	-- Main Window (Top-left anchored in offset px so minimize/scale/dropdowns never jump topbar)
+	local WINDOW_W = 584
+	local WINDOW_H = 432
+	local SIDEBAR_W = 148
+	local TOPBAR_H = 48
+
+	local isPinned = false
+	local onPinChangedCb: ((boolean) -> ())? = nil
+	local currentWindowH = WINDOW_H
 
 	local mainFrame = Instance.new("Frame")
 	mainFrame.Name = "MainWindow"
 	mainFrame.Active = true
-	mainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
-	mainFrame.Position = UDim2.fromScale(0.5, 0.5)
+	mainFrame.AnchorPoint = Vector2.new(0, 0)
+	mainFrame.Position = UDim2.fromOffset(100, 80)
 	mainFrame.Size = UDim2.fromOffset(WINDOW_W, WINDOW_H)
 	mainFrame.BackgroundColor3 = THEME.WindowBg
 	mainFrame.BorderSizePixel = 0
@@ -275,26 +283,74 @@ function RayfieldLib:CreateWindow(config)
 	uiScale.Scale = 1
 	uiScale.Parent = mainFrame
 
-	local function updateResponsiveScale()
+	local function getViewportSize(): Vector2
+		local cam = workspace.CurrentCamera
+		if cam then
+			return cam.ViewportSize
+		end
+		return Vector2.new(1280, 720)
+	end
+
+	local function clampPosition(x: number, y: number, hOverride: number?): (number, number)
+		local vp = getViewportSize()
+		local sc = math.max(0.1, uiScale.Scale)
+		local visW = WINDOW_W * sc
+		local visH = (hOverride or currentWindowH) * sc
+		local maxX = math.max(8, vp.X - visW - 8)
+		local maxY = math.max(8, vp.Y - math.min(visH, vp.Y - 16) - 8)
+		return math.clamp(math.round(x), 8, maxX), math.clamp(math.round(y), 8, maxY)
+	end
+
+	local function centerWindow()
+		local vp = getViewportSize()
+		local sc = math.max(0.1, uiScale.Scale)
+		local cx = (vp.X - WINDOW_W * sc) * 0.5
+		local cy = (vp.Y - WINDOW_H * sc) * 0.5
+		local x, y = clampPosition(cx, cy, WINDOW_H)
+		mainFrame.Position = UDim2.fromOffset(x, y)
+	end
+
+	local lastVp = Vector2.zero
+	local hasCenteredOnce = false
+	local function updateResponsiveScale(forceCenter: boolean?)
 		local cam = workspace.CurrentCamera
 		if not cam then
 			return
 		end
 		local vp = cam.ViewportSize
+		if vp.X <= 50 or vp.Y <= 50 then
+			return
+		end
+		local shouldCenter = (forceCenter == true) or (not hasCenteredOnce)
+		if not shouldCenter and (math.abs(vp.X - lastVp.X) <= 2 and math.abs(vp.Y - lastVp.Y) <= 2) then
+			return
+		end
+		lastVp = vp
+		hasCenteredOnce = true
 		local scaleX = (vp.X - 24) / WINDOW_W
 		local scaleY = (vp.Y - 24) / WINDOW_H
-		uiScale.Scale = math.clamp(math.min(1, scaleX, scaleY), 0.55, 1)
+		local nextScale = math.clamp(math.min(1, scaleX, scaleY), 0.55, 1)
+		uiScale.Scale = math.round(nextScale * 100) / 100
+		if shouldCenter then
+			centerWindow()
+		else
+			local curPos = mainFrame.Position
+			local x, y = clampPosition(curPos.X.Offset, curPos.Y.Offset)
+			mainFrame.Position = UDim2.fromOffset(x, y)
+		end
 	end
-	updateResponsiveScale()
+	updateResponsiveScale(true)
 	local function bindCameraScale()
 		local cam = workspace.CurrentCamera
 		if cam then
-			track(cam:GetPropertyChangedSignal("ViewportSize"):Connect(updateResponsiveScale))
+			track(cam:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+				updateResponsiveScale(false)
+			end))
 		end
 	end
 	bindCameraScale()
 	track(workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
-		updateResponsiveScale()
+		updateResponsiveScale(false)
 		bindCameraScale()
 	end))
 
@@ -324,8 +380,8 @@ function RayfieldLib:CreateWindow(config)
 	topDivider.Parent = topbar
 
 	local accentBar = Instance.new("Frame")
-	accentBar.Size = UDim2.fromOffset(4, 22)
-	accentBar.Position = UDim2.new(0, 14, 0.5, -11)
+	accentBar.Size = UDim2.fromOffset(4, 24)
+	accentBar.Position = UDim2.new(0, 14, 0.5, -12)
 	accentBar.BackgroundColor3 = THEME.Accent
 	accentBar.BorderSizePixel = 0
 	accentBar.Parent = topbar
@@ -333,35 +389,38 @@ function RayfieldLib:CreateWindow(config)
 
 	local titleLabel = Instance.new("TextLabel")
 	titleLabel.BackgroundTransparency = 1
-	titleLabel.Position = UDim2.fromOffset(26, 5)
-	titleLabel.Size = UDim2.new(1, -120, 0, 20)
+	titleLabel.Position = UDim2.fromOffset(26, 6)
+	titleLabel.Size = UDim2.new(1, -166, 0, 20)
 	titleLabel.Font = Enum.Font.GothamBold
 	titleLabel.Text = windowTitle
 	titleLabel.TextColor3 = THEME.Text
 	titleLabel.TextSize = 15
 	titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+	titleLabel.TextTruncate = Enum.TextTruncate.AtEnd
 	titleLabel.Parent = topbar
 
 	local subLabel = Instance.new("TextLabel")
 	subLabel.BackgroundTransparency = 1
-	subLabel.Position = UDim2.fromOffset(26, 24)
-	subLabel.Size = UDim2.new(1, -120, 0, 16)
+	subLabel.Position = UDim2.fromOffset(26, 25)
+	subLabel.Size = UDim2.new(1, -166, 0, 16)
 	subLabel.Font = Enum.Font.Gotham
 	subLabel.Text = windowSubtitle
 	subLabel.TextColor3 = THEME.SubText
 	subLabel.TextSize = 11
 	subLabel.TextXAlignment = Enum.TextXAlignment.Left
+	subLabel.TextTruncate = Enum.TextTruncate.AtEnd
 	subLabel.Parent = topbar
 
-	local function makeHeaderBtn(text: string, offsetX: number): TextButton
+	local function makeHeaderBtn(text: string, width: number, offsetX: number): TextButton
 		local btn = Instance.new("TextButton")
-		btn.Size = UDim2.fromOffset(28, 28)
+		btn.Active = true
+		btn.Size = UDim2.fromOffset(width, 28)
 		btn.AnchorPoint = Vector2.new(1, 0.5)
 		btn.Position = UDim2.new(1, offsetX, 0.5, 0)
 		btn.BackgroundColor3 = THEME.CardBg
 		btn.Text = text
 		btn.Font = Enum.Font.GothamBold
-		btn.TextSize = 14
+		btn.TextSize = if width > 32 then 11 else 14
 		btn.TextColor3 = THEME.SubText
 		btn.AutoButtonColor = false
 		btn.Parent = topbar
@@ -373,21 +432,29 @@ function RayfieldLib:CreateWindow(config)
 				tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardHover, TextColor3 = THEME.Text })
 			end))
 			track(btn.MouseLeave:Connect(function()
-				tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardBg, TextColor3 = THEME.SubText })
+				if btn.Name ~= "PinBtn" or not isPinned then
+					tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardBg, TextColor3 = THEME.SubText })
+				else
+					tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.AccentDark, TextColor3 = THEME.Text })
+				end
 			end))
 		end
 		return btn
 	end
 
-	local closeBtn = makeHeaderBtn("×", -10)
-	local minimizeBtn = makeHeaderBtn("−", -44)
+	local closeBtn = makeHeaderBtn("×", 28, -10)
+	closeBtn.Name = "CloseBtn"
+	local minimizeBtn = makeHeaderBtn("−", 28, -42)
+	minimizeBtn.Name = "MinimizeBtn"
+	local pinBtn = makeHeaderBtn("Free", 44, -74)
+	pinBtn.Name = "PinBtn"
 
-	-- Floating toggle pill (placed near upper-left so it never overlaps mobile thumbstick)
+	-- Floating toggle pill (placed near upper-left, clamped to screen bounds)
 	local togglePill = Instance.new("TextButton")
 	togglePill.Name = "TogglePill"
 	togglePill.Active = true
-	togglePill.Position = UDim2.new(0, 14, 0.16, 0)
-	togglePill.Size = UDim2.fromOffset(112, 38)
+	togglePill.Position = UDim2.fromOffset(14, 100)
+	togglePill.Size = UDim2.fromOffset(110, 36)
 	togglePill.BackgroundColor3 = THEME.TopbarBg
 	togglePill.Text = "RF Menu"
 	togglePill.Font = Enum.Font.GothamBold
@@ -402,6 +469,7 @@ function RayfieldLib:CreateWindow(config)
 	-- Body container
 	local bodyFrame = Instance.new("Frame")
 	bodyFrame.Name = "Body"
+	bodyFrame.Active = true
 	bodyFrame.Position = UDim2.fromOffset(0, TOPBAR_H)
 	bodyFrame.Size = UDim2.new(1, 0, 1, -TOPBAR_H)
 	bodyFrame.BackgroundTransparency = 1
@@ -410,7 +478,8 @@ function RayfieldLib:CreateWindow(config)
 	-- Left Sidebar
 	local sidebar = Instance.new("Frame")
 	sidebar.Name = "Sidebar"
-	sidebar.Size = UDim2.new(0, 140, 1, 0)
+	sidebar.Active = true
+	sidebar.Size = UDim2.new(0, SIDEBAR_W, 1, 0)
 	sidebar.BackgroundColor3 = THEME.SidebarBg
 	sidebar.BorderSizePixel = 0
 	sidebar.Parent = bodyFrame
@@ -424,6 +493,7 @@ function RayfieldLib:CreateWindow(config)
 
 	local tabList = Instance.new("ScrollingFrame")
 	tabList.Name = "TabList"
+	tabList.Active = true
 	tabList.Size = UDim2.new(1, -1, 1, 0)
 	tabList.BackgroundTransparency = 1
 	tabList.BorderSizePixel = 0
@@ -442,27 +512,57 @@ function RayfieldLib:CreateWindow(config)
 	-- Content Pages Holder
 	local pagesHolder = Instance.new("Frame")
 	pagesHolder.Name = "Pages"
-	pagesHolder.Position = UDim2.fromOffset(140, 0)
-	pagesHolder.Size = UDim2.new(1, -140, 1, 0)
+	pagesHolder.Active = true
+	pagesHolder.Position = UDim2.fromOffset(SIDEBAR_W, 0)
+	pagesHolder.Size = UDim2.new(1, -SIDEBAR_W, 1, 0)
 	pagesHolder.BackgroundTransparency = 1
 	pagesHolder.Parent = bodyFrame
 
-	-- Dragging logic for MainWindow (safe for Mouse & Mobile Multi-Touch, free positioning)
+	-- Dragging logic for MainWindow (respects Pin Lock, 6px deadzone, UIScale compensation, header button exclusion, viewport clamp)
 	do
 		local dragInput: InputObject? = nil
-		local dragStart: Vector3
-		local startPos: UDim2
+		local dragStart: Vector3 = Vector3.zero
+		local startOffsetX = 0
+		local startOffsetY = 0
+		local dragMoved = false
+
+		local function isInHeaderBtn(pos: Vector3): boolean
+			for _, btn in ipairs({ closeBtn, minimizeBtn, pinBtn }) do
+				local ap = btn.AbsolutePosition
+				local as = btn.AbsoluteSize
+				if pos.X >= ap.X - 2 and pos.X <= ap.X + as.X + 2 and pos.Y >= ap.Y - 2 and pos.Y <= ap.Y + as.Y + 2 then
+					return true
+				end
+			end
+			return false
+		end
 
 		track(topbar.InputBegan:Connect(function(input: InputObject)
+			if isPinned then
+				return
+			end
 			if not dragInput and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+				if isInHeaderBtn(input.Position) then
+					return
+				end
 				dragInput = input
+				dragMoved = false
 				dragStart = input.Position
-				startPos = mainFrame.Position
+				startOffsetX = mainFrame.Position.X.Offset
+				startOffsetY = mainFrame.Position.Y.Offset
 			end
 		end))
 
 		track(UserInputService.InputChanged:Connect(function(input: InputObject)
 			if not dragInput then
+				return
+			end
+			if isPinned then
+				dragInput = nil
+				return
+			end
+			if dragInput.UserInputType == Enum.UserInputType.MouseButton1 and not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+				dragInput = nil
 				return
 			end
 			local isMatch = (dragInput.UserInputType == Enum.UserInputType.Touch and input == dragInput)
@@ -471,7 +571,16 @@ function RayfieldLib:CreateWindow(config)
 				return
 			end
 			local delta = input.Position - dragStart
-			mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+			if not dragMoved then
+				if delta.Magnitude < 6 then
+					return
+				end
+				dragMoved = true
+			end
+			-- Divide raw screen delta by uiScale so window follows pointer 1:1 regardless of mobile scaling
+			local sc = math.max(0.1, uiScale.Scale)
+			local nextX, nextY = clampPosition(startOffsetX + delta.X / sc, startOffsetY + delta.Y / sc)
+			mainFrame.Position = UDim2.fromOffset(nextX, nextY)
 		end))
 
 		track(UserInputService.InputEnded:Connect(function(input: InputObject)
@@ -482,30 +591,41 @@ function RayfieldLib:CreateWindow(config)
 				dragInput = nil
 			end
 		end))
+
+		track(UserInputService.WindowFocusReleased:Connect(function()
+			dragInput = nil
+		end))
 	end
 
 	local activeTabName = ""
 	local onTabChangedCb: ((string) -> ())? = nil
+	local activeDropdownClose: (() -> ())? = nil
 	local Window = {}
 
 	-- Drag + click logic for TogglePill
 	do
 		local pillInput: InputObject? = nil
 		local pillDragMoved = false
-		local pillDragStart: Vector3
-		local pillStartPos: UDim2
+		local pillDragStart: Vector3 = Vector3.zero
+		local pillStartX = 14
+		local pillStartY = 100
 
 		track(togglePill.InputBegan:Connect(function(input: InputObject)
 			if not pillInput and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
 				pillInput = input
 				pillDragMoved = false
 				pillDragStart = input.Position
-				pillStartPos = togglePill.Position
+				pillStartX = togglePill.Position.X.Offset
+				pillStartY = togglePill.Position.Y.Offset
 			end
 		end))
 
 		track(UserInputService.InputChanged:Connect(function(input: InputObject)
 			if not pillInput then
+				return
+			end
+			if pillInput.UserInputType == Enum.UserInputType.MouseButton1 and not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+				pillInput = nil
 				return
 			end
 			local isMatch = (pillInput.UserInputType == Enum.UserInputType.Touch and input == pillInput)
@@ -514,16 +634,14 @@ function RayfieldLib:CreateWindow(config)
 				return
 			end
 			local delta = input.Position - pillDragStart
-			if delta.Magnitude > 12 then
+			if delta.Magnitude > 10 then
 				pillDragMoved = true
 			end
 			if pillDragMoved then
-				togglePill.Position = UDim2.new(
-					pillStartPos.X.Scale,
-					pillStartPos.X.Offset + delta.X,
-					pillStartPos.Y.Scale,
-					pillStartPos.Y.Offset + delta.Y
-				)
+				local vp = getViewportSize()
+				local nx = math.clamp(math.round(pillStartX + delta.X), 6, math.max(6, vp.X - 118))
+				local ny = math.clamp(math.round(pillStartY + delta.Y), 6, math.max(6, vp.Y - 44))
+				togglePill.Position = UDim2.fromOffset(nx, ny)
 			end
 		end))
 
@@ -534,6 +652,10 @@ function RayfieldLib:CreateWindow(config)
 			if input == pillInput or (pillInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseButton1) then
 				pillInput = nil
 			end
+		end))
+
+		track(UserInputService.WindowFocusReleased:Connect(function()
+			pillInput = nil
 		end))
 
 		track(togglePill.Activated:Connect(function()
@@ -554,6 +676,39 @@ function RayfieldLib:CreateWindow(config)
 		return isMinimized
 	end
 
+	function Window:IsPinned(): boolean
+		return isPinned
+	end
+
+	function Window:SetPinned(pinned: boolean)
+		if destroyed then
+			return
+		end
+		local nextPin = pinned == true
+		if isPinned == nextPin then
+			return
+		end
+		isPinned = nextPin
+		pinBtn.Text = if isPinned then "Lock" else "Free"
+		tween(pinBtn, TWEEN_FAST, {
+			BackgroundColor3 = if isPinned then THEME.AccentDark else THEME.CardBg,
+			TextColor3 = if isPinned then THEME.Text else THEME.SubText,
+		})
+		if onPinChangedCb then
+			task.spawn(onPinChangedCb, isPinned)
+		end
+	end
+
+	function Window:OnPinChanged(cb: (boolean) -> ())
+		onPinChangedCb = cb
+	end
+
+	function Window:Center()
+		if not destroyed then
+			centerWindow()
+		end
+	end
+
 	function Window:GetActiveTabName(): string
 		return activeTabName
 	end
@@ -569,8 +724,15 @@ function RayfieldLib:CreateWindow(config)
 		isVisible = visible
 		mainFrame.Visible = visible
 		togglePill.Visible = not visible
-		if visible and onTabChangedCb and activeTabName ~= "" then
-			task.defer(onTabChangedCb, activeTabName)
+		if visible then
+			local curPos = mainFrame.Position
+			local x, y = clampPosition(curPos.X.Offset, curPos.Y.Offset)
+			mainFrame.Position = UDim2.fromOffset(x, y)
+			if onTabChangedCb and activeTabName ~= "" then
+				task.defer(onTabChangedCb, activeTabName)
+			end
+		elseif activeDropdownClose then
+			activeDropdownClose()
 		end
 	end
 
@@ -580,8 +742,15 @@ function RayfieldLib:CreateWindow(config)
 		end
 		isMinimized = minimized
 		minimizeBtn.Text = if minimized then "+" else "−"
-		local targetHeight = if minimized then TOPBAR_H else WINDOW_H
-		tween(mainFrame, TWEEN_MED, { Size = UDim2.fromOffset(WINDOW_W, targetHeight) })
+		currentWindowH = if minimized then TOPBAR_H else WINDOW_H
+		bodyFrame.Visible = not minimized
+		if minimized and activeDropdownClose then
+			activeDropdownClose()
+		end
+		local curPos = mainFrame.Position
+		local x, y = clampPosition(curPos.X.Offset, curPos.Y.Offset, currentWindowH)
+		mainFrame.Position = UDim2.fromOffset(x, y)
+		tween(mainFrame, TWEEN_FAST, { Size = UDim2.fromOffset(WINDOW_W, currentWindowH) })
 		if not minimized and onTabChangedCb and activeTabName ~= "" then
 			task.defer(onTabChangedCb, activeTabName)
 		end
@@ -694,6 +863,10 @@ function RayfieldLib:CreateWindow(config)
 		end
 	end
 
+	track(pinBtn.Activated:Connect(function()
+		Window:SetPinned(not isPinned)
+	end))
+
 	track(minimizeBtn.Activated:Connect(function()
 		Window:SetMinimized(not isMinimized)
 	end))
@@ -720,6 +893,9 @@ function RayfieldLib:CreateWindow(config)
 	local tabOrder = 0
 
 	local function selectTab(targetPage: ScrollingFrame)
+		if activeDropdownClose then
+			activeDropdownClose()
+		end
 		for _, item in ipairs(tabs) do
 			local wasVisible = item.page.Visible
 			local active = (item.page == targetPage)
@@ -747,6 +923,7 @@ function RayfieldLib:CreateWindow(config)
 
 		local tabBtn = Instance.new("TextButton")
 		tabBtn.Name = "Tab_" .. tabName
+		tabBtn.Active = true
 		tabBtn.Size = UDim2.new(1, 0, 0, 34)
 		tabBtn.LayoutOrder = tabOrder
 		tabBtn.BackgroundColor3 = THEME.SidebarBg
@@ -756,6 +933,7 @@ function RayfieldLib:CreateWindow(config)
 		tabBtn.TextSize = 13
 		tabBtn.TextColor3 = THEME.SubText
 		tabBtn.TextXAlignment = Enum.TextXAlignment.Left
+		tabBtn.TextTruncate = Enum.TextTruncate.AtEnd
 		tabBtn.AutoButtonColor = false
 		tabBtn.Parent = tabList
 		makeCorner(tabBtn, 7)
@@ -771,6 +949,7 @@ function RayfieldLib:CreateWindow(config)
 
 		local page = Instance.new("ScrollingFrame")
 		page.Name = "Page_" .. tabName
+		page.Active = true
 		page.Size = UDim2.fromScale(1, 1)
 		page.BackgroundTransparency = 1
 		page.BorderSizePixel = 0
@@ -778,14 +957,21 @@ function RayfieldLib:CreateWindow(config)
 		page.ScrollBarImageColor3 = THEME.Stroke
 		page.CanvasSize = UDim2.new()
 		page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+		page.ScrollingEnabled = true
 		page.Visible = false
 		page.Parent = pagesHolder
-		makePadding(page, 12, 14, 12, 14)
+		makePadding(page, 12, 16, 12, 16)
 
 		local pageLayout = Instance.new("UIListLayout")
 		pageLayout.SortOrder = Enum.SortOrder.LayoutOrder
 		pageLayout.Padding = UDim.new(0, 8)
 		pageLayout.Parent = page
+
+		local scrollLockCount = 0
+		local function setScrollLock(locked: boolean)
+			scrollLockCount = math.max(0, scrollLockCount + (if locked then 1 else -1))
+			page.ScrollingEnabled = (scrollLockCount == 0)
+		end
 
 		table.insert(tabs, {
 			name = tabName,
@@ -811,38 +997,71 @@ function RayfieldLib:CreateWindow(config)
 		local Tab = {}
 
 		function Tab:CreateSection(sectionTitle: string)
+			local secRow = Instance.new("Frame")
+			secRow.Size = UDim2.new(1, 0, 0, 24)
+			secRow.LayoutOrder = nextOrder()
+			secRow.BackgroundTransparency = 1
+			secRow.Parent = page
+
 			local label = Instance.new("TextLabel")
-			label.Size = UDim2.new(1, 0, 0, 22)
-			label.LayoutOrder = nextOrder()
+			label.Size = UDim2.new(1, 0, 0, 18)
+			label.Position = UDim2.fromOffset(0, 2)
 			label.BackgroundTransparency = 1
 			label.Font = Enum.Font.GothamBold
 			label.Text = string.upper(sectionTitle)
 			label.TextColor3 = THEME.SubText
 			label.TextSize = 11
 			label.TextXAlignment = Enum.TextXAlignment.Left
-			label.Parent = page
-			return label
+			label.Parent = secRow
+
+			local line = Instance.new("Frame")
+			line.Size = UDim2.new(1, 0, 0, 1)
+			line.Position = UDim2.new(0, 0, 1, -1)
+			line.BackgroundColor3 = THEME.Stroke
+			line.BackgroundTransparency = 0.35
+			line.BorderSizePixel = 0
+			line.Parent = secRow
+			return secRow
 		end
 
-		function Tab:CreateParagraph(paraCfg: { Title: string?, Content: string? })
+		function Tab:CreateParagraph(paraCfg: { Title: string?, Content: string?, FixedHeight: number?, AccentColor: Color3? })
+			local fixedH = paraCfg.FixedHeight
 			local card = Instance.new("Frame")
-			card.Size = UDim2.new(1, 0, 0, 0)
-			card.AutomaticSize = Enum.AutomaticSize.Y
+			if fixedH and fixedH > 0 then
+				card.Size = UDim2.new(1, 0, 0, fixedH)
+				card.AutomaticSize = Enum.AutomaticSize.None
+				card.ClipsDescendants = true
+			else
+				card.Size = UDim2.new(1, 0, 0, 0)
+				card.AutomaticSize = Enum.AutomaticSize.Y
+			end
+			card.Active = true
 			card.LayoutOrder = nextOrder()
 			card.BackgroundColor3 = THEME.CardBg
 			card.BorderSizePixel = 0
 			card.Parent = page
 			makeCorner(card, 8)
 			makeStroke(card, THEME.Stroke, 1, 0.35)
-			makePadding(card, 10, 10, 12, 12)
 
-			local list = Instance.new("UIListLayout")
-			list.SortOrder = Enum.SortOrder.LayoutOrder
-			list.Padding = UDim.new(0, 3)
-			list.Parent = card
+			local strip = Instance.new("Frame")
+			strip.Size = UDim2.new(0, 3, 1, -14)
+			strip.Position = UDim2.fromOffset(8, 7)
+			strip.BackgroundColor3 = paraCfg.AccentColor or THEME.Accent
+			strip.BorderSizePixel = 0
+			strip.Parent = card
+			makeCorner(strip, 2)
+
+			local inner = Instance.new("Frame")
+			inner.Position = UDim2.fromOffset(18, 8)
+			inner.Size = if fixedH and fixedH > 0 then UDim2.new(1, -28, 1, -16) else UDim2.new(1, -28, 0, 0)
+			if not (fixedH and fixedH > 0) then
+				inner.AutomaticSize = Enum.AutomaticSize.Y
+			end
+			inner.BackgroundTransparency = 1
+			inner.Parent = card
 
 			local pTitle = Instance.new("TextLabel")
-			pTitle.LayoutOrder = 1
+			pTitle.Position = UDim2.fromOffset(0, 0)
 			pTitle.Size = UDim2.new(1, 0, 0, 16)
 			pTitle.BackgroundTransparency = 1
 			pTitle.Font = Enum.Font.GothamBold
@@ -850,12 +1069,19 @@ function RayfieldLib:CreateWindow(config)
 			pTitle.TextColor3 = THEME.Text
 			pTitle.TextSize = 13
 			pTitle.TextXAlignment = Enum.TextXAlignment.Left
-			pTitle.Parent = card
+			pTitle.TextTruncate = Enum.TextTruncate.AtEnd
+			pTitle.Parent = inner
 
 			local pBody = Instance.new("TextLabel")
-			pBody.LayoutOrder = 2
-			pBody.Size = UDim2.new(1, 0, 0, 0)
-			pBody.AutomaticSize = Enum.AutomaticSize.Y
+			pBody.Position = UDim2.fromOffset(0, 19)
+			if fixedH and fixedH > 0 then
+				pBody.Size = UDim2.new(1, 0, 1, -19)
+				pBody.AutomaticSize = Enum.AutomaticSize.None
+				pBody.TextTruncate = Enum.TextTruncate.AtEnd
+			else
+				pBody.Size = UDim2.new(1, 0, 0, 0)
+				pBody.AutomaticSize = Enum.AutomaticSize.Y
+			end
 			pBody.BackgroundTransparency = 1
 			pBody.Font = Enum.Font.Gotham
 			pBody.Text = paraCfg.Content or ""
@@ -863,7 +1089,8 @@ function RayfieldLib:CreateWindow(config)
 			pBody.TextSize = 12
 			pBody.TextWrapped = true
 			pBody.TextXAlignment = Enum.TextXAlignment.Left
-			pBody.Parent = card
+			pBody.TextYAlignment = Enum.TextYAlignment.Top
+			pBody.Parent = inner
 
 			local lastTitle = paraCfg.Title or ""
 			local lastContent = paraCfg.Content or ""
@@ -1187,12 +1414,18 @@ function RayfieldLib:CreateWindow(config)
 			track(hitArea.InputBegan:Connect(function(input: InputObject)
 				if not slideInput and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
 					slideInput = input
+					setScrollLock(true)
 					applyFromInputX(input.Position.X)
 				end
 			end))
 
 			track(UserInputService.InputChanged:Connect(function(input: InputObject)
 				if not slideInput then
+					return
+				end
+				if slideInput.UserInputType == Enum.UserInputType.MouseButton1 and not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+					slideInput = nil
+					setScrollLock(false)
 					return
 				end
 				local isMatch = (slideInput.UserInputType == Enum.UserInputType.Touch and input == slideInput)
@@ -1208,6 +1441,14 @@ function RayfieldLib:CreateWindow(config)
 				end
 				if input == slideInput or (slideInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseButton1) then
 					slideInput = nil
+					setScrollLock(false)
+				end
+			end))
+
+			track(UserInputService.WindowFocusReleased:Connect(function()
+				if slideInput then
+					slideInput = nil
+					setScrollLock(false)
 				end
 			end))
 
@@ -1225,6 +1466,8 @@ function RayfieldLib:CreateWindow(config)
 			local open = false
 
 			local wrapper = Instance.new("Frame")
+			wrapper.Active = true
+			wrapper.ClipsDescendants = true
 			wrapper.Size = UDim2.new(1, 0, 0, 0)
 			wrapper.AutomaticSize = Enum.AutomaticSize.Y
 			wrapper.LayoutOrder = nextOrder()
@@ -1283,6 +1526,7 @@ function RayfieldLib:CreateWindow(config)
 			arrowLbl.Parent = headerBtn
 
 			local optionsFrame = Instance.new("Frame")
+			optionsFrame.Active = true
 			optionsFrame.LayoutOrder = 2
 			optionsFrame.Size = UDim2.new(1, 0, 0, 0)
 			optionsFrame.AutomaticSize = Enum.AutomaticSize.Y
@@ -1297,7 +1541,7 @@ function RayfieldLib:CreateWindow(config)
 			optContainerLayout.Parent = optionsFrame
 
 			local searchBox: TextBox? = nil
-			if #options > 8 then
+			if #options > 6 then
 				local sb = Instance.new("TextBox")
 				sb.LayoutOrder = 1
 				sb.Size = UDim2.new(1, 0, 0, 28)
@@ -1305,7 +1549,7 @@ function RayfieldLib:CreateWindow(config)
 				sb.BorderSizePixel = 0
 				sb.ClearTextOnFocus = false
 				sb.Font = Enum.Font.Gotham
-				sb.PlaceholderText = "Search..."
+				sb.PlaceholderText = "Search options..."
 				sb.PlaceholderColor3 = THEME.SubText
 				sb.Text = ""
 				sb.TextColor3 = THEME.Text
@@ -1319,8 +1563,9 @@ function RayfieldLib:CreateWindow(config)
 			end
 
 			local optScroll = Instance.new("ScrollingFrame")
+			optScroll.Active = true
 			optScroll.LayoutOrder = 2
-			optScroll.Size = UDim2.new(1, 0, 0, math.min(math.max(#options, 1) * 32, 160))
+			optScroll.Size = UDim2.new(1, 0, 0, math.min(math.max(#options, 1) * 32, 148))
 			optScroll.BackgroundTransparency = 1
 			optScroll.BorderSizePixel = 0
 			optScroll.ScrollBarThickness = 4
@@ -1366,6 +1611,34 @@ function RayfieldLib:CreateWindow(config)
 				return selected
 			end
 
+			local function setDropdownOpen(shouldOpen: boolean)
+				if open == shouldOpen then
+					return
+				end
+				if shouldOpen and activeDropdownClose then
+					activeDropdownClose()
+				end
+				local prevCanvasY = page.CanvasPosition.Y
+				open = shouldOpen
+				optionsFrame.Visible = open
+				arrowLbl.Text = if open then "▲" else "▼"
+				if open then
+					activeDropdownClose = function()
+						if open then
+							setDropdownOpen(false)
+						end
+					end
+				elseif activeDropdownClose then
+					activeDropdownClose = nil
+				end
+				task.defer(function()
+					if page.Parent then
+						local maxCanvasY = math.max(0, page.AbsoluteCanvasSize.Y - page.AbsoluteSize.Y)
+						page.CanvasPosition = Vector2.new(0, math.clamp(prevCanvasY, 0, maxCanvasY))
+					end
+				end)
+			end
+
 			for i, optName in ipairs(options) do
 				local optBtn = Instance.new("TextButton")
 				optBtn.LayoutOrder = i
@@ -1385,9 +1658,7 @@ function RayfieldLib:CreateWindow(config)
 
 				track(optBtn.Activated:Connect(function()
 					handle:Set(optName, false)
-					open = false
-					optionsFrame.Visible = false
-					arrowLbl.Text = "▼"
+					setDropdownOpen(false)
 				end))
 			end
 
@@ -1403,9 +1674,7 @@ function RayfieldLib:CreateWindow(config)
 			refreshOptionVisuals()
 
 			track(headerBtn.Activated:Connect(function()
-				open = not open
-				optionsFrame.Visible = open
-				arrowLbl.Text = if open then "▲" else "▼"
+				setDropdownOpen(not open)
 			end))
 
 			return handle
@@ -9979,7 +10248,7 @@ local ESP_COLORS: { [string]: Color3 } = {
 
 local Window = Rayfield:CreateWindow({
 	Name = "Rayfield Client Menu",
-	Subtitle = "StarterPlayerScripts • Material, ESP, Research, Craft & Home",
+	Subtitle = "PortalG Utility • Stable Anti-Jump Edition",
 	ToggleKey = Enum.KeyCode.RightShift,
 	DisplayOrder = 500,
 })
@@ -10012,17 +10281,17 @@ Combat:SetNotifyCallback(function(title: string, content: string, color: Color3?
 end)
 
 --====================================================
--- TAB 1: MATERIAL SCANNER & AUTO COLLECT
+-- TAB 1: MATERIAL (LOOT, OFF-WORLD TRAVEL & RADAR)
 --====================================================
 local MaterialTab = Window:CreateTab("Material")
 
-MaterialTab:CreateSection("Scan Status")
 local materialStatus = MaterialTab:CreateParagraph({
 	Title = "Material Radar",
 	Content = Material:GetStatusText(),
+	FixedHeight = 68,
 })
 
-MaterialTab:CreateSection("Filter & Search")
+MaterialTab:CreateSection("Target & Collection")
 
 local matOpts, matMap = Material:GetMaterialOptions()
 if matOpts[1] and matMap[matOpts[1]] then
@@ -10053,6 +10322,108 @@ MaterialTab:CreateDropdown({
 	CurrentOption = "Teleport (Instant Loot)",
 	Callback = function(option: string)
 		Material:SetMoveMode(MOVE_MODES[option] or "Teleport")
+	end,
+})
+
+local tglMatAutoCollect = MaterialTab:CreateToggle({
+	Name = "Auto Loot Material (Teleport / Fast)",
+	Description = "Instantly teleports/moves to matching materials with anti-hang prompt & GroundGuard recovery",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Material:SetAutoCollect(enabled)
+		Window:Notify({
+			Title = "Auto Loot Material",
+			Content = if enabled then "Auto Loot Material ENABLED." else "Auto Loot Material DISABLED.",
+			Duration = 2.5,
+			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
+		})
+	end,
+})
+
+MaterialTab:CreateButton({
+	Name = "Quick Scan Now",
+	Description = "Refresh nearby Material counts and closest node distance",
+	Callback = function()
+		local summary = Material:ScanNow()
+		materialStatus:Set({ Content = Material:GetStatusText() })
+		Window:Notify({
+			Title = "Material Scan",
+			Content = summary,
+			Duration = 3,
+		})
+	end,
+})
+
+MaterialTab:CreateSection("Off-World Travel (Planets & Dimensions)")
+
+local TRAVEL_MODES = {
+	["Smart (Planet Bypass + Portal Gun)"] = "SmartAuto",
+	["Planet Bypass Only (Fastest)"] = "BypassOnly",
+	["Portal Gun (Open & Cross)"] = "PortalGunOnly",
+}
+
+MaterialTab:CreateDropdown({
+	Name = "Off-World Travel Method",
+	Options = { "Smart (Planet Bypass + Portal Gun)", "Planet Bypass Only (Fastest)", "Portal Gun (Open & Cross)" },
+	CurrentOption = "Smart (Planet Bypass + Portal Gun)",
+	Callback = function(option: string)
+		Material:SetTravelMethod(TRAVEL_MODES[option] or "SmartAuto")
+	end,
+})
+
+local tglMatCrossPlanet = MaterialTab:CreateToggle({
+	Name = "Auto Travel Planets / Dimensions",
+	Description = "Uses PlanetTravel bypass or opens Portal Gun when selected material is on another planet/world",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Material:SetAutoCrossPlanet(enabled)
+		Window:Notify({
+			Title = "Off-World Auto Loot",
+			Content = if enabled then "Auto Planet/Portal Travel ENABLED." else "Auto Planet/Portal Travel DISABLED.",
+			Duration = 2.5,
+			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
+		})
+	end,
+})
+
+MaterialTab:CreateButton({
+	Name = "Travel to Selected Material World",
+	Description = "Bypass or open Portal Gun straight to the planet/dimension for the selected material",
+	Callback = function()
+		local ok, msg = Material:TravelToSelectedItemWorld()
+		materialStatus:Set({ Content = Material:GetStatusText() })
+		Window:Notify({
+			Title = "Off-World Travel",
+			Content = msg,
+			Duration = 3,
+			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
+		})
+	end,
+})
+
+MaterialTab:CreateSection("Scanner & Tuning")
+
+local tglMatScanEsp = MaterialTab:CreateToggle({
+	Name = "Material Scanner (ESP)",
+	Description = "Highlight & display distance for ready material nodes",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Material:SetScanEsp(enabled)
+		Window:Notify({
+			Title = "Material Radar",
+			Content = if enabled then "Material Scanner ENABLED." else "Material Scanner DISABLED.",
+			Duration = 2,
+			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
+		})
+	end,
+})
+
+local tglMatBeam = MaterialTab:CreateToggle({
+	Name = "Guide Beam to Nearest Material",
+	Description = "Draw a guide beam to the closest Material or Wild Land biome",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Material:SetShowBeam(enabled)
 	end,
 })
 
@@ -10089,378 +10460,23 @@ MaterialTab:CreateSlider({
 	end,
 })
 
-local tglMatScanEsp = MaterialTab:CreateToggle({
-	Name = "Material Scanner (ESP)",
-	Description = "Highlight & display distance for ready material nodes",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Material:SetScanEsp(enabled)
-		Window:Notify({
-			Title = "Material Radar",
-			Content = if enabled then "Material Scanner ENABLED." else "Material Scanner DISABLED.",
-			Duration = 2,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
-
-local tglMatBeam = MaterialTab:CreateToggle({
-	Name = "Guide Beam to Nearest Material",
-	Description = "Draw a guide beam to the closest Material or Wild Land biome",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Material:SetShowBeam(enabled)
-	end,
-})
-
-local TRAVEL_MODES = {
-	["Smart (Planet Bypass + Portal Gun)"] = "SmartAuto",
-	["Planet Bypass Only (Fastest)"] = "BypassOnly",
-	["Portal Gun (Open & Cross)"] = "PortalGunOnly",
-}
-
-MaterialTab:CreateDropdown({
-	Name = "Off-World Travel Method",
-	Options = { "Smart (Planet Bypass + Portal Gun)", "Planet Bypass Only (Fastest)", "Portal Gun (Open & Cross)" },
-	CurrentOption = "Smart (Planet Bypass + Portal Gun)",
-	Callback = function(option: string)
-		Material:SetTravelMethod(TRAVEL_MODES[option] or "SmartAuto")
-	end,
-})
-
-local tglMatCrossPlanet = MaterialTab:CreateToggle({
-	Name = "Auto Travel Planets / Dimensions",
-	Description = "Uses PlanetTravel bypass or opens Portal Gun when selected material is on another planet/world",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Material:SetAutoCrossPlanet(enabled)
-		Window:Notify({
-			Title = "Off-World Auto Loot",
-			Content = if enabled then "Auto Planet/Portal Travel ENABLED." else "Auto Planet/Portal Travel DISABLED.",
-			Duration = 2.5,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
-
-local tglMatAutoCollect = MaterialTab:CreateToggle({
-	Name = "Auto Loot Material (Teleport / Fast)",
-	Description = "Instantly teleports/moves to matching materials with anti-hang prompt & GroundGuard recovery",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Material:SetAutoCollect(enabled)
-		Window:Notify({
-			Title = "Auto Loot Material",
-			Content = if enabled then "Auto Loot Material ENABLED." else "Auto Loot Material DISABLED.",
-			Duration = 2.5,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
-
-MaterialTab:CreateButton({
-	Name = "Travel to Selected Material World",
-	Description = "Bypass or open Portal Gun straight to the planet/dimension for the selected material",
-	Callback = function()
-		local ok, msg = Material:TravelToSelectedItemWorld()
-		materialStatus:Set({ Content = Material:GetStatusText() })
-		Window:Notify({
-			Title = "Off-World Travel",
-			Content = msg,
-			Duration = 3,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
-		})
-	end,
-})
-
-MaterialTab:CreateButton({
-	Name = "Quick Scan Now",
-	Description = "Refresh nearby Material counts and closest node distance",
-	Callback = function()
-		local summary = Material:ScanNow()
-		materialStatus:Set({ Content = Material:GetStatusText() })
-		Window:Notify({
-			Title = "Material Scan",
-			Content = summary,
-			Duration = 3,
-		})
-	end,
-})
-
---====================================================
--- TAB 2: ESP
---====================================================
-local EspTab = Window:CreateTab("ESP")
-
-EspTab:CreateSection("Main Controls")
-
-local tglEspHighlight: any
-local tglEspNameDist: any
-local tglEspHealth: any
-local tglEspTeamCheck: any
-
-local tglEspMaster = EspTab:CreateToggle({
-	Name = "Enable Player ESP",
-	Description = "Show player locations, names, distances, and health bars",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Esp:SetEnabled(enabled)
-		local msg = if enabled then "Player ESP ENABLED." else "Player ESP DISABLED."
-		if enabled and not (tglEspHighlight:Get() or tglEspNameDist:Get() or tglEspHealth:Get()) then
-			msg = "Player ESP ENABLED. Turn on Highlight / Name / Health below."
-		end
-		Window:Notify({
-			Title = "ESP",
-			Content = msg,
-			Duration = 2.5,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
-
-EspTab:CreateSection("Visual Elements")
-
-tglEspHighlight = EspTab:CreateToggle({
-	Name = "Highlight (Through Walls)",
-	Description = "Add a glowing outline around characters (AlwaysOnTop)",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Esp:SetShowHighlight(enabled)
-	end,
-})
-
-tglEspNameDist = EspTab:CreateToggle({
-	Name = "Show Name & Distance",
-	Description = "Display DisplayName and distance (m) overhead",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Esp:SetShowNameDistance(enabled)
-	end,
-})
-
-tglEspHealth = EspTab:CreateToggle({
-	Name = "Show Health Bar (HP)",
-	Description = "Display color-coded HP bar based on current health",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Esp:SetShowHealth(enabled)
-	end,
-})
-
-tglEspTeamCheck = EspTab:CreateToggle({
-	Name = "Team Check (Hide Teammates)",
-	Description = "Do not render ESP on players on your team",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Esp:SetTeamCheck(enabled)
-	end,
-})
-
-EspTab:CreateSection("ESP Settings")
-
-EspTab:CreateDropdown({
-	Name = "Default ESP Color",
-	Options = { "Cyan", "Green", "Red", "Yellow", "Purple", "White" },
-	CurrentOption = "Cyan",
-	Callback = function(option: string)
-		local picked = ESP_COLORS[option]
-		if picked then
-			Esp:SetColor(picked)
-		end
-	end,
-})
-
-EspTab:CreateSlider({
-	Name = "Max Distance",
-	Range = { 100, 5000 },
-	Increment = 100,
-	Suffix = "m",
-	CurrentValue = 2000,
-	Callback = function(value: number)
-		Esp:SetMaxDistance(value)
-	end,
-})
-
---====================================================
--- TAB 3: AUTO RESEARCH
---====================================================
-local ResearchTab = Window:CreateTab("Research")
-
-ResearchTab:CreateSection("Research Status")
-local researchStatus = ResearchTab:CreateParagraph({
-	Title = "Lab Progress",
-	Content = Automation:GetResearchStatusText(),
-})
-
-ResearchTab:CreateSection("Auto Research")
-
-local tglAutoResearch = ResearchTab:CreateToggle({
-	Name = "Enable Auto Research",
-	Description = "Solves all 3 research minigames quickly without auto-canceling",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Automation:SetAutoResearch(enabled)
-		Window:Notify({
-			Title = "Auto Research",
-			Content = if enabled then "Auto Research ENABLED (auto-solving 3 minigames)." else "Auto Research DISABLED.",
-			Duration = 2.5,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
-
-ResearchTab:CreateSlider({
-	Name = "3-Step Completion Time",
-	Range = { 0, 20 },
-	Increment = 0.5,
-	Suffix = "s",
-	CurrentValue = 10.5,
-	Callback = function(value: number)
-		Automation:SetResearchConfirmDelay(value)
-	end,
-})
-
---====================================================
--- TAB 4: FAST CRAFT
---====================================================
-local CraftTab = Window:CreateTab("Craft")
-
-CraftTab:CreateSection("Recipe Status")
-local craftStatus = CraftTab:CreateParagraph({
-	Title = "Craft Info",
-	Content = Automation:GetCraftStatusText(),
-})
-
-CraftTab:CreateSection("Item & Config")
-
-local recipeOpts, recipeMap = Automation:GetRecipeOptions()
-if recipeOpts[1] and recipeMap[recipeOpts[1]] then
-	Automation:SetSelectedRecipe(recipeMap[recipeOpts[1]])
-end
-
-CraftTab:CreateDropdown({
-	Name = "Select Item / Recipe",
-	Options = recipeOpts,
-	CurrentOption = recipeOpts[1],
-	Callback = function(option: string)
-		local rId = recipeMap[option] or ""
-		Automation:SetSelectedRecipe(rId)
-		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
-	end,
-})
-
-CraftTab:CreateSlider({
-	Name = "Craft Quantity",
-	Range = { 1, 50 },
-	Increment = 1,
-	Suffix = "x",
-	CurrentValue = 1,
-	Callback = function(value: number)
-		Automation:SetCraftQuantity(value)
-	end,
-})
-
-local tglFastAssemble = CraftTab:CreateToggle({
-	Name = "Fast Assemble (Auto-Finish / Bypass)",
-	Description = "Uses paced CraftFinish & auto-solves Workbench minigame",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Automation:SetFastAssemble(enabled)
-	end,
-})
-
-CraftTab:CreateSlider({
-	Name = "Fast Assemble Delay",
-	Range = { 0, 15 },
-	Increment = 0.5,
-	Suffix = "s",
-	CurrentValue = 3.5,
-	Callback = function(value: number)
-		Automation:SetAssembleDelay(value)
-	end,
-})
-
-CraftTab:CreateSection("Execution")
-
-local tglAutoCraft = CraftTab:CreateToggle({
-	Name = "Enable Auto Craft Loop",
-	Description = "Continuously craft the selected item while near a Workbench",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Automation:SetAutoCraft(enabled)
-		Window:Notify({
-			Title = "Auto Craft",
-			Content = if enabled then "Auto Craft ENABLED." else "Auto Craft DISABLED.",
-			Duration = 2.5,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
-
-local function triggerQuickStation(stationKey: string)
-	local ok, msg, openedFullUi = Material:QuickInteract(stationKey)
-	if ok and openedFullUi then
-		Window:SetVisible(false)
-		Window:Notify({
-			Title = "Quick Interact",
-			Content = msg .. " (Tap 'RF Menu' to reopen menu)",
-			Duration = 3,
-			Color = Color3.fromRGB(52, 211, 153),
-		})
-	elseif not ok then
-		Window:Notify({
-			Title = "Quick Interact",
-			Content = msg,
-			Duration = 3,
-			Color = Color3.fromRGB(248, 113, 113),
-		})
-	end
-end
-
-CraftTab:CreateButton({
-	Name = "Quick Open Rick's Workbench",
-	Description = "Move to your Garage Workbench & open it immediately in 1 click",
-	Callback = function()
-		triggerQuickStation("workbench")
-		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
-	end,
-})
-
-CraftTab:CreateButton({
-	Name = "Quick Craft Now",
-	Description = "Craft the selected recipe immediately with current quantity & settings",
-	Callback = function()
-		local ok, msg = Automation:CraftOnce(nil)
-		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
-		Window:Notify({
-			Title = "Quick Craft",
-			Content = msg,
-			Duration = 2.5,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
-
 Material:SetBeforeTeleportCallback(function()
 	tglMatAutoCollect:Set(false, true)
 end)
 
 --====================================================
--- TAB 5: COMBAT & GUARDIAN
+-- TAB 2: COMBAT & GUARDIAN
 --====================================================
 local CombatTab = Window:CreateTab("Combat")
 
-CombatTab:CreateSection("Character & Mob Radar")
 local combatStatus = CombatTab:CreateParagraph({
 	Title = "Guardian & Combat Status",
 	Content = Combat:GetCombatStatusText(),
+	FixedHeight = 68,
+	AccentColor = Color3.fromRGB(52, 211, 153),
 })
 
-CombatTab:CreateSection("Character Guardian (Survival & Anti-Void)")
-CombatTab:CreateParagraph({
-	Title = "Server-Authoritative Protection Note",
-	Content = "HP/Damage is validated by the game server: Guardian protects you using instant Anti-Void snapback, Fall Softener, Lava lift, Auto-Regen, Auto-Healing/Armor items, and Emergency Force-Home.",
-})
+CombatTab:CreateSection("Survival Guardian (Anti-Void & Heal)")
 
 local tglAntiVoid = CombatTab:CreateToggle({
 	Name = "Anti-Void & Fall Guard",
@@ -10515,8 +10531,8 @@ CombatTab:CreateSlider({
 })
 
 CombatTab:CreateButton({
-	Name = "Enable All Unlocked Game Protections",
-	Description = "Activates all suits & implants you unlocked via ProtectionToggle",
+	Name = "Enable All Unlocked Protections",
+	Description = "Activates unlocked suits & implants via ProtectionToggle",
 	Callback = function()
 		local ok, msg = Combat:EnableAllGameProtections()
 		Window:Notify({
@@ -10528,7 +10544,7 @@ CombatTab:CreateButton({
 	end,
 })
 
-CombatTab:CreateSection("Auto Farm & Auto Aim (Mobs)")
+CombatTab:CreateSection("Auto Aim & Farm Mobs")
 
 local enemyOpts, enemyMap = Combat:GetEnemyFilterOptions()
 CombatTab:CreateDropdown({
@@ -10543,10 +10559,20 @@ CombatTab:CreateDropdown({
 
 local tglAutoAim = CombatTab:CreateToggle({
 	Name = "Auto Aim (Lock On Mobs)",
-	Description = "Locks aim straight onto nearest mob (PG_AimLock + Camera + Facing) for guns & powers",
+	Description = "Locks aim straight onto nearest mob (PG_AimLock + Camera + Facing)",
 	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		Combat:SetAutoAim(enabled)
+		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+	end,
+})
+
+local tglAutoHunt = CombatTab:CreateToggle({
+	Name = "Auto Farm Mobs (Smart Tele/Fly + LOS)",
+	Description = "Finds clear line-of-sight around/inside buildings & skips solid-trapped mobs",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Combat:SetAutoHunt(enabled)
 		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
 	end,
 })
@@ -10562,16 +10588,6 @@ CombatTab:CreateSlider({
 	end,
 })
 
-local tglAutoHunt = CombatTab:CreateToggle({
-	Name = "Auto Farm Mobs (Smart Tele/Fly + LOS)",
-	Description = "Finds clear line-of-sight around/inside buildings, teleports/flies past walls & skips solid-trapped mobs",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Combat:SetAutoHunt(enabled)
-		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
-	end,
-})
-
 CombatTab:CreateSlider({
 	Name = "Farm Shooting Distance",
 	Range = { 6, 45 },
@@ -10583,31 +10599,23 @@ CombatTab:CreateSlider({
 	end,
 })
 
-local tglMobEsp = CombatTab:CreateToggle({
-	Name = "Mob ESP Highlights",
-	Description = "Highlight hostile mobs with live HP & distance",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Combat:SetMobEsp(enabled)
-	end,
-})
-
 --====================================================
--- TAB 6: AUTO MISSION
+-- TAB 3: AUTO MISSION
 --====================================================
 local MissionTab = Window:CreateTab("Mission")
 
-MissionTab:CreateSection("Active Mission Tracker")
 local missionStatus = MissionTab:CreateParagraph({
-	Title = "Current Story / Bonus Mission",
+	Title = "Active Mission Tracker",
 	Content = Combat:GetMissionStatusText(),
+	FixedHeight = 76,
+	AccentColor = Color3.fromRGB(250, 204, 21),
 })
 
 MissionTab:CreateSection("Mission Automation (Void & Space Safe)")
 
 local tglAutoMission = MissionTab:CreateToggle({
 	Name = "Enable Auto Mission",
-	Description = "Follows active Mission (Harvest / Kill / Craft / Research / Job) strictly inside safe dimension bounds",
+	Description = "Follows active Mission strictly inside safe dimension bounds",
 	CurrentValue = false,
 	Callback = function(enabled: boolean)
 		Combat:SetAutoMission(enabled)
@@ -10646,28 +10654,309 @@ MissionTab:CreateButton({
 })
 
 --====================================================
--- TAB 7: HOME / TELEPORT
+-- TAB 4: LAB & CRAFT (RESEARCH + WORKBENCH)
+--====================================================
+local LabCraftTab = Window:CreateTab("Lab & Craft")
+
+LabCraftTab:CreateSection("Research Lab")
+local researchStatus = LabCraftTab:CreateParagraph({
+	Title = "Lab Progress",
+	Content = Automation:GetResearchStatusText(),
+	FixedHeight = 64,
+	AccentColor = Color3.fromRGB(192, 132, 252),
+})
+
+local tglAutoResearch = LabCraftTab:CreateToggle({
+	Name = "Enable Auto Research",
+	Description = "Solves all 3 research minigames quickly without auto-canceling",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Automation:SetAutoResearch(enabled)
+		Window:Notify({
+			Title = "Auto Research",
+			Content = if enabled then "Auto Research ENABLED (auto-solving 3 minigames)." else "Auto Research DISABLED.",
+			Duration = 2.5,
+			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
+		})
+	end,
+})
+
+LabCraftTab:CreateSlider({
+	Name = "3-Step Completion Time",
+	Range = { 0, 20 },
+	Increment = 0.5,
+	Suffix = "s",
+	CurrentValue = 10.5,
+	Callback = function(value: number)
+		Automation:SetResearchConfirmDelay(value)
+	end,
+})
+
+LabCraftTab:CreateSection("Workbench & Fast Craft")
+local craftStatus = LabCraftTab:CreateParagraph({
+	Title = "Craft Info",
+	Content = Automation:GetCraftStatusText(),
+	FixedHeight = 64,
+})
+
+local recipeOpts, recipeMap = Automation:GetRecipeOptions()
+if recipeOpts[1] and recipeMap[recipeOpts[1]] then
+	Automation:SetSelectedRecipe(recipeMap[recipeOpts[1]])
+end
+
+LabCraftTab:CreateDropdown({
+	Name = "Select Item / Recipe",
+	Options = recipeOpts,
+	CurrentOption = recipeOpts[1],
+	Callback = function(option: string)
+		local rId = recipeMap[option] or ""
+		Automation:SetSelectedRecipe(rId)
+		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
+	end,
+})
+
+LabCraftTab:CreateSlider({
+	Name = "Craft Quantity",
+	Range = { 1, 50 },
+	Increment = 1,
+	Suffix = "x",
+	CurrentValue = 1,
+	Callback = function(value: number)
+		Automation:SetCraftQuantity(value)
+	end,
+})
+
+local tglFastAssemble = LabCraftTab:CreateToggle({
+	Name = "Fast Assemble (Auto-Finish / Bypass)",
+	Description = "Uses paced CraftFinish & auto-solves Workbench minigame",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Automation:SetFastAssemble(enabled)
+	end,
+})
+
+LabCraftTab:CreateSlider({
+	Name = "Fast Assemble Delay",
+	Range = { 0, 15 },
+	Increment = 0.5,
+	Suffix = "s",
+	CurrentValue = 3.5,
+	Callback = function(value: number)
+		Automation:SetAssembleDelay(value)
+	end,
+})
+
+local tglAutoCraft = LabCraftTab:CreateToggle({
+	Name = "Enable Auto Craft Loop",
+	Description = "Continuously craft the selected item while near a Workbench",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Automation:SetAutoCraft(enabled)
+		Window:Notify({
+			Title = "Auto Craft",
+			Content = if enabled then "Auto Craft ENABLED." else "Auto Craft DISABLED.",
+			Duration = 2.5,
+			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
+		})
+	end,
+})
+
+local function triggerQuickStation(stationKey: string)
+	local ok, msg, openedFullUi = Material:QuickInteract(stationKey)
+	if ok and openedFullUi then
+		Window:SetVisible(false)
+		Window:Notify({
+			Title = "Quick Interact",
+			Content = msg .. " (Tap 'RF Menu' to reopen menu)",
+			Duration = 3,
+			Color = Color3.fromRGB(52, 211, 153),
+		})
+	elseif not ok then
+		Window:Notify({
+			Title = "Quick Interact",
+			Content = msg,
+			Duration = 3,
+			Color = Color3.fromRGB(248, 113, 113),
+		})
+	end
+end
+
+LabCraftTab:CreateButton({
+	Name = "Quick Craft Now",
+	Description = "Craft the selected recipe immediately with current quantity & settings",
+	Callback = function()
+		local ok, msg = Automation:CraftOnce(nil)
+		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
+		Window:Notify({
+			Title = "Quick Craft",
+			Content = msg,
+			Duration = 2.5,
+			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
+		})
+	end,
+})
+
+LabCraftTab:CreateButton({
+	Name = "Quick Open Rick's Workbench",
+	Description = "Move to your Garage Workbench & open it immediately in 1 click",
+	Callback = function()
+		triggerQuickStation("workbench")
+		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
+	end,
+})
+
+--====================================================
+-- TAB 5: ESP & VISUALS
+--====================================================
+local EspTab = Window:CreateTab("ESP")
+
+EspTab:CreateSection("Player ESP")
+
+local tglEspHighlight: any
+local tglEspNameDist: any
+local tglEspHealth: any
+local tglEspTeamCheck: any
+
+local tglEspMaster = EspTab:CreateToggle({
+	Name = "Enable Player ESP",
+	Description = "Show player locations, names, distances, and health bars",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Esp:SetEnabled(enabled)
+		local msg = if enabled then "Player ESP ENABLED." else "Player ESP DISABLED."
+		if enabled and not (tglEspHighlight:Get() or tglEspNameDist:Get() or tglEspHealth:Get()) then
+			msg = "Player ESP ENABLED. Turn on Highlight / Name / Health below."
+		end
+		Window:Notify({
+			Title = "ESP",
+			Content = msg,
+			Duration = 2.5,
+			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
+		})
+	end,
+})
+
+tglEspHighlight = EspTab:CreateToggle({
+	Name = "Highlight (Through Walls)",
+	Description = "Add a glowing outline around characters (AlwaysOnTop)",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Esp:SetShowHighlight(enabled)
+	end,
+})
+
+tglEspNameDist = EspTab:CreateToggle({
+	Name = "Show Name & Distance",
+	Description = "Display DisplayName and distance (m) overhead",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Esp:SetShowNameDistance(enabled)
+	end,
+})
+
+tglEspHealth = EspTab:CreateToggle({
+	Name = "Show Health Bar (HP)",
+	Description = "Display color-coded HP bar based on current health",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Esp:SetShowHealth(enabled)
+	end,
+})
+
+tglEspTeamCheck = EspTab:CreateToggle({
+	Name = "Team Check (Hide Teammates)",
+	Description = "Do not render ESP on players on your team",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Esp:SetTeamCheck(enabled)
+	end,
+})
+
+EspTab:CreateSection("Appearance & Distance")
+
+EspTab:CreateDropdown({
+	Name = "Default ESP Color",
+	Options = { "Cyan", "Green", "Red", "Yellow", "Purple", "White" },
+	CurrentOption = "Cyan",
+	Callback = function(option: string)
+		local picked = ESP_COLORS[option]
+		if picked then
+			Esp:SetColor(picked)
+		end
+	end,
+})
+
+EspTab:CreateSlider({
+	Name = "Max Distance",
+	Range = { 100, 5000 },
+	Increment = 100,
+	Suffix = "m",
+	CurrentValue = 2000,
+	Callback = function(value: number)
+		Esp:SetMaxDistance(value)
+	end,
+})
+
+EspTab:CreateSection("Mob ESP")
+
+local tglMobEsp = EspTab:CreateToggle({
+	Name = "Mob ESP Highlights",
+	Description = "Highlight hostile mobs with live HP & distance",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Combat:SetMobEsp(enabled)
+	end,
+})
+
+--====================================================
+-- TAB 6: HOME & QUICK STATIONS
 --====================================================
 local HomeTab = Window:CreateTab("Home")
 
-HomeTab:CreateSection("Home & Garage")
 local homeStatus = HomeTab:CreateParagraph({
 	Title = "Garage Location",
 	Content = Material:GetHomeStatusText(),
+	FixedHeight = 64,
 })
 
-HomeTab:CreateSection("Instant Force-Send Home (Hotkey: Home)")
+HomeTab:CreateSection("Instant Return Home (Hotkey: Home)")
 
 HomeTab:CreateButton({
 	Name = "FORCE HOME NOW (Instant Garage)",
-	Description = "Force-ejects seats/ragdoll & snaps immediately onto Garage floor without waiting (Void-proof)",
+	Description = "Force-ejects seats/ragdoll & snaps immediately onto Garage floor (Void-proof)",
 	Callback = function()
 		Material:ForceSendHomeNow()
 		homeStatus:Set({ Content = Material:GetHomeStatusText() })
 	end,
 })
 
-HomeTab:CreateSection("Quick Interact (1-Click Open)")
+HomeTab:CreateButton({
+	Name = "Server Go Home (GoHome)",
+	Description = "Trigger PortalG's official GoHome return sequence",
+	Callback = function()
+		Material:TeleportToHome(true)
+		homeStatus:Set({ Content = Material:GetHomeStatusText() })
+	end,
+})
+
+HomeTab:CreateButton({
+	Name = "Return to Last Location",
+	Description = "Return to where you were before using Quick Interact",
+	Callback = function()
+		local ok, msg = Material:ReturnToSavedSpot()
+		homeStatus:Set({ Content = Material:GetHomeStatusText() })
+		if not ok then
+			Window:Notify({
+				Title = "Return",
+				Content = msg,
+				Duration = 2.5,
+				Color = Color3.fromRGB(251, 191, 36),
+			})
+		end
+	end,
+})
+
+HomeTab:CreateSection("Quick Interact Stations (From Anywhere)")
 
 HomeTab:CreateButton({
 	Name = "Open Rick's Workbench",
@@ -10705,52 +10994,42 @@ HomeTab:CreateButton({
 	end,
 })
 
-HomeTab:CreateSection("Teleport Actions")
-
-HomeTab:CreateButton({
-	Name = "Teleport to Home (Garage)",
-	Description = "Teleport onto a clear spot on your Garage floor (uses GoHome across dimensions)",
-	Callback = function()
-		Material:TeleportToHome(false)
-		homeStatus:Set({ Content = Material:GetHomeStatusText() })
-	end,
-})
-
-HomeTab:CreateButton({
-	Name = "Return to Last Location",
-	Description = "Return to where you were before using Quick Interact",
-	Callback = function()
-		local ok, msg = Material:ReturnToSavedSpot()
-		homeStatus:Set({ Content = Material:GetHomeStatusText() })
-		if not ok then
-			Window:Notify({
-				Title = "Return",
-				Content = msg,
-				Duration = 2.5,
-				Color = Color3.fromRGB(251, 191, 36),
-			})
-		end
-	end,
-})
-
-HomeTab:CreateButton({
-	Name = "Server Go Home (GoHome)",
-	Description = "Trigger PortalG's official GoHome return sequence",
-	Callback = function()
-		Material:TeleportToHome(true)
-		homeStatus:Set({ Content = Material:GetHomeStatusText() })
-	end,
-})
-
 --====================================================
--- TAB 6: SETTINGS
+-- TAB 7: SETTINGS & INTERFACE
 --====================================================
 local SettingsTab = Window:CreateTab("Settings")
 
-SettingsTab:CreateSection("Quick Guide")
+SettingsTab:CreateSection("Interface & Stability")
 SettingsTab:CreateParagraph({
-	Title = "Controls & Keybinds",
-	Content = "• Press RightShift to toggle the menu.\n• Drag the top bar freely anywhere on screen.\n• When hidden, tap 'RF Menu' on the left to reopen (Mobile supported).",
+	Title = "Controls & Stability",
+	Content = "• Press RightShift to toggle menu or tap 'RF Menu' when hidden.\n• Use Lock (top bar) to pin window in place cleanly.\n• Press Home anytime to Force-Send Home.",
+	FixedHeight = 76,
+})
+
+local tglLockWindow = SettingsTab:CreateToggle({
+	Name = "Lock Menu Position (Anti-Drag)",
+	Description = "Freezes window at current position so dragging cannot accidentally move it",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Window:SetPinned(enabled)
+	end,
+})
+
+Window:OnPinChanged(function(pinned: boolean)
+	tglLockWindow:Set(pinned, true)
+end)
+
+SettingsTab:CreateButton({
+	Name = "Center Menu on Screen",
+	Description = "Snaps the menu cleanly back to the center of your viewport",
+	Callback = function()
+		Window:Center()
+		Window:Notify({
+			Title = "Menu Centered",
+			Content = "Menu position centered inside viewport.",
+			Duration = 2,
+		})
+	end,
 })
 
 SettingsTab:CreateSection("Performance & Weak Device")
@@ -10873,13 +11152,15 @@ SettingsTab:CreateSection("Reset & Cleanup")
 
 SettingsTab:CreateButton({
 	Name = "Disable All & Reset",
-	Description = "Turn off Material, ESP, Auto Research, and Auto Craft",
+	Description = "Turn off Material, ESP, Auto Research, Craft, Combat & Mission",
 	Callback = function()
 		Material:SetScanEsp(false)
 		Material:SetShowBeam(false)
+		Material:SetAutoCrossPlanet(false)
 		Material:SetAutoCollect(false)
 		tglMatScanEsp:Set(false, true)
 		tglMatBeam:Set(false, true)
+		tglMatCrossPlanet:Set(false, true)
 		tglMatAutoCollect:Set(false, true)
 
 		Esp:SetEnabled(false)
@@ -10936,14 +11217,13 @@ local function refreshActiveTabStatus(tabName: string)
 	end
 	if tabName == "Material" then
 		materialStatus:Set({ Content = Material:GetStatusText() })
-	elseif tabName == "Research" then
-		researchStatus:Set({ Content = Automation:GetResearchStatusText() })
-	elseif tabName == "Craft" then
-		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
 	elseif tabName == "Combat" then
 		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
 	elseif tabName == "Mission" then
 		missionStatus:Set({ Content = Combat:GetMissionStatusText() })
+	elseif tabName == "Lab & Craft" then
+		researchStatus:Set({ Content = Automation:GetResearchStatusText() })
+		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
 	elseif tabName == "Home" then
 		homeStatus:Set({ Content = Material:GetHomeStatusText() })
 	end
