@@ -1,4 +1,4 @@
--- RayfieldMenu DeltaX Single-File Build
+--[[ RayfieldMenu DeltaX Single-File Bundle (Auto-Generated) ]]
 
 local __mod_RayfieldLib = (function()
 --[[
@@ -600,6 +600,121 @@ function RayfieldLib:CreateWindow(config)
 	local activeTabName = ""
 	local onTabChangedCb: ((string) -> ())? = nil
 	local activeDropdownClose: (() -> ())? = nil
+	local scrollMovedAt: { [ScrollingFrame]: number } = {}
+	local trackedScrollers: { [ScrollingFrame]: boolean } = {}
+
+	local function watchScroller(sf: ScrollingFrame?)
+		if not sf or trackedScrollers[sf] then
+			return
+		end
+		trackedScrollers[sf] = true
+		local lastPos = sf.CanvasPosition
+		track(sf:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+			local curPos = sf.CanvasPosition
+			if math.abs(curPos.Y - lastPos.Y) >= 2 or math.abs(curPos.X - lastPos.X) >= 2 then
+				scrollMovedAt[sf] = os.clock()
+			end
+			lastPos = curPos
+		end))
+	end
+
+	-- Tap vs Scroll Guard: blocks accidental clicks/selections while swiping or scrolling through menus
+	local function bindScrollSafeTap(btn: GuiButton, scrollers: { ScrollingFrame }?, onTap: () -> ())
+		if scrollers then
+			for _, sf in ipairs(scrollers) do
+				watchScroller(sf)
+			end
+		end
+
+		local pressInput: InputObject? = nil
+		local pressStart = Vector3.zero
+		local pressMoved = false
+		local blockedUntil = 0
+		local lastFiredAt = 0
+		local snapY: { [ScrollingFrame]: number } = {}
+
+		local function snapshotCanvas()
+			if not scrollers then
+				return
+			end
+			for _, sf in ipairs(scrollers) do
+				snapY[sf] = sf.CanvasPosition.Y
+			end
+		end
+
+		local function didAnyScrollerMove(): boolean
+			if not scrollers then
+				return false
+			end
+			local now = os.clock()
+			for _, sf in ipairs(scrollers) do
+				if now - (scrollMovedAt[sf] or 0) < 0.18 then
+					return true
+				end
+				local prevY = snapY[sf]
+				if prevY ~= nil and math.abs(sf.CanvasPosition.Y - prevY) > 4 then
+					return true
+				end
+			end
+			return false
+		end
+
+		track(btn.InputBegan:Connect(function(input: InputObject)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+				pressInput = input
+				pressStart = input.Position
+				pressMoved = false
+				snapshotCanvas()
+			end
+		end))
+
+		track(UserInputService.InputChanged:Connect(function(input: InputObject)
+			if not pressInput then
+				return
+			end
+			if pressInput.UserInputType == Enum.UserInputType.MouseButton1 and not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+				pressInput = nil
+				return
+			end
+			local isMatch = (pressInput.UserInputType == Enum.UserInputType.Touch and input == pressInput)
+				or (pressInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseMovement)
+			if not isMatch then
+				return
+			end
+			if (input.Position - pressStart).Magnitude > 8 or didAnyScrollerMove() then
+				pressMoved = true
+				blockedUntil = os.clock() + 0.24
+			end
+		end))
+
+		track(UserInputService.InputEnded:Connect(function(input: InputObject)
+			if not pressInput then
+				return
+			end
+			if input == pressInput or (pressInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseButton1) then
+				if (input.Position - pressStart).Magnitude > 8 or didAnyScrollerMove() then
+					pressMoved = true
+					blockedUntil = os.clock() + 0.24
+				end
+				pressInput = nil
+			end
+		end))
+
+		track(btn.Activated:Connect(function()
+			local now = os.clock()
+			if pressMoved or now < blockedUntil or didAnyScrollerMove() then
+				pressMoved = false
+				return
+			end
+			if now - lastFiredAt < 0.06 then
+				return
+			end
+			lastFiredAt = now
+			onTap()
+		end))
+	end
+
+	watchScroller(tabList)
 	local Window = {}
 
 	-- Drag + click logic for TogglePill
@@ -980,9 +1095,9 @@ function RayfieldLib:CreateWindow(config)
 			page = page,
 		})
 
-		track(tabBtn.Activated:Connect(function()
+		bindScrollSafeTap(tabBtn, { tabList }, function()
 			selectTab(page)
-		end))
+		end)
 
 		if #tabs == 1 then
 			selectTab(page)
@@ -1168,7 +1283,7 @@ function RayfieldLib:CreateWindow(config)
 					tween(btn, TWEEN_FAST, { BackgroundColor3 = THEME.CardBg })
 				end))
 			end
-			track(btn.Activated:Connect(function()
+			bindScrollSafeTap(btn, { page }, function()
 				tween(badge, TWEEN_FAST, { BackgroundColor3 = THEME.Accent, TextColor3 = THEME.WindowBg })
 				task.delay(0.15, function()
 					if badge.Parent then
@@ -1178,7 +1293,7 @@ function RayfieldLib:CreateWindow(config)
 				if btnCfg.Callback then
 					task.spawn(btnCfg.Callback)
 				end
-			end))
+			end)
 
 			return btn
 		end
@@ -1281,9 +1396,9 @@ function RayfieldLib:CreateWindow(config)
 					tween(card, TWEEN_FAST, { BackgroundColor3 = THEME.CardBg })
 				end))
 			end
-			track(card.Activated:Connect(function()
+			bindScrollSafeTap(card, { page }, function()
 				handle:Set(not value, false)
-			end))
+			end)
 
 			return handle
 		end
@@ -1656,10 +1771,10 @@ function RayfieldLib:CreateWindow(config)
 
 				optButtons[optName] = optBtn
 
-				track(optBtn.Activated:Connect(function()
+				bindScrollSafeTap(optBtn, { optScroll, page }, function()
 					handle:Set(optName, false)
 					setDropdownOpen(false)
-				end))
+				end)
 			end
 
 			if searchBox then
@@ -1673,9 +1788,9 @@ function RayfieldLib:CreateWindow(config)
 
 			refreshOptionVisuals()
 
-			track(headerBtn.Activated:Connect(function()
+			bindScrollSafeTap(headerBtn, { page }, function()
 				setDropdownOpen(not open)
-			end))
+			end)
 
 			return handle
 		end
@@ -2079,7 +2194,9 @@ local function updateAllEntries()
 					entry.lastColor = color
 					entry.nameLabel.TextColor3 = color
 				end
-				local nextText = ("%s [%dm]"):format(entry.player.DisplayName, math.round(dist))
+				local tool = char:FindFirstChildOfClass("Tool")
+				local toolSuffix = if tool then (" [" .. tool.Name .. "]") else ""
+				local nextText = ("%s%s [%dm]"):format(entry.player.DisplayName, toolSuffix, math.round(dist))
 				if entry.lastNameText ~= nextText then
 					entry.lastNameText = nextText
 					entry.nameLabel.Text = nextText
@@ -4185,6 +4302,80 @@ local function getItemWorldTarget(itemId: string): { kind: string, dimId: string
 	return nil
 end
 
+local function getWorldTargetFromId(rawId: string): { kind: string, dimId: string?, planetId: string?, portalCode: string?, needGolden: boolean, displayName: string }?
+	local cleanId = tostring(rawId or "")
+	if cleanId == "" then
+		return nil
+	end
+	local homeDim = tostring(LocalPlayer:GetAttribute("HomeDimension") or "C137")
+	if cleanId == "C137" or cleanId == "Earth" or cleanId == "HOME" or cleanId == homeDim then
+		return {
+			kind = "home",
+			dimId = homeDim,
+			portalCode = "C137",
+			needGolden = false,
+			displayName = "Earth (" .. homeDim .. ")",
+		}
+	end
+
+	local gd = getGameData()
+	local planetId = if cleanId:sub(1, 7) == "PLANET_" then cleanId:sub(8) else nil
+	if not planetId and gd and type(gd.PlanetById) == "table" and gd.PlanetById[cleanId] then
+		planetId = cleanId
+	end
+	if planetId then
+		local pMeta = gd and gd.PlanetById and gd.PlanetById[planetId]
+		if type(pMeta) == "table" and pMeta.dim and tostring(pMeta.dim) ~= "" then
+			local dId = tostring(pMeta.dim)
+			return {
+				kind = "planet",
+				planetId = planetId,
+				dimId = dId,
+				portalCode = DIM_TO_PORTAL_CODE[dId] or string.upper(dId),
+				needGolden = false,
+				displayName = tostring(pMeta.name or planetId),
+			}
+		end
+		return {
+			kind = "planet",
+			planetId = planetId,
+			dimId = "PLANET_" .. planetId,
+			portalCode = string.upper(planetId),
+			needGolden = true,
+			displayName = tostring((type(pMeta) == "table" and pMeta.name) or planetId),
+		}
+	end
+
+	-- Check if any planet maps to this dimension ID (e.g., PurgePlanet -> Ex01, Worldender -> Ex03)
+	if gd and type(gd.Planets) == "table" then
+		for _, p in ipairs(gd.Planets) do
+			if type(p) == "table" and tostring(p.dim or "") == cleanId and p.id then
+				local pId = tostring(p.id)
+				return {
+					kind = "planet",
+					planetId = pId,
+					dimId = cleanId,
+					portalCode = DIM_TO_PORTAL_CODE[cleanId] or string.upper(cleanId),
+					needGolden = false,
+					displayName = tostring(p.name or cleanId),
+				}
+			end
+		end
+	end
+
+	local dMeta = gd and gd.DimensionById and gd.DimensionById[cleanId]
+	local needGold = (gd and gd.GoldenPlaceIds and gd.GoldenPlaceIds[cleanId] == true)
+		or (type(dMeta) == "table" and dMeta.outside == true)
+		or false
+	return {
+		kind = "dim",
+		dimId = cleanId,
+		portalCode = DIM_TO_PORTAL_CODE[cleanId] or string.upper(cleanId),
+		needGolden = needGold,
+		displayName = tostring((type(dMeta) == "table" and dMeta.name) or cleanId),
+	}
+end
+
 local function isPlayerInWorldTarget(req: any): boolean
 	if not req then
 		return true
@@ -4916,6 +5107,19 @@ function Material:TravelToSelectedItemWorld(): (boolean, string)
 	local req = getItemWorldTarget(config.SelectedItem)
 	if not req then
 		return false, "Item does not specify another planet/dimension"
+	end
+	if isPlayerInWorldTarget(req) then
+		return true, ("Already at %s"):format(req.displayName)
+	end
+	local okTr, msgTr = travelToWorldForMaterial(req)
+	lastCollectMsg = msgTr
+	return okTr, msgTr
+end
+
+function Material:TravelToWorldId(worldOrPlanetId: string): (boolean, string)
+	local req = getWorldTargetFromId(worldOrPlanetId)
+	if not req then
+		return false, "Unknown world target: " .. tostring(worldOrPlanetId)
 	end
 	if isPlayerInWorldTarget(req) then
 		return true, ("Already at %s"):format(req.displayName)
@@ -6217,9 +6421,11 @@ local __mod_AutomationModule = (function()
 ]]
 
 local CollectionService = game:GetService("CollectionService")
+local ContextActionService = game:GetService("ContextActionService")
 local GuiService = game:GetService("GuiService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
+local ProximityPromptService = game:GetService("ProximityPromptService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -6268,6 +6474,31 @@ local craftConfig = {
 }
 local lastCraftMsg = "Idle"
 local learnedMinAssembleDelay = 0
+
+local buildConfig = {
+	AutoEnabled = false,
+	SelectedId = "ALL_READY",
+	StepDelay = 0.35,
+	BunkerPin = "1234",
+	AutoPrerequisites = false,
+	Interval = 0.5,
+}
+local buildBusy = false
+local buildLoopToken = 0
+local lastBuildMsg = "Idle"
+local learnedMinBuildDelay = 0
+local buildPromptNeedsRealHold = false
+local failedBuildCooldown: { [string]: number } = {}
+local constructionConn: RBXScriptConnection? = nil
+local lastConsStartPayload: any = nil
+local lastConsStartAt = 0
+local lastConsCloseAt = 0
+local materialDep: any = nil
+
+local sharedBuildParams = RaycastParams.new()
+sharedBuildParams.FilterType = Enum.RaycastFilterType.Exclude
+sharedBuildParams.RespectCanCollide = true
+sharedBuildParams.IgnoreWater = true
 
 local researchLoopToken = 0
 local craftLoopToken = 0
@@ -7162,11 +7393,28 @@ local function ensureInventoryAndStashSynced(maxWaitSec: number)
 end
 
 local function totalOwned(itemId: string): number
-	return (inventory[itemId] or 0) + (stash[itemId] or 0)
+	local invCnt = inventory[itemId] or 0
+	if not hasInventoryData then
+		local bagTbl = decodeAttrTable("Bag")
+		local attrCnt = tonumber(bagTbl[itemId]) or 0
+		if attrCnt > invCnt then
+			invCnt = attrCnt
+		end
+		local bagFolder = LocalPlayer:FindFirstChild("Bag")
+		local valObj = bagFolder and bagFolder:FindFirstChild(itemId)
+		if valObj and (valObj:IsA("IntValue") or valObj:IsA("NumberValue")) and valObj.Value > invCnt then
+			invCnt = valObj.Value
+		end
+	end
+	return invCnt + (stash[itemId] or 0)
 end
 
 function Automation:SetNotifyCallback(cb: (string, string, Color3?) -> ())
 	notifyCallback = cb
+end
+
+function Automation:SetDependencies(matModule: any)
+	materialDep = matModule
 end
 
 --====================================================
@@ -7966,14 +8214,892 @@ function Automation:GetCraftStatusText(): string
 	)
 end
 
+--====================================================
+-- AUTO BUILDING LOGIC (BLUEPRINT START + FAST SITE COMPLETION)
+--====================================================
+local function findBuildingDef(gd: any, buildId: string): any?
+	if not gd then
+		return nil
+	end
+	if type(gd.BuildingById) == "table" and gd.BuildingById[buildId] then
+		return gd.BuildingById[buildId]
+	end
+	if type(gd.Buildings) == "table" then
+		for _, b in ipairs(gd.Buildings) do
+			if b.id == buildId then
+				return b
+			end
+		end
+	end
+	return nil
+end
+
+local function countMapEntries(tbl: { [string]: any }): number
+	local n = 0
+	for k, v in pairs(tbl) do
+		if v then
+			n += 1
+		end
+	end
+	return n
+end
+
+local function evaluateBuildingStatus(
+	gd: any,
+	entry: any,
+	built: { [string]: any },
+	known: { [string]: any },
+	sites: { [string]: any }
+): (string, string, boolean)
+	if type(entry) ~= "table" or not entry.id then
+		return "INVALID", "Invalid building", false
+	end
+	local bId = tostring(entry.id)
+	if built[bId] then
+		return "BUILT", "Already built", false
+	end
+	local siteInfo = if type(sites) == "table" then sites[bId] else nil
+	if type(siteInfo) == "table" then
+		local d = tonumber(siteInfo.done) or 0
+		local n = tonumber(siteInfo.n) or 1
+		return "SITE", ("Under construction (%d/%d)"):format(d, n), true
+	end
+
+	-- Bunker depth dependencies
+	if bId == "BunkerL2" and not built.BunkerEntrance then
+		return "LOCKED", "Requires Secret Bunker (level -1) built first", false
+	end
+	if bId == "BunkerL3" and not built.BunkerL2 then
+		return "LOCKED", "Requires Level -2 built first", false
+	end
+
+	local reqRes = gd.BuildResearch and gd.BuildResearch[bId]
+	if reqRes and not known[reqRes] then
+		local rMeta = gd.ResearchById and gd.ResearchById[reqRes]
+		local rName = if rMeta and rMeta.name then rMeta.name else tostring(reqRes)
+		return "LOCKED", ("Missing research: %s"):format(tostring(rName)), false
+	end
+
+	if hasInventoryData and type(entry.cost) == "table" then
+		for _, cost in ipairs(entry.cost) do
+			local need = tonumber(cost.count) or 1
+			local have = totalOwned(cost.item)
+			if have < need then
+				local meta = gd.Items and gd.Items[cost.item]
+				local iName = if meta and meta.name then meta.name else tostring(cost.item)
+				return "MATERIALS", ("Need %s (%d/%d)"):format(tostring(iName), have, need), false
+			end
+		end
+	end
+
+	return "READY", "Ready to build", true
+end
+
+function Automation:GetBuildingReadiness(buildId: string): (boolean, string?, string?, string)
+	local gd = getGameData()
+	if not gd or type(gd.Buildings) ~= "table" then
+		return false, nil, nil, "GameData.Buildings not loaded"
+	end
+	local entry = findBuildingDef(gd, buildId)
+	if not entry then
+		return false, nil, nil, "Unknown building: " .. tostring(buildId)
+	end
+	initInventorySync()
+	refreshStash(false, false)
+	local built = decodeAttrTable("Built")
+	local known = decodeAttrTable("Research")
+	local sites = decodeAttrTable("Sites")
+	local bId = tostring(entry.id)
+	if built[bId] then
+		return false, nil, nil, "Already built"
+	end
+	if type(sites) == "table" and type(sites[bId]) == "table" then
+		return true, nil, nil, "Site active"
+	end
+	if bId == "BunkerL2" and not built.BunkerEntrance then
+		return false, nil, nil, "Requires Secret Bunker (level -1) built first"
+	end
+	if bId == "BunkerL3" and not built.BunkerL2 then
+		return false, nil, nil, "Requires Level -2 built first"
+	end
+	local reqRes = gd.BuildResearch and gd.BuildResearch[bId]
+	if reqRes and not known[reqRes] then
+		return false, nil, tostring(reqRes), ("Missing research: %s"):format(tostring(reqRes))
+	end
+	if type(entry.cost) == "table" then
+		for _, cost in ipairs(entry.cost) do
+			local need = tonumber(cost.count) or 1
+			local have = totalOwned(cost.item)
+			if have < need then
+				return false, tostring(cost.item), nil, ("Need %s (%d/%d)"):format(tostring(cost.item), have, need)
+			end
+		end
+	end
+	return true, nil, nil, "Ready to build"
+end
+
+local function ensureConstructionListener()
+	if constructionConn and constructionConn.Connected then
+		return
+	end
+	local ev = ReplicatedStorage:FindFirstChild("ConstructionEvent")
+	if ev and ev:IsA("RemoteEvent") then
+		constructionConn = ev.OnClientEvent:Connect(function(kind: any, payload: any)
+			if kind == "start" and type(payload) == "table" then
+				lastConsStartPayload = payload
+				lastConsStartAt = os.clock()
+			elseif kind == "close" then
+				lastConsCloseAt = os.clock()
+			end
+		end)
+	end
+end
+
+local function ensurePlayerAtHomeForBuild(): boolean
+	local curDim = tostring(LocalPlayer:GetAttribute("CurrentDimension") or "")
+	local homeDim = tostring(LocalPlayer:GetAttribute("HomeDimension") or "")
+	local inOrbit = LocalPlayer:GetAttribute("InOrbit") == true
+	local homePos = LocalPlayer:GetAttribute("HomePos")
+	local char = LocalPlayer.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not hrp then
+		return false
+	end
+
+	local wrongDim = inOrbit or (homeDim ~= "" and curDim ~= "" and curDim ~= homeDim)
+	local farFromHome = typeof(homePos) == "Vector3" and (hrp.Position - homePos).Magnitude > 380
+	if not wrongDim and not farFromHome then
+		return true
+	end
+
+	if materialDep and type(materialDep.TeleportToHome) == "function" then
+		local okH = materialDep:TeleportToHome(false)
+		task.wait(0.25)
+		return okH == true
+	end
+	return false
+end
+
+local function getPromptWorldPos(prompt: ProximityPrompt): Vector3?
+	local parent = prompt.Parent
+	if not parent then
+		return nil
+	end
+	if parent:IsA("Attachment") then
+		return parent.WorldPosition
+	elseif parent:IsA("BasePart") then
+		return parent.Position
+	elseif parent:IsA("Model") then
+		return parent:GetPivot().Position
+	end
+	local bp = prompt:FindFirstAncestorWhichIsA("BasePart")
+	if bp then
+		return bp.Position
+	end
+	local md = prompt:FindFirstAncestorWhichIsA("Model")
+	return if md then md:GetPivot().Position else nil
+end
+
+local function findActiveConstructionPrompt(siteAtPos: Vector3?): (ProximityPrompt?, Vector3?)
+	local char = LocalPlayer.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local homePos = LocalPlayer:GetAttribute("HomePos")
+	local refPos: Vector3? = if typeof(siteAtPos) == "Vector3"
+		then siteAtPos
+		elseif hrp then hrp.Position
+		elseif typeof(homePos) == "Vector3" then homePos
+		else nil
+
+	local bestPrompt: ProximityPrompt? = nil
+	local bestPos: Vector3? = nil
+	local bestDist = math.huge
+
+	local function scanContainer(container: Instance, maxRange: number)
+		for _, desc in ipairs(container:GetDescendants()) do
+			if desc:IsA("ProximityPrompt") and desc.Enabled then
+				local pPos = getPromptWorldPos(desc)
+				if pPos then
+					local d = if refPos then (pPos - refPos).Magnitude else 0
+					if d <= maxRange and d < bestDist then
+						bestDist = d
+						bestPrompt = desc
+						bestPos = pPos
+					end
+				end
+			end
+		end
+	end
+
+	local sitesFolder = workspace:FindFirstChild("ConstructionSites")
+	if sitesFolder then
+		scanContainer(sitesFolder, if typeof(siteAtPos) == "Vector3" then 45 else 420)
+	end
+
+	if not bestPrompt and typeof(siteAtPos) == "Vector3" then
+		for _, model in ipairs(CollectionService:GetTagged("PlayerBase")) do
+			if model:IsDescendantOf(workspace) then
+				scanContainer(model, 40)
+			end
+		end
+	end
+
+	if not bestPrompt and typeof(siteAtPos) == "Vector3" then
+		for _, desc in ipairs(workspace:GetDescendants()) do
+			if desc:IsA("ProximityPrompt") and desc.Enabled then
+				local pPos = getPromptWorldPos(desc)
+				if pPos then
+					local d = (pPos - siteAtPos).Magnitude
+					if d <= 28 and d < bestDist then
+						bestDist = d
+						bestPrompt = desc
+						bestPos = pPos
+					end
+				end
+			end
+		end
+	end
+
+	return bestPrompt, bestPos
+end
+
+local function moveNearBuildPiece(targetPos: Vector3, promptParent: Instance?): boolean
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not char or not hum or not hrp or hum.Health <= 0 then
+		return false
+	end
+
+	local exclude = { char }
+	if promptParent then
+		local mdl = promptParent:FindFirstAncestorWhichIsA("Model")
+		table.insert(exclude, if mdl and mdl.Name ~= "Garage" and not mdl.Name:find("SmithHouse") then mdl else promptParent)
+	end
+	sharedBuildParams.FilterDescendantsInstances = exclude
+
+	local scale = pcall(function() return char:GetScale() end) and math.clamp(char:GetScale(), 0.7, 2.2) or 1
+	local standPos: Vector3? = nil
+	local offsets = {
+		Vector3.new(0, 0, -3.4),
+		Vector3.new(0, 0, 3.4),
+		Vector3.new(3.4, 0, 0),
+		Vector3.new(-3.4, 0, 0),
+		Vector3.zero,
+	}
+	for _, off in ipairs(offsets) do
+		local probe = targetPos + off
+		local downHit = workspace:Raycast(probe + Vector3.new(0, 10, 0), Vector3.new(0, -24, 0), sharedBuildParams)
+		if downHit and downHit.Instance and downHit.Normal.Y >= 0.5 then
+			local cand = downHit.Position + Vector3.new(0, 3.1 * scale, 0)
+			if (cand - targetPos).Magnitude <= 10 then
+				standPos = cand
+				break
+			end
+		end
+	end
+	if not standPos then
+		standPos = targetPos + Vector3.new(0, 2.8 * scale, 0)
+	end
+
+	local flatLook = Vector3.new(targetPos.X, standPos.Y, targetPos.Z)
+	local destCF = if (flatLook - standPos).Magnitude > 0.6 then CFrame.lookAt(standPos, flatLook) else CFrame.new(standPos)
+
+	hum.Sit = false
+	hum.PlatformStand = false
+	hrp.Anchored = false
+	hrp.AssemblyLinearVelocity = Vector3.zero
+	hrp.AssemblyAngularVelocity = Vector3.zero
+	char:PivotTo(destCF)
+	hrp.AssemblyLinearVelocity = Vector3.zero
+	hrp.AssemblyAngularVelocity = Vector3.zero
+
+	local cam = workspace.CurrentCamera
+	if cam then
+		cam.CameraType = Enum.CameraType.Custom
+		cam.CameraSubject = hum
+		local flatDir = Vector3.new(targetPos.X - standPos.X, 0, targetPos.Z - standPos.Z)
+		local dirUnit = if flatDir.Magnitude > 0.4 then flatDir.Unit else destCF.LookVector
+		local camPos = standPos - dirUnit * 9 + Vector3.new(0, 4, 0)
+		if (targetPos - camPos).Magnitude > 0.5 then
+			cam.CFrame = CFrame.lookAt(camPos, targetPos)
+			cam.Focus = CFrame.new(targetPos)
+		end
+	end
+
+	return true
+end
+
+local function releaseConstructionTaskUi()
+	pcall(function()
+		ContextActionService:UnbindAction("ConstructionTask")
+	end)
+	local pg = LocalPlayer:FindFirstChild("PlayerGui")
+	local taskGui = pg and pg:FindFirstChild("ConstructionTask")
+	if taskGui and taskGui:IsA("ScreenGui") then
+		for _, ch in ipairs(taskGui:GetChildren()) do
+			if ch:IsA("GuiObject") and ch.Visible then
+				ch.Visible = false
+			end
+		end
+	end
+end
+
+local function triggerConstructionPiece(
+	prompt: ProximityPrompt,
+	targetId: string,
+	prevDone: number,
+	shouldContinue: () -> boolean
+): (boolean, any?)
+	if not prompt or not prompt.Parent or not prompt.Enabled then
+		return false, nil
+	end
+
+	local origLOS = prompt.RequiresLineOfSight
+	local origExcl = prompt.Exclusivity
+	local origMaxDist = prompt.MaxActivationDistance
+
+	pcall(function()
+		if not ProximityPromptService.Enabled then
+			ProximityPromptService.Enabled = true
+		end
+		prompt.RequiresLineOfSight = false
+		prompt.Exclusivity = Enum.ProximityPromptExclusivity.AlwaysShow
+		if prompt.MaxActivationDistance < 14 then
+			prompt.MaxActivationDistance = 14
+		end
+	end)
+
+	local trigStartedAt = os.clock()
+	local triggered = false
+	local trigConn = prompt.Triggered:Connect(function()
+		triggered = true
+	end)
+
+	local function hasServerResponded(): boolean
+		if lastConsStartAt >= trigStartedAt and type(lastConsStartPayload) == "table" then
+			return true
+		end
+		local bNow = decodeAttrTable("Built")
+		if bNow[targetId] then
+			return true
+		end
+		local sNow = decodeAttrTable("Sites")
+		local sEntry = sNow[targetId]
+		if type(sEntry) == "table" and (tonumber(sEntry.done) or 0) > prevDone then
+			return true
+		end
+		if triggered and (os.clock() - trigStartedAt) > 0.25 then
+			return true
+		end
+		return false
+	end
+
+	local firePromptFn = getExecFunc("fireproximityprompt")
+	if not firePromptFn then
+		local okD, direct = pcall(function()
+			return typeof(fireproximityprompt) == "function" and fireproximityprompt or nil
+		end)
+		if okD and type(direct) == "function" then
+			firePromptFn = direct
+		end
+	end
+
+	local holdDur = prompt.HoldDuration or 0
+	if firePromptFn and (holdDur <= 0.05 or not buildPromptNeedsRealHold) then
+		pcall(firePromptFn, prompt)
+		local waitEnd = os.clock() + 0.35
+		while os.clock() < waitEnd and shouldContinue() do
+			if hasServerResponded() then
+				break
+			end
+			task.wait(0.03)
+		end
+		if holdDur > 0.05 and not hasServerResponded() then
+			buildPromptNeedsRealHold = true
+		end
+	end
+
+	if not hasServerResponded() and shouldContinue() and prompt.Parent and prompt.Enabled then
+		pcall(function()
+			prompt:InputHoldBegin()
+		end)
+		local holdWait = math.max(0.14, holdDur + 0.12)
+		local holdEnd = os.clock() + holdWait
+		while os.clock() < holdEnd and shouldContinue() do
+			if lastConsStartAt >= trigStartedAt then
+				break
+			end
+			task.wait(0.04)
+		end
+		pcall(function()
+			prompt:InputHoldEnd()
+		end)
+
+		local postWait = os.clock() + 0.85
+		while os.clock() < postWait and shouldContinue() do
+			if hasServerResponded() then
+				break
+			end
+			task.wait(0.04)
+		end
+	end
+
+	trigConn:Disconnect()
+	pcall(function()
+		if prompt.Parent then
+			prompt.RequiresLineOfSight = origLOS
+			prompt.Exclusivity = origExcl
+			prompt.MaxActivationDistance = origMaxDist
+		end
+	end)
+
+	if lastConsStartAt >= trigStartedAt and type(lastConsStartPayload) == "table" then
+		return true, lastConsStartPayload
+	end
+	return hasServerResponded(), nil
+end
+
+local function buildSingleStructure(targetId: string, requireAutoLoop: boolean): (boolean, string)
+	local gd = getGameData()
+	if not gd or type(gd.Buildings) ~= "table" then
+		return false, "GameData.Buildings not loaded"
+	end
+	local entry = findBuildingDef(gd, targetId)
+	if not entry then
+		return false, "Unknown building: " .. tostring(targetId)
+	end
+	local label = tostring(entry.name or entry.id)
+
+	local progressAction = ReplicatedStorage:FindFirstChild("ProgressAction")
+	if not progressAction or not progressAction:IsA("RemoteFunction") then
+		return false, "RemoteFunction ProgressAction not found"
+	end
+	local consEvent = ReplicatedStorage:FindFirstChild("ConstructionEvent")
+	if not consEvent or not consEvent:IsA("RemoteEvent") then
+		return false, "RemoteEvent ConstructionEvent not found"
+	end
+
+	ensureConstructionListener()
+	ensureInventoryAndStashSynced(0.75)
+
+	local function shouldRun(): boolean
+		if destroyed then
+			return false
+		end
+		if requireAutoLoop and not buildConfig.AutoEnabled then
+			return false
+		end
+		return true
+	end
+
+	local built = decodeAttrTable("Built")
+	local known = decodeAttrTable("Research")
+	local sites = decodeAttrTable("Sites")
+
+	local stateTag, stateReason, canProceed = evaluateBuildingStatus(gd, entry, built, known, sites)
+	if not canProceed then
+		if buildConfig.AutoPrerequisites then
+			local _, missMat, missRes = Automation:GetBuildingReadiness(targetId)
+			if missRes and missRes ~= "" then
+				lastBuildMsg = ("Auto-researching prerequisite %s for %s..."):format(missRes, label)
+				local okR, msgR = Automation:RunResearchOnce(missRes)
+				return okR, ("Prereq Research (%s): %s"):format(missRes, tostring(msgR))
+			elseif missMat and missMat ~= "" then
+				local canCraftMat, _, _, recId = Automation:GetCraftReadinessForItem(missMat)
+				if canCraftMat and recId then
+					lastBuildMsg = ("Auto-crafting ingredient %s for %s..."):format(missMat, label)
+					if materialDep and type(materialDep.QuickInteract) == "function" then
+						materialDep:QuickInteract("workbench")
+					end
+					local okC, msgC = Automation:CraftOnce(recId)
+					return okC, ("Prereq Craft (%s): %s"):format(missMat, tostring(msgC))
+				end
+			end
+		end
+		return stateTag == "BUILT", stateReason
+	end
+
+	if not ensurePlayerAtHomeForBuild() then
+		return false, "Move to Home / Garage first"
+	end
+
+	-- Stage 1: Place blueprint via ProgressAction("build", id) if not yet active in Sites
+	if stateTag == "READY" then
+		lastBuildMsg = ("Starting build: %s..."):format(label)
+		local okInv, buildOk, buildRes = pcall(function()
+			if targetId == "BunkerEntrance" then
+				local pin = tostring(buildConfig.BunkerPin or "1234")
+				if #pin < 4 or #pin > 8 then
+					pin = "1234"
+				end
+				return progressAction:InvokeServer("build", targetId, pin)
+			end
+			return progressAction:InvokeServer("build", targetId)
+		end)
+		if not okInv or not buildOk then
+			local errTxt = if not okInv then tostring(buildOk) else tostring(buildRes or "Build request rejected")
+			return false, ("%s: %s"):format(label, errTxt)
+		end
+
+		local spawnDeadline = os.clock() + 1.5
+		while os.clock() < spawnDeadline and shouldRun() do
+			built = decodeAttrTable("Built")
+			sites = decodeAttrTable("Sites")
+			if built[targetId] or type(sites[targetId]) == "table" or typeof(LocalPlayer:GetAttribute("SiteAt")) == "Vector3" then
+				break
+			end
+			task.wait(0.06)
+		end
+	end
+
+	-- Stage 2: Loop through active construction pieces until Built[targetId] == true
+	local pieceFails = 0
+	local maxIterations = 24
+	for _ = 1, maxIterations do
+		if not shouldRun() then
+			return false, "Auto Build stopped"
+		end
+
+		built = decodeAttrTable("Built")
+		if built[targetId] then
+			releaseConstructionTaskUi()
+			return true, ("Completed: %s!"):format(label)
+		end
+
+		sites = decodeAttrTable("Sites")
+		local siteEntry = if type(sites) == "table" then sites[targetId] else nil
+		local doneCount = if type(siteEntry) == "table" then (tonumber(siteEntry.done) or 0) else 0
+		local totalPieces = if type(siteEntry) == "table" then (tonumber(siteEntry.n) or 1) else 1
+
+		local siteAtPos = LocalPlayer:GetAttribute("SiteAt")
+		if typeof(siteAtPos) ~= "Vector3" and type(siteEntry) ~= "table" then
+			return false, ("Site not active for %s"):format(label)
+		end
+
+		local prompt, promptPos = findActiveConstructionPrompt(if typeof(siteAtPos) == "Vector3" then siteAtPos else nil)
+		if not prompt or not promptPos then
+			pieceFails += 1
+			if pieceFails >= 6 then
+				return false, ("No construction piece prompt found for %s"):format(label)
+			end
+			lastBuildMsg = ("Waiting for piece %d/%d: %s..."):format(doneCount + 1, totalPieces, label)
+			task.wait(0.25)
+			continue
+		end
+
+		lastBuildMsg = ("Approaching piece %d/%d: %s"):format(doneCount + 1, totalPieces, label)
+		moveNearBuildPiece(promptPos, prompt.Parent)
+		task.wait(0.14)
+
+		local gotEvent, payload = triggerConstructionPiece(prompt, targetId, doneCount, shouldRun)
+		if payload and payload.token ~= nil then
+			local stepPiece = tonumber(payload.piece) or (doneCount + 1)
+			local stepTotal = math.max(stepPiece, tonumber(payload.n) or totalPieces)
+			local waitDelay = math.max(buildConfig.StepDelay, learnedMinBuildDelay)
+			local sentStartAt = os.clock()
+			if waitDelay > 0 then
+				local stepEnd = sentStartAt + waitDelay
+				while os.clock() < stepEnd and shouldRun() do
+					lastBuildMsg = ("Building %s (%d/%d)..."):format(label, stepPiece, stepTotal)
+					if lastConsCloseAt >= lastConsStartAt then
+						break
+					end
+					task.wait(0.05)
+				end
+			end
+			if not shouldRun() then
+				releaseConstructionTaskUi()
+				return false, "Auto Build stopped"
+			end
+
+			local doneSentAt = os.clock()
+			pcall(function()
+				consEvent:FireServer("done", payload.token)
+			end)
+
+			local ackDeadline = os.clock() + 1.8
+			local advanced = false
+			while os.clock() < ackDeadline and shouldRun() do
+				local bCheck = decodeAttrTable("Built")
+				local sCheck = decodeAttrTable("Sites")
+				local seCheck = if type(sCheck) == "table" then sCheck[targetId] else nil
+				local newDone = if type(seCheck) == "table" then (tonumber(seCheck.done) or 0) else 0
+				local newSiteAt = LocalPlayer:GetAttribute("SiteAt")
+				if bCheck[targetId] or newDone > doneCount or lastConsCloseAt >= doneSentAt or newSiteAt ~= siteAtPos then
+					advanced = true
+					break
+				end
+				task.wait(0.05)
+			end
+
+			releaseConstructionTaskUi()
+			if advanced then
+				pieceFails = 0
+				lastBuildMsg = ("Built piece %d/%d: %s"):format(stepPiece, stepTotal, label)
+				task.wait(0.08)
+			else
+				pieceFails += 1
+				learnedMinBuildDelay = math.min(learnedMinBuildDelay + 0.25, 2.0)
+				if pieceFails >= 4 then
+					return false, ("Server did not accept piece for %s"):format(label)
+				end
+			end
+		elseif gotEvent then
+			pieceFails = 0
+			task.wait(0.1)
+		else
+			pieceFails += 1
+			if pieceFails >= 5 then
+				return false, ("Failed to trigger build prompt for %s"):format(label)
+			end
+			task.wait(0.18)
+		end
+	end
+
+	return false, ("Build loop limit reached for %s"):format(label)
+end
+
+local function pickNextReadyBuildingId(): (string?, string)
+	local gd = getGameData()
+	if not gd or type(gd.Buildings) ~= "table" then
+		return nil, "GameData.Buildings not loaded"
+	end
+	ensureInventoryAndStashSynced(0.6)
+	local built = decodeAttrTable("Built")
+	local known = decodeAttrTable("Research")
+	local sites = decodeAttrTable("Sites")
+	local nowClock = os.clock()
+
+	-- Priority 1: Continue any already-started site under construction
+	for _, b in ipairs(gd.Buildings) do
+		if b.id and not built[b.id] and type(sites[b.id]) == "table" then
+			local cd = failedBuildCooldown[b.id]
+			if not cd or nowClock >= cd then
+				return b.id, "Active site"
+			end
+		end
+	end
+
+	-- Priority 2: Pick first ready unlocked & affordable blueprint
+	local firstReason = "All buildings built or missing Research/Materials"
+	for _, b in ipairs(gd.Buildings) do
+		if b.id and not built[b.id] then
+			local cd = failedBuildCooldown[b.id]
+			if not cd or nowClock >= cd then
+				local _, reason, canProceed = evaluateBuildingStatus(gd, b, built, known, sites)
+				if canProceed then
+					return b.id, reason
+				elseif firstReason == "All buildings built or missing Research/Materials" and reason ~= "Already built" then
+					firstReason = ("%s: %s"):format(tostring(b.name or b.id), reason)
+				end
+			end
+		end
+	end
+
+	return nil, firstReason
+end
+
+function Automation:BuildOnce(targetBuildId: string?): (boolean, string)
+	if buildBusy then
+		return false, "Build already in progress..."
+	end
+	local chosenId = if targetBuildId and targetBuildId ~= "" then targetBuildId else buildConfig.SelectedId
+	if chosenId == "ALL_READY" or chosenId == "" then
+		local picked, pickMsg = pickNextReadyBuildingId()
+		if not picked then
+			lastBuildMsg = pickMsg
+			return false, pickMsg
+		end
+		chosenId = picked
+	end
+
+	buildBusy = true
+	local ok, msg = pcall(function()
+		return buildSingleStructure(chosenId, false)
+	end)
+	buildBusy = false
+	if not ok then
+		lastBuildMsg = "Build error: " .. tostring(msg)
+		return false, lastBuildMsg
+	end
+	lastBuildMsg = msg
+	return ok, msg
+end
+
+function Automation:SetAutoBuild(enabled: boolean)
+	buildConfig.AutoEnabled = enabled == true
+	buildLoopToken += 1
+	local myToken = buildLoopToken
+	if not buildConfig.AutoEnabled then
+		lastBuildMsg = "Idle"
+		return
+	end
+
+	table.clear(failedBuildCooldown)
+	ensureConstructionListener()
+	initInventorySync()
+	refreshStash(false, false)
+
+	task.spawn(function()
+		local lastNotified = ""
+		while buildConfig.AutoEnabled and myToken == buildLoopToken and not destroyed do
+			local targetId = buildConfig.SelectedId
+			if targetId == "ALL_READY" or targetId == "" then
+				local picked, pickMsg = pickNextReadyBuildingId()
+				targetId = picked or ""
+				if targetId == "" then
+					lastBuildMsg = pickMsg
+					if pickMsg ~= lastNotified then
+						lastNotified = pickMsg
+						sendNotice("Auto Build", pickMsg, Color3.fromRGB(251, 191, 36))
+					end
+					task.wait(1.2)
+					continue
+				end
+			end
+
+			local builtNow = decodeAttrTable("Built")
+			if builtNow[targetId] and buildConfig.SelectedId ~= "ALL_READY" then
+				local gd = getGameData()
+				local def = findBuildingDef(gd, targetId)
+				local msgDone = ("Built: %s!"):format(tostring(def and def.name or targetId))
+				lastBuildMsg = msgDone
+				if msgDone ~= lastNotified then
+					lastNotified = msgDone
+					sendNotice("Auto Build", msgDone, Color3.fromRGB(52, 211, 153))
+				end
+				task.wait(1.5)
+				continue
+			end
+
+			buildBusy = true
+			local callOk, resOk, resMsg = pcall(function()
+				return buildSingleStructure(targetId, true)
+			end)
+			buildBusy = false
+
+			local finalOk = callOk and resOk
+			local finalMsg = if callOk then tostring(resMsg) else ("Build error: " .. tostring(resOk))
+			lastBuildMsg = finalMsg
+
+			if finalOk then
+				lastNotified = ""
+				sendNotice("Auto Build", finalMsg, Color3.fromRGB(52, 211, 153))
+				task.wait(buildConfig.Interval)
+			else
+				failedBuildCooldown[targetId] = os.clock() + 6
+				if finalMsg ~= "Auto Build stopped" and finalMsg ~= lastNotified then
+					lastNotified = finalMsg
+					sendNotice("Auto Build", finalMsg, Color3.fromRGB(251, 191, 36))
+				end
+				task.wait(math.max(buildConfig.Interval, 1.2))
+			end
+		end
+	end)
+end
+
+function Automation:SetSelectedBuilding(buildId: string)
+	buildConfig.SelectedId = if buildId ~= "" then buildId else "ALL_READY"
+	lastBuildMsg = "Ready"
+end
+
+function Automation:SetBuildStepDelay(sec: number)
+	buildConfig.StepDelay = math.clamp(sec, 0.05, 3.0)
+end
+
+function Automation:SetBuildAutoPrerequisites(enabled: boolean)
+	buildConfig.AutoPrerequisites = enabled == true
+end
+
+function Automation:SetBunkerPin(pin: string)
+	local clean = tostring(pin):gsub("%D", "")
+	if #clean >= 4 and #clean <= 8 then
+		buildConfig.BunkerPin = clean
+	end
+end
+
+function Automation:TeleportToBuildSite(): (boolean, string)
+	if not ensurePlayerAtHomeForBuild() then
+		return false, "Move to Home / Garage first"
+	end
+	local siteAt = LocalPlayer:GetAttribute("SiteAt")
+	local prompt, promptPos = findActiveConstructionPrompt(if typeof(siteAt) == "Vector3" then siteAt else nil)
+	local targetPos = promptPos or (if typeof(siteAt) == "Vector3" then siteAt else nil)
+	if not targetPos then
+		return false, "No active build site found"
+	end
+	local moved = moveNearBuildPiece(targetPos, if prompt then prompt.Parent else nil)
+	return moved, if moved then "Teleported to active build piece" else "Character not ready"
+end
+
+function Automation:GetBuildingOptions(): ({ string }, { [string]: string })
+	initInventorySync()
+	refreshStash(false, false)
+	local gd = getGameData()
+	local options: { string } = { "Auto Build Next Ready [ALL_READY]" }
+	local labelToId: { [string]: string } = {
+		["Auto Build Next Ready [ALL_READY]"] = "ALL_READY",
+	}
+	if not gd or type(gd.Buildings) ~= "table" then
+		return options, labelToId
+	end
+	for _, b in ipairs(gd.Buildings) do
+		if type(b) == "table" and b.id then
+			local label = ("%s [%s]"):format(tostring(b.name or b.id), tostring(b.id))
+			table.insert(options, label)
+			labelToId[label] = tostring(b.id)
+		end
+	end
+	return options, labelToId
+end
+
+function Automation:GetBuildStatusText(): string
+	initInventorySync()
+	refreshStash(false, false)
+	local gd = getGameData()
+	if not gd or type(gd.Buildings) ~= "table" then
+		return "GameData.Buildings not loaded"
+	end
+
+	local built = decodeAttrTable("Built")
+	local known = decodeAttrTable("Research")
+	local sites = decodeAttrTable("Sites")
+	local builtCount = countMapEntries(built)
+	local totalCount = #gd.Buildings
+
+	local targetLine = "Auto Next Ready"
+	if buildConfig.SelectedId ~= "ALL_READY" and buildConfig.SelectedId ~= "" then
+		local def = findBuildingDef(gd, buildConfig.SelectedId)
+		if def then
+			local _, reason = evaluateBuildingStatus(gd, def, built, known, sites)
+			targetLine = ("%s (%s)"):format(tostring(def.name or def.id), reason)
+		end
+	end
+
+	return ("Built: %d/%d | PIN: %s\nTarget: %s\nStatus: %s"):format(
+		builtCount,
+		totalCount,
+		buildConfig.BunkerPin,
+		targetLine,
+		lastBuildMsg
+	)
+end
+
 function Automation:Destroy()
 	destroyed = true
 	researchConfig.AutoEnabled = false
 	craftConfig.AutoEnabled = false
 	craftConfig.FastAssemble = false
+	buildConfig.AutoEnabled = false
 	researchLoopToken += 1
 	craftLoopToken += 1
+	buildLoopToken += 1
 	refreshSolverState()
+	releaseConstructionTaskUi()
+	if constructionConn then
+		constructionConn:Disconnect()
+		constructionConn = nil
+	end
 	if not craftBusy and LocalPlayer:GetAttribute("Crafting") == true then
 		LocalPlayer:SetAttribute("Crafting", false)
 	end
@@ -8043,6 +9169,7 @@ local missionConfig = {
 	AutoEnabled = false,
 	AutoCollectMats = true,
 	AutoQuickBench = true,
+	AutoTravelWorld = true,
 	AllowUnsafeBiomes = false,
 }
 
@@ -9154,8 +10281,19 @@ local function performAimAndShoot(targetModel: Model, targetRoot: BasePart, pref
 		held = nil
 	end
 
-	-- 1) Shoot / Swing equipped real weapon Tool
+	-- 1) Shoot / Swing equipped real weapon Tool (with automatic Reload when Ammo == 0)
 	if held and not isPortalGunTool(held) then
+		if isRanged then
+			local curAmmo = tonumber(held:GetAttribute("Ammo") or held:GetAttribute("Clip"))
+			if curAmmo ~= nil and curAmmo <= 0 then
+				local relEv = ReplicatedStorage:FindFirstChild("ReloadEvent") or ReplicatedStorage:FindFirstChild("WeaponReload")
+				if relEv and relEv:IsA("RemoteEvent") then
+					pcall(function()
+						relEv:FireServer(held)
+					end)
+				end
+			end
+		end
 		local inWeaponRange = if isRanged then (dist <= 95) else (dist <= 13.5)
 		if inWeaponRange and now - lastSwingClock >= 0.18 then
 			lastSwingClock = now
@@ -9809,21 +10947,40 @@ local function stepAutoMissionOnce(): (boolean, string)
 
 	if inOrbit and info.goalType ~= "planet" and info.goalType ~= "harvestplanet" and info.goalType ~= "orbit" then
 		releaseMissionSubModes()
+		if missionConfig.AutoTravelWorld and matMod then
+			local destWorld = if info.requiredDim and info.requiredDim ~= "" then info.requiredDim else homeDim
+			if type(matMod.TravelToWorldId) == "function" then
+				local okT, msgT = matMod:TravelToWorldId(destWorld)
+				if okT then
+					return true, "Returned from Orbit: " .. tostring(msgT)
+				end
+			end
+			if type(matMod.ForceSendHomeNow) == "function" then
+				local okH, msgH = matMod:ForceSendHomeNow()
+				return okH, tostring(msgH)
+			end
+		end
 		return false, "In Space Orbit - Force Home or land safely first"
 	end
 
-	-- Safety gate: never blindly teleport across dimensions into Void!
+	-- Safety gate & Auto World Travel: travel via PlanetTravel bypass or PortalGun when mission requires another world
 	if info.requiredDim and info.requiredDim ~= "" then
 		local targetDim = info.requiredDim
-		local isHomeMatch = (targetDim == "C137" or targetDim == "Earth") and (curDim == homeDim)
+		local isHomeMatch = (targetDim == "C137" or targetDim == "Earth") and (curDim == homeDim or curDim == "")
 		if not isHomeMatch and curDim ~= targetDim then
 			releaseMissionSubModes()
-			-- Pre-fill Portal Gun TargetDimension if UI exists so player can shoot portal safely
 			local pg = LocalPlayer:FindFirstChild("PlayerGui")
 			local pgui = pg and pg:FindFirstChild("PortalGunUI")
 			local tdVal = pgui and pgui:FindFirstChild("TargetDimension")
 			if tdVal and tdVal:IsA("StringValue") then
 				tdVal.Value = targetDim
+			end
+			if missionConfig.AutoTravelWorld and matMod and type(matMod.TravelToWorldId) == "function" then
+				local okTravel, msgTravel = matMod:TravelToWorldId(targetDim)
+				if okTravel then
+					return true, ("Traveled to [%s]: %s"):format(targetDim, tostring(msgTravel))
+				end
+				return false, ("Need travel to [%s]: %s"):format(targetDim, tostring(msgTravel))
 			end
 			return false, ("Need Portal to [%s] first (Void-safe pause)"):format(targetDim)
 		end
@@ -9861,11 +11018,70 @@ local function stepAutoMissionOnce(): (boolean, string)
 		end
 		if matMod then
 			matMod:SetMissionSafeFilter(true)
+			if missionConfig.AutoTravelWorld and type(matMod.SetAutoCrossPlanet) == "function" then
+				matMod:SetAutoCrossPlanet(true)
+			end
 			matMod:SetSelectedItem(info.item)
 			matMod:SetAutoCollect(true)
 			ownedSubMode = "harvest"
 			if stateSyncCallback then task.defer(stateSyncCallback) end
 			return true, ("Harvesting %s (%d/%d)"):format(info.item, info.have, info.need)
+		end
+	elseif info.goalType == "harvestplanet" and matMod then
+		if mobConfig.AutoHunt then
+			mobConfig.AutoHunt = false
+			huntToken += 1
+		end
+		matMod:SetMissionSafeFilter(true)
+		if type(matMod.SetAutoCrossPlanet) == "function" then
+			matMod:SetAutoCrossPlanet(true)
+		end
+		matMod:SetSelectedItem(info.item or "ALL")
+		matMod:SetAutoCollect(true)
+		ownedSubMode = "harvest"
+		if stateSyncCallback then task.defer(stateSyncCallback) end
+		return true, ("Off-world harvesting %s (%d/%d)"):format(tostring(info.item or "materials"), info.have, info.need)
+	elseif (info.goalType == "visit" or info.goalType == "planet" or info.goalType == "travel") and matMod then
+		releaseMissionSubModes()
+		local destWorld = tostring(info.dim or info.id or info.requiredDim or "")
+		if destWorld ~= "" and type(matMod.TravelToWorldId) == "function" then
+			local okV, msgV = matMod:TravelToWorldId(destWorld)
+			return okV, ("Mission Travel (%s): %s"):format(destWorld, tostring(msgV))
+		end
+		return false, "Mission destination unknown"
+	elseif info.goalType == "build" and info.id and autoMod then
+		releaseMissionSubModes()
+		if type(autoMod.GetBuildingReadiness) == "function" then
+			local canBuild, missMat, missRes, buildReason = autoMod:GetBuildingReadiness(info.id)
+			if canBuild then
+				local okB, msgB = autoMod:BuildOnce(info.id)
+				return okB, ("Building %s: %s"):format(tostring(info.id), tostring(msgB))
+			elseif missRes and missRes ~= "" then
+				local okR, msgR = autoMod:RunResearchOnce(missRes)
+				return okR, ("Researching prerequisite %s for %s: %s"):format(missRes, tostring(info.id), tostring(msgR))
+			elseif missMat and missMat ~= "" then
+				local canCraftMat, _, _, recId = autoMod:GetCraftReadinessForItem(missMat)
+				if canCraftMat and recId then
+					if missionConfig.AutoQuickBench and matMod then
+						matMod:QuickInteract("workbench")
+					end
+					local okC, msgC = autoMod:CraftOnce(recId)
+					return okC, ("Crafting %s for %s: %s"):format(missMat, tostring(info.id), tostring(msgC))
+				elseif missionConfig.AutoCollectMats and matMod then
+					matMod:SetMissionSafeFilter(true)
+					if missionConfig.AutoTravelWorld and type(matMod.SetAutoCrossPlanet) == "function" then
+						matMod:SetAutoCrossPlanet(true)
+					end
+					matMod:SetSelectedItem(missMat)
+					matMod:SetAutoCollect(true)
+					ownedSubMode = "harvest"
+					if stateSyncCallback then task.defer(stateSyncCallback) end
+					return true, ("Farming %s for building %s"):format(missMat, tostring(info.id))
+				end
+			end
+			return false, ("Cannot build %s yet: %s"):format(tostring(info.id), tostring(buildReason))
+		else
+			return autoMod:BuildOnce(info.id)
 		end
 	elseif info.goalType == "kill" and info.enemy then
 		if matMod then
@@ -10134,6 +11350,10 @@ function Combat:SetMissionAllowUnsafeBiomes(enabled: boolean)
 	missionConfig.AllowUnsafeBiomes = enabled
 end
 
+function Combat:SetMissionAutoTravelWorld(enabled: boolean)
+	missionConfig.AutoTravelWorld = enabled == true
+end
+
 function Combat:GetToggleStates(): { [string]: boolean }
 	return {
 		AntiVoid = guardConfig.AntiVoid,
@@ -10235,6 +11455,7 @@ local Material = __mod_MaterialModule
 local Automation = __mod_AutomationModule
 local Combat = __mod_CombatModule
 
+Automation:SetDependencies(Material)
 Combat:SetDependencies(Material, Automation)
 
 local ESP_COLORS: { [string]: Color3 } = {
@@ -10806,7 +12027,115 @@ LabCraftTab:CreateButton({
 })
 
 --====================================================
--- TAB 5: ESP & VISUALS
+-- TAB 5: AUTO BUILDING
+--====================================================
+local BuildTab = Window:CreateTab("Build")
+
+local buildStatus = BuildTab:CreateParagraph({
+	Title = "Construction Status",
+	Content = Automation:GetBuildStatusText(),
+	FixedHeight = 68,
+	AccentColor = Color3.fromRGB(56, 189, 248),
+})
+
+BuildTab:CreateSection("Target Structure")
+
+local buildOpts, buildMap = Automation:GetBuildingOptions()
+if buildOpts[1] and buildMap[buildOpts[1]] then
+	Automation:SetSelectedBuilding(buildMap[buildOpts[1]])
+end
+
+BuildTab:CreateDropdown({
+	Name = "Select Building",
+	Options = buildOpts,
+	CurrentOption = buildOpts[1],
+	Callback = function(option: string)
+		local bId = buildMap[option] or "ALL_READY"
+		Automation:SetSelectedBuilding(bId)
+		buildStatus:Set({ Content = Automation:GetBuildStatusText() })
+	end,
+})
+
+local tglAutoBuild = BuildTab:CreateToggle({
+	Name = "Auto Build Selected Structure",
+	Description = "Starts blueprint at Home & rapidly completes every construction piece",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Automation:SetAutoBuild(enabled)
+		buildStatus:Set({ Content = Automation:GetBuildStatusText() })
+		Window:Notify({
+			Title = "Auto Building",
+			Content = if enabled then "Auto Building ENABLED." else "Auto Building DISABLED.",
+			Duration = 2.5,
+			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
+		})
+	end,
+})
+
+local tglBuildAutoPrereq = BuildTab:CreateToggle({
+	Name = "Auto Craft & Research Prerequisites",
+	Description = "Automatically researches required tech or crafts missing build ingredients",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Automation:SetBuildAutoPrerequisites(enabled)
+	end,
+})
+
+BuildTab:CreateButton({
+	Name = "Build Selected Now (Complete Site)",
+	Description = "Starts the selected blueprint (or finishes active site) once immediately",
+	Callback = function()
+		local ok, msg = Automation:BuildOnce(nil)
+		buildStatus:Set({ Content = Automation:GetBuildStatusText() })
+		Window:Notify({
+			Title = "Auto Build",
+			Content = msg,
+			Duration = 3,
+			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
+		})
+	end,
+})
+
+BuildTab:CreateSection("Speed & Settings")
+
+BuildTab:CreateSlider({
+	Name = "Piece Completion Delay",
+	Range = { 0.1, 3.0 },
+	Increment = 0.05,
+	Suffix = "s",
+	CurrentValue = 0.35,
+	Callback = function(value: number)
+		Automation:SetBuildStepDelay(value)
+	end,
+})
+
+BuildTab:CreateDropdown({
+	Name = "Bunker PIN Code (Level -1)",
+	Options = { "1234", "0000", "2468", "1337", "9999" },
+	CurrentOption = "1234",
+	Callback = function(option: string)
+		Automation:SetBunkerPin(option)
+		buildStatus:Set({ Content = Automation:GetBuildStatusText() })
+	end,
+})
+
+BuildTab:CreateButton({
+	Name = "Go to Active Build Piece",
+	Description = "Teleports right beside the current glowing blue construction piece",
+	Callback = function()
+		local ok, msg = Automation:TeleportToBuildSite()
+		buildStatus:Set({ Content = Automation:GetBuildStatusText() })
+		Window:Notify({
+			Title = "Build Site",
+			Content = msg,
+			Duration = 2.5,
+			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
+		})
+	end,
+})
+
+--====================================================
+-- TAB 6: ESP & VISUALS
 --====================================================
 local EspTab = Window:CreateTab("ESP")
 
@@ -11180,6 +12509,10 @@ SettingsTab:CreateButton({
 		Automation:SetFastAssemble(false)
 		tglAutoCraft:Set(false, true)
 		tglFastAssemble:Set(false, true)
+		Automation:SetAutoBuild(false)
+		Automation:SetBuildAutoPrerequisites(false)
+		tglAutoBuild:Set(false, true)
+		tglBuildAutoPrereq:Set(false, true)
 
 		Combat:SetAntiVoid(false)
 		Combat:SetAutoHeal(false)
@@ -11224,6 +12557,8 @@ local function refreshActiveTabStatus(tabName: string)
 	elseif tabName == "Lab & Craft" then
 		researchStatus:Set({ Content = Automation:GetResearchStatusText() })
 		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
+	elseif tabName == "Build" then
+		buildStatus:Set({ Content = Automation:GetBuildStatusText() })
 	elseif tabName == "Home" then
 		homeStatus:Set({ Content = Material:GetHomeStatusText() })
 	end
