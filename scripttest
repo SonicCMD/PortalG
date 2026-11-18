@@ -2252,11 +2252,21 @@ local function updateAllEntries()
 				ensureHighlight(entry, char)
 				if entry.highlight then
 					local color = getTargetColor(entry.player)
-					entry.highlight.FillColor = color
-					entry.highlight.OutlineColor = COLOR_WHITE
-					entry.highlight.FillTransparency = config.FillTransparency
-					entry.highlight.OutlineTransparency = config.OutlineTransparency
-					entry.highlight.Enabled = true
+					if entry.highlight.FillColor ~= color then
+						entry.highlight.FillColor = color
+					end
+					if entry.highlight.OutlineColor ~= COLOR_WHITE then
+						entry.highlight.OutlineColor = COLOR_WHITE
+					end
+					if entry.highlight.FillTransparency ~= config.FillTransparency then
+						entry.highlight.FillTransparency = config.FillTransparency
+					end
+					if entry.highlight.OutlineTransparency ~= config.OutlineTransparency then
+						entry.highlight.OutlineTransparency = config.OutlineTransparency
+					end
+					if not entry.highlight.Enabled then
+						entry.highlight.Enabled = true
+					end
 				end
 			elseif entry.highlight then
 				entry.highlight:Destroy()
@@ -2425,8 +2435,8 @@ end
 
 local Material = {}
 
-local maxHighlights = 14
-local visualInterval = 0.25
+local maxHighlights = 10
+local visualInterval = 0.32
 local lowEndMode = false
 
 local COLOR_WHITE = Color3.new(1, 1, 1)
@@ -2448,10 +2458,10 @@ function Material:SetLowEndMode(enabled: boolean)
 	lowEndMode = enabled == true
 	if lowEndMode then
 		maxHighlights = 4
-		visualInterval = 0.50
+		visualInterval = 0.60
 	else
-		maxHighlights = 14
-		visualInterval = 0.25
+		maxHighlights = 10
+		visualInterval = 0.32
 	end
 end
 
@@ -2682,11 +2692,20 @@ local function getGameData(): any
 	return cachedGameData
 end
 
+local itemMetaCache: { [string]: { name: string, color: Color3 } } = {}
+
 local function getItemMeta(itemId: string): (string, Color3)
+	local cached = itemMetaCache[itemId]
+	if cached then
+		return cached.name, cached.color
+	end
 	local gd = getGameData()
 	local meta = gd and gd.Items and gd.Items[itemId]
 	if type(meta) == "table" then
-		return tostring(meta.name or itemId), meta.color or Color3.fromRGB(56, 189, 248)
+		local n = tostring(meta.name or itemId)
+		local c = meta.color or Color3.fromRGB(56, 189, 248)
+		itemMetaCache[itemId] = { name = n, color = c }
+		return n, c
 	end
 	return itemId, Color3.fromRGB(56, 189, 248)
 end
@@ -2815,6 +2834,9 @@ local function scanMatchingNodes(includeSkipped)
 		end
 		-- Early exit for non-matching node when a specific item filter is active
 		local wantThis = (config.SelectedItem == "ALL" or config.SelectedItem == itemId)
+		if not wantThis and not includeSkipped then
+			continue
+		end
 		if not includeSkipped and skippedNodes[node] and skippedNodes[node] > now then
 			continue
 		end
@@ -2840,7 +2862,9 @@ local function scanMatchingNodes(includeSkipped)
 		end
 
 		local itemName, itemColor = getItemMeta(itemId)
-		countsByName[itemName] = (countsByName[itemName] or 0) + 1
+		if includeSkipped then
+			countsByName[itemName] = (countsByName[itemName] or 0) + 1
+		end
 
 		if wantThis then
 			table.insert(results, {
@@ -4437,6 +4461,10 @@ local function findOwnedPortalGun(requireGolden: boolean): (Tool?, string)
 end
 
 local function configurePortalGunTarget(code: string)
+	local setCodeFn = rawget(_G, "PG_GunSetCode")
+	if type(setCodeFn) == "function" then
+		pcall(setCodeFn, code)
+	end
 	local pg = LocalPlayer:FindFirstChild("PlayerGui")
 	if not pg then
 		return
@@ -4447,6 +4475,10 @@ local function configurePortalGunTarget(code: string)
 			local modeVal = ui:FindFirstChild("PortalMode")
 			if modeVal and modeVal:IsA("StringValue") then
 				modeVal.Value = "dim"
+			end
+			local rangeVal = ui:FindFirstChild("PortalRange")
+			if rangeVal and rangeVal:IsA("NumberValue") then
+				rangeVal.Value = 30
 			end
 			local td = ui:FindFirstChild("TargetDimension")
 			if td and td:IsA("StringValue") then
@@ -4470,46 +4502,211 @@ local function crossPortalInstance(portalModel: Model, side: string, targetDimId
 	if not char or not hum or not root or hum.Health <= 0 then
 		return false, "Character not ready"
 	end
-	local cfAttr = portalModel:GetAttribute(side .. "CF")
+	local activePortal: Model? = portalModel
+	local activeSide = side
+	local cfAttr = if activePortal then activePortal:GetAttribute(activeSide .. "CF") else nil
 	if typeof(cfAttr) ~= "CFrame" then
 		return false, "Portal surface CFrame missing"
 	end
+	local initialPortalPos = cfAttr.Position
+	local portalsFolder = workspace:FindFirstChild("Portals")
 
+	stopFlightSession()
 	releaseLootPhysics()
 	hum.Sit = false
 	hum.PlatformStand = false
 	root.Anchored = false
-	root.AssemblyLinearVelocity = Vector3.zero
 	root.AssemblyAngularVelocity = Vector3.zero
-
-	local enterFront = cfAttr.Position + cfAttr.LookVector * 2.4
-	local enterIn = cfAttr.Position + cfAttr.LookVector * 0.35
-	char:PivotTo(CFrame.lookAt(enterFront, enterIn))
-	task.wait(0.06)
-	char:PivotTo(CFrame.lookAt(enterIn, enterIn - cfAttr.LookVector * 2))
-	pcall(function()
-		hum:Move(-cfAttr.LookVector, false)
-	end)
-
-	local waitDeadline = os.clock() + 8.5
-	local sentManualCross = false
-	local pc = ReplicatedStorage:FindFirstChild("PortalCrossed")
-	while os.clock() < waitDeadline and not destroyed do
-		local curDim = tostring(LocalPlayer:GetAttribute("CurrentDimension") or "")
-		if targetDimId and (curDim == targetDimId or (targetDimId:sub(1, 7) == "PLANET_" and curDim == targetDimId)) then
-			pcall(function() hum:Move(Vector3.zero, false) end)
-			return true, ("Crossed portal to %s"):format(targetDimId)
-		end
-		if os.clock() > waitDeadline - 7.3 and not sentManualCross and pc and pc:IsA("RemoteEvent") and portalModel.Parent then
-			sentManualCross = true
-			pcall(function()
-				pc:FireServer(portalModel, side)
-			end)
-		end
-		task.wait(0.1)
+	local origWalkSpeed = hum.WalkSpeed
+	if hum.WalkSpeed < 20 then
+		pcall(function()
+			hum.WalkSpeed = 20
+		end)
 	end
-	pcall(function() hum:Move(Vector3.zero, false) end)
-	return false, "Portal crossing timed out"
+
+	local function resolveGroundStandY(probePos: Vector3, fallbackY: number): number
+		local filter = if portalsFolder then { char, portalsFolder } else { char }
+		sharedFloorParams.FilterDescendantsInstances = filter
+		local hit = workspace:Raycast(probePos + Vector3.new(0, 5, 0), Vector3.new(0, -22, 0), sharedFloorParams)
+		if hit and hit.Instance then
+			return hit.Position.Y + 3.0 * getCharacterScale()
+		end
+		return fallbackY
+	end
+
+	-- Compute front staging point (rel.Z = -5.5, aligned vertically inside the portal disc)
+	local look0 = cfAttr.LookVector
+	local isFloorPortal0 = math.abs(look0.Y) > 0.7
+	local flatOut0 = Vector3.new(look0.X, 0, look0.Z)
+	local outDir0 = if flatOut0.Magnitude > 0.05 then flatOut0.Unit else Vector3.new(0, 0, 1)
+	local rawGroundY0 = resolveGroundStandY(cfAttr.Position + outDir0 * 4.5, cfAttr.Position.Y - 1.0)
+	local standY0 = math.clamp(rawGroundY0, cfAttr.Position.Y - 1.8, cfAttr.Position.Y + 1.2)
+	local stagingPos0 = Vector3.new(cfAttr.Position.X, standY0, cfAttr.Position.Z) + outDir0 * 5.5
+	local initRel = cfAttr:PointToObjectSpace(root.Position)
+
+	-- If character is far (>18m), behind the portal plane (initRel.Z > 0.2), or vertically out of disc alignment,
+	-- position at the front approach spot (5.5m in front of the portal) before walking through on foot
+	if (root.Position - cfAttr.Position).Magnitude > 18 or math.abs(initRel.Y) > 2.4 or initRel.Z > 0.2 then
+		char:PivotTo(CFrame.lookAt(stagingPos0, Vector3.new(cfAttr.Position.X, standY0, cfAttr.Position.Z)))
+		root.AssemblyLinearVelocity = Vector3.zero
+		task.wait(0.08)
+	end
+
+	-- Walk-Through Loop: walk on foot from front of portal (rel.Z < 0) straight through the portal center (rel.Z > 0.05)
+	local waitDeadline = os.clock() + 10.5
+	local walkPhase = "enter" -- "stage_front" | "enter"
+	local phaseSwitchClock = os.clock()
+	local sentFallbackCross = false
+	local pc = ReplicatedStorage:FindFirstChild("PortalCrossed")
+	local homeDim = tostring(LocalPlayer:GetAttribute("HomeDimension") or "C137")
+
+	local function hasReachedTargetDimension(): boolean
+		local curDim = tostring(LocalPlayer:GetAttribute("CurrentDimension") or "")
+		if not targetDimId or targetDimId == "" then
+			return false
+		end
+		if curDim == targetDimId then
+			return true
+		end
+		if (targetDimId == "C137" or targetDimId == "Earth" or targetDimId == homeDim) and (curDim == homeDim or curDim == "" or curDim == "C137") then
+			return true
+		end
+		return false
+	end
+
+	while os.clock() < waitDeadline and not destroyed do
+		if hasReachedTargetDimension() then
+			pcall(function()
+				hum:Move(Vector3.zero, false)
+				hum.WalkSpeed = origWalkSpeed
+			end)
+			return true, ("Walked through portal to %s"):format(tostring(targetDimId))
+		end
+
+		char = LocalPlayer.Character
+		hum = char and char:FindFirstChildOfClass("Humanoid")
+		root = getRootPart()
+		if not char or not hum or not root or hum.Health <= 0 then
+			break
+		end
+
+		-- If a "pending" portal finished loading and was replaced by a linked portal at the same position, switch to it seamlessly
+		if portalsFolder and (not activePortal or not activePortal.Parent or activePortal:GetAttribute("Kind") == "pending") then
+			for _, child in ipairs(portalsFolder:GetChildren()) do
+				if child:IsA("Model") and not child:GetAttribute("Closing") then
+					local acf = child:GetAttribute("ACF")
+					local bcf = child:GetAttribute("BCF")
+					if typeof(acf) == "CFrame" and (acf.Position - initialPortalPos).Magnitude <= 5 then
+						if child:GetAttribute("Linked") == true or activePortal == nil or not activePortal.Parent then
+							activePortal = child
+							activeSide = "A"
+							break
+						end
+					elseif typeof(bcf) == "CFrame" and (bcf.Position - initialPortalPos).Magnitude <= 5 then
+						activePortal = child
+						activeSide = "B"
+						break
+					end
+				end
+			end
+		end
+
+		local curCF = if activePortal and activePortal.Parent then activePortal:GetAttribute(activeSide .. "CF") else nil
+		if typeof(curCF) == "CFrame" then
+			cfAttr = curCF
+		end
+
+		-- If PortalTravel's holdIn() anchored root while waiting for the other side to load, wait cleanly without fighting it
+		if root.Anchored then
+			lastCollectMsg = ("Portal loading %s..."):format(tostring(targetDimId or "destination"))
+			task.wait(0.08)
+			continue
+		end
+
+		hum.Sit = false
+		hum.PlatformStand = false
+
+		local look = cfAttr.LookVector
+		isFloorPortal0 = math.abs(look.Y) > 0.7
+		local flatOut = Vector3.new(look.X, 0, look.Z)
+		local outDir = if flatOut.Magnitude > 0.05 then flatOut.Unit else outDir0
+		local inDir = -outDir
+		local portalWalkY = math.clamp(
+			resolveGroundStandY(cfAttr.Position + outDir * 3.5, cfAttr.Position.Y - 1.0),
+			cfAttr.Position.Y - 1.8,
+			cfAttr.Position.Y + 1.2
+		)
+		local rel = cfAttr:PointToObjectSpace(root.Position)
+
+		-- In PortalTravel.lua:
+		--   rel.Z < 0 is in front of the portal (+LookVector side)
+		--   rel.Z > 0.05 is through the portal plane (-LookVector side)
+		--   math.sqrt(rel.X^2 + rel.Y^2) < size/2 - 0.3 (~3.95 studs) is required to trigger traverse()
+		if walkPhase == "enter" and rel.Z > 2.2 then
+			walkPhase = "stage_front"
+			phaseSwitchClock = os.clock()
+		elseif walkPhase == "stage_front" and (rel.Z <= -4.6 or os.clock() - phaseSwitchClock > 1.3) then
+			walkPhase = "enter"
+			phaseSwitchClock = os.clock()
+		end
+
+		local goalPos: Vector3
+		if isFloorPortal0 then
+			goalPos = Vector3.new(cfAttr.Position.X, portalWalkY, cfAttr.Position.Z)
+		elseif walkPhase == "stage_front" then
+			goalPos = Vector3.new(cfAttr.Position.X, portalWalkY, cfAttr.Position.Z) + outDir * 5.5
+		else
+			-- Walk straight through the center of the portal onto the -LookVector side (rel.Z = +2.8)
+			goalPos = Vector3.new(cfAttr.Position.X, portalWalkY, cfAttr.Position.Z) + inDir * 2.8
+		end
+
+		local flatDelta = Vector3.new(goalPos.X - root.Position.X, 0, goalPos.Z - root.Position.Z)
+		local walkDir = if flatDelta.Magnitude > 0.12 then flatDelta.Unit else inDir
+		local faceDir = if walkPhase == "stage_front" then walkDir else inDir
+
+		-- Keep vertical height within the portal disc if ground drops away
+		local nextY = if not isFloorPortal0 and math.abs(root.Position.Y - portalWalkY) > 2.0 then portalWalkY else root.Position.Y
+		local nextPos = Vector3.new(root.Position.X, nextY, root.Position.Z)
+
+		lastCollectMsg = ("Walking through portal to %s..."):format(tostring(targetDimId or "world"))
+		char:PivotTo(CFrame.lookAt(nextPos, nextPos + faceDir))
+		pcall(function()
+			hum:MoveTo(goalPos)
+			hum:Move(walkDir, false)
+		end)
+
+		local curVel = root.AssemblyLinearVelocity
+		local walkSpeed = math.max(hum.WalkSpeed, 20)
+		if isFloorPortal0 and flatDelta.Magnitude < 2.2 then
+			root.AssemblyLinearVelocity = Vector3.new(walkDir.X * 10, math.min(curVel.Y, -14), walkDir.Z * 10)
+		else
+			local vy = if math.abs(root.Position.Y - portalWalkY) > 1.5 then (portalWalkY - root.Position.Y) * 6 else math.max(curVel.Y, -2)
+			root.AssemblyLinearVelocity = Vector3.new(walkDir.X * walkSpeed, vy, walkDir.Z * walkSpeed)
+		end
+
+		-- Fallback server cross notification if client physics crossed the plane on laggy executor
+		if not sentFallbackCross and os.clock() > waitDeadline - 3.0 and pc and pc:IsA("RemoteEvent") and activePortal and activePortal.Parent then
+			if math.abs(rel.Z) < 2.6 and math.sqrt(rel.X * rel.X + rel.Y * rel.Y) < 4.5 then
+				sentFallbackCross = true
+				pcall(function()
+					pc:FireServer(activePortal, activeSide)
+				end)
+			end
+		end
+
+		task.wait(0.05)
+	end
+
+	pcall(function()
+		if hum and hum.Parent then
+			hum:Move(Vector3.zero, false)
+			hum.WalkSpeed = origWalkSpeed
+		end
+	end)
+	if hasReachedTargetDimension() then
+		return true, ("Walked through portal to %s"):format(tostring(targetDimId))
+	end
+	return false, "Portal walk-through timed out"
 end
 
 local function findOpenPortalTo(targetDimId: string): (Model?, string?)
@@ -4518,13 +4715,17 @@ local function findOpenPortalTo(targetDimId: string): (Model?, string?)
 		return nil, nil
 	end
 	for _, p in ipairs(portals:GetChildren()) do
-		if p:IsA("Model") and not p:GetAttribute("Closing") and p:GetAttribute("Linked") ~= false then
+		if p:IsA("Model") and not p:GetAttribute("Closing") then
 			local dimB = tostring(p:GetAttribute("DimB") or "")
 			local dimA = tostring(p:GetAttribute("DimA") or "")
-			if dimB == targetDimId and typeof(p:GetAttribute("ACF")) == "CFrame" then
+			if p:GetAttribute("Linked") ~= false then
+				if dimB == targetDimId and typeof(p:GetAttribute("ACF")) == "CFrame" then
+					return p, "A"
+				elseif dimA == targetDimId and typeof(p:GetAttribute("BCF")) == "CFrame" then
+					return p, "B"
+				end
+			elseif p:GetAttribute("Kind") == "pending" and tostring(p:GetAttribute("Owner") or "") == LocalPlayer.Name and typeof(p:GetAttribute("ACF")) == "CFrame" then
 				return p, "A"
-			elseif dimA == targetDimId and typeof(p:GetAttribute("BCF")) == "CFrame" then
-				return p, "B"
 			end
 		end
 	end
@@ -4543,6 +4744,35 @@ local function findChalkDoorForFroopy(): BasePart?
 	return nil
 end
 
+local function resolvePortalWalkDirection(root: BasePart, char: Model): (Vector3, Vector3)
+	local baseLook = root.CFrame.LookVector
+	local baseFlat = Vector3.new(baseLook.X, 0, baseLook.Z)
+	baseFlat = if baseFlat.Magnitude > 0.05 then baseFlat.Unit else Vector3.new(0, 0, -1)
+
+	local portalsFolder = workspace:FindFirstChild("Portals")
+	sharedFloorParams.FilterDescendantsInstances = if portalsFolder then { char, portalsFolder } else { char }
+
+	local angles = { 0, math.rad(45), math.rad(-45), math.rad(90), math.rad(-90), math.pi }
+	for _, ang in ipairs(angles) do
+		local cs, sn = math.cos(ang), math.sin(ang)
+		local dir = Vector3.new(baseFlat.X * cs - baseFlat.Z * sn, 0, baseFlat.X * sn + baseFlat.Z * cs).Unit
+		local origin = root.Position + Vector3.new(0, 1.5, 0)
+		local wallHit = workspace:Raycast(origin, dir * 22, sharedFloorParams)
+		if wallHit and wallHit.Instance and math.abs(wallHit.Normal.Y) < 0.45 and wallHit.Distance >= 6.5 then
+			-- Found a clean vertical wall 6.5..22m ahead with walkable space in front of it
+			return dir, wallHit.Position
+		end
+		-- Check if ground 10m ahead is solid for an open-air vertical portal
+		local groundProbe = root.Position + dir * 10 + Vector3.new(0, 6, 0)
+		local groundHit = workspace:Raycast(groundProbe, Vector3.new(0, -20, 0), sharedFloorParams)
+		if (not wallHit or wallHit.Distance >= 12) and groundHit and groundHit.Instance and groundHit.Normal.Y >= 0.5 then
+			return dir, origin + dir * 18
+		end
+	end
+
+	return baseFlat, (root.Position + Vector3.new(0, 1.5, 0) + baseFlat * 16)
+end
+
 local function tryPortalGunToTarget(req: any): (boolean, string)
 	if req.dimId == "FROOPYLAND" then
 		local chalkPart = findChalkDoorForFroopy()
@@ -4558,7 +4788,7 @@ local function tryPortalGunToTarget(req: any): (boolean, string)
 		return false, "Froopyland requires Magic Chalk door on Earth"
 	end
 
-	-- 1) Reuse any active portal in workspace pointing to req.dimId
+	-- 1) Reuse any active portal in workspace pointing to req.dimId (walking through it!)
 	if req.dimId then
 		local exPortal, exSide = findOpenPortalTo(req.dimId)
 		if exPortal and exSide then
@@ -4569,7 +4799,7 @@ local function tryPortalGunToTarget(req: any): (boolean, string)
 		end
 	end
 
-	-- 2) Equip owned PortalGun / GoldenPortalGun & fire onto flat floor/wall ahead
+	-- 2) Equip owned PortalGun / GoldenPortalGun & shoot an upright vertical portal ahead
 	local pgTool, pgErr = findOwnedPortalGun(req.needGolden == true)
 	if not pgTool then
 		return false, pgErr
@@ -4614,28 +4844,31 @@ local function tryPortalGunToTarget(req: any): (boolean, string)
 		end
 	end
 
-	-- Aim downward onto clear ground/floor 7 studs in front of character
+	-- Aim horizontally along walkable ground (or at a wall 6.5..22m ahead) so PortalPlacement spawns an upright vertical portal
 	releaseLootPhysics()
-	sharedFloorParams.FilterDescendantsInstances = { char }
-	local fwd = root.CFrame.LookVector
-	local flatVec = Vector3.new(fwd.X, 0, fwd.Z)
-	local flatFwd = if flatVec.Magnitude > 0.05 then flatVec.Unit else Vector3.new(0, 0, -1)
-	local probeOrigin = root.Position + flatFwd * 7 + Vector3.new(0, 6, 0)
-	local hitSurface = workspace:Raycast(probeOrigin, Vector3.new(0, -24, 0), sharedFloorParams)
-	local aimSpot = if hitSurface then hitSurface.Position else (root.Position + (flatFwd * 7) - Vector3.new(0, 3.5, 0))
+	local flatFwd, aimSpot = resolvePortalWalkDirection(root, char)
 
 	local cam = workspace.CurrentCamera
 	if cam then
 		cam.CameraType = Enum.CameraType.Custom
 		cam.CameraSubject = hum
-		local lookFrom = root.Position + Vector3.new(0, 3.5, 0) - flatFwd * 4
+		local lookFrom = root.Position + Vector3.new(0, 2.5, 0) - flatFwd * 4
 		if (aimSpot - lookFrom).Magnitude > 0.5 then
 			cam.CFrame = CFrame.lookAt(lookFrom, aimSpot)
 			cam.Focus = CFrame.new(aimSpot)
 		end
 	end
 	char:PivotTo(CFrame.lookAt(root.Position, Vector3.new(aimSpot.X, root.Position.Y, aimSpot.Z)))
-	task.wait(0.08)
+
+	local prevAimLock = rawget(_G, "PG_AimLock")
+	local tempAimFn = function()
+		return aimSpot
+	end
+	rawset(_G, "PG_AimLock", tempAimFn)
+	pcall(function()
+		LocalPlayer:SetAttribute("AimCenter", true)
+	end)
+	task.wait(0.06)
 
 	pcall(function()
 		pgTool:Activate()
@@ -4644,7 +4877,10 @@ local function tryPortalGunToTarget(req: any): (boolean, string)
 	if type(clickFn) == "function" then
 		pcall(clickFn)
 	end
-	task.delay(0.08, function()
+	task.delay(0.10, function()
+		if rawget(_G, "PG_AimLock") == tempAimFn then
+			rawset(_G, "PG_AimLock", prevAimLock)
+		end
 		pcall(function()
 			if pgTool and pgTool.Parent == char then
 				pgTool:Deactivate()
@@ -4653,14 +4889,14 @@ local function tryPortalGunToTarget(req: any): (boolean, string)
 	end)
 
 	local spawnedPortal: Model? = nil
-	local findDeadline = os.clock() + 3.2
+	local findDeadline = os.clock() + 3.6
 	while os.clock() < findDeadline and not destroyed do
 		if portalsFolder then
 			for _, child in ipairs(portalsFolder:GetChildren()) do
-				if child:IsA("Model") and not existingPortals[child] then
+				if child:IsA("Model") and not existingPortals[child] and not child:GetAttribute("Closing") then
 					local owner = tostring(child:GetAttribute("Owner") or "")
 					local acf = child:GetAttribute("ACF")
-					local nearShot = typeof(acf) == "CFrame" and (acf.Position - aimSpot).Magnitude <= 35
+					local nearShot = typeof(acf) == "CFrame" and (acf.Position - root.Position).Magnitude <= 45
 					if (owner == "" or owner == LocalPlayer.Name) and (nearShot or typeof(acf) == "CFrame") then
 						spawnedPortal = child
 						break
@@ -4672,9 +4908,15 @@ local function tryPortalGunToTarget(req: any): (boolean, string)
 			break
 		end
 		if isPlayerInWorldTarget(req) then
+			if rawget(_G, "PG_AimLock") == tempAimFn then
+				rawset(_G, "PG_AimLock", prevAimLock)
+			end
 			return true, ("Entered %s via Portal Gun"):format(req.displayName)
 		end
-		task.wait(0.08)
+		task.wait(0.06)
+	end
+	if rawget(_G, "PG_AimLock") == tempAimFn then
+		rawset(_G, "PG_AimLock", prevAimLock)
 	end
 
 	if not spawnedPortal then
@@ -6511,7 +6753,7 @@ local origAssemblyRun: any = nil
 
 local solverConn: RBXScriptConnection? = nil
 local solverAcc = 0
-local solverInterval = 0.065
+local solverInterval = 0.085
 local lowEndMode = false
 
 local signalConnCache: { [any]: { [string]: { clock: number, conns: { any } } } } = {}
@@ -6580,7 +6822,7 @@ end
 
 function Automation:SetLowEndMode(enabled: boolean)
 	lowEndMode = enabled == true
-	solverInterval = if lowEndMode then 0.11 else 0.065
+	solverInterval = if lowEndMode then 0.12 else 0.085
 end
 
 local function findScriptInputConns(signal: RBXScriptSignal, scriptNeedle: string): { any }
@@ -6786,7 +7028,7 @@ end
 
 local function getCachedLabels(container: Instance, cacheRef: Instance?, cacheClock: number, cacheList: { TextLabel }): ({ TextLabel }, Instance, number)
 	local now = os.clock()
-	if cacheRef == container and (now - cacheClock) < 0.45 and #cacheList > 0 then
+	if cacheRef == container and (now - cacheClock) < 0.65 and #cacheList > 0 then
 		return cacheList, container, cacheClock
 	end
 	table.clear(cacheList)
@@ -7370,7 +7612,7 @@ local function fetchStashNow()
 end
 
 local function refreshStash(force: boolean?, syncWait: boolean?)
-	if not force and (os.clock() - lastStashRefresh < 2.0) then
+	if not force and (os.clock() - lastStashRefresh < 8.0) then
 		return
 	end
 	lastStashRefresh = os.clock()
@@ -8444,14 +8686,22 @@ local function findActiveConstructionPrompt(siteAtPos: Vector3?): (ProximityProm
 	end
 
 	if not bestPrompt and typeof(siteAtPos) == "Vector3" then
-		for _, desc in ipairs(workspace:GetDescendants()) do
-			if desc:IsA("ProximityPrompt") and desc.Enabled then
-				local pPos = getPromptWorldPos(desc)
+		-- Use C++ spatial query (GetPartBoundsInRadius) instead of workspace:GetDescendants() to avoid frame spikes
+		local partsNear = workspace:GetPartBoundsInRadius(siteAtPos, 24)
+		local checkedModels: { [Instance]: boolean } = {}
+		for _, part in ipairs(partsNear) do
+			local pr = part:FindFirstChildWhichIsA("ProximityPrompt", true)
+			if not pr and part.Parent and not checkedModels[part.Parent] then
+				checkedModels[part.Parent] = true
+				pr = part.Parent:FindFirstChildWhichIsA("ProximityPrompt", true)
+			end
+			if pr and pr.Enabled then
+				local pPos = getPromptWorldPos(pr)
 				if pPos then
 					local d = (pPos - siteAtPos).Magnitude
 					if d <= 28 and d < bestDist then
 						bestDist = d
-						bestPrompt = desc
+						bestPrompt = pr
 						bestPos = pPos
 					end
 				end
@@ -9152,6 +9402,7 @@ local guardConfig = {
 	AutoEscapeHome = false,
 	EscapeAtPct = 30,
 	EscapeOnHazard = true,
+	AntiAfk = false,
 }
 
 local mobConfig = {
@@ -9263,12 +9514,19 @@ local mobEspVisuals: { [Model]: { bb: BillboardGui, lbl: TextLabel, hl: Highligh
 local mobEspAcc = 0
 
 local lowEndMode = false
-local guardInterval = 0.14
-local aimInterval = 0.05
-local mobEspInterval = 0.28
-local maxMobEspHighlights = 12
-local dropSweepInterval = 0.75
+local guardInterval = 0.18
+local aimInterval = 0.075
+local mobEspInterval = 0.35
+local maxMobEspHighlights = 10
+local dropSweepInterval = 0.85
 local lastFallbackMobScanClock = 0
+local cachedStatusMobs: { any } = {}
+local cachedStatusMobsClock = 0
+
+local antiAfkToken = 0
+local antiAfkIdledConn: RBXScriptConnection? = nil
+local antiAfkPrevConns: { any } = {}
+local antiAfkCount = 0
 
 local MOB_HL_FILL = Color3.fromRGB(248, 113, 113)
 local MOB_HL_OUTLINE = Color3.fromRGB(254, 202, 202)
@@ -9315,17 +9573,17 @@ end
 function Combat:SetLowEndMode(enabled: boolean)
 	lowEndMode = enabled == true
 	if lowEndMode then
-		guardInterval = 0.20
-		aimInterval = 0.08
-		mobEspInterval = 0.55
+		guardInterval = 0.24
+		aimInterval = 0.10
+		mobEspInterval = 0.60
 		maxMobEspHighlights = 4
-		dropSweepInterval = 1.35
+		dropSweepInterval = 1.40
 	else
-		guardInterval = 0.14
-		aimInterval = 0.05
-		mobEspInterval = 0.28
-		maxMobEspHighlights = 12
-		dropSweepInterval = 0.75
+		guardInterval = 0.18
+		aimInterval = 0.075
+		mobEspInterval = 0.35
+		maxMobEspHighlights = 10
+		dropSweepInterval = 0.85
 	end
 end
 
@@ -9468,7 +9726,7 @@ local function isHostileMob(m: Instance): (boolean, string, Humanoid?, BasePart?
 	return true, enemyKey, hum, root
 end
 
-local function scanMobs(filterEnemyId: string?, maxDist: number?, requireSafeBounds: boolean?, ignoreSkipped: boolean?): { { model: Model, id: string, displayName: string, hum: Humanoid, root: BasePart, dist: number, isRanged: boolean } }
+local function scanMobs(filterEnemyId: string?, maxDist: number?, requireSafeBounds: boolean?, ignoreSkipped: boolean?): ({ { model: Model, id: string, displayName: string, hum: Humanoid, root: BasePart, dist: number, isRanged: boolean } }, number)
 	local _, _, myRoot = getCharParts()
 	local originPos = if myRoot then myRoot.Position else (workspace.CurrentCamera and workspace.CurrentCamera.CFrame.Position or Vector3.zero)
 	local limit = maxDist or mobConfig.MaxHuntDist
@@ -9478,18 +9736,13 @@ local function scanMobs(filterEnemyId: string?, maxDist: number?, requireSafeBou
 
 	local seen: { [Model]: boolean } = {}
 	local out = {}
+	local skippedCount = 0
 
 	local function consider(m: Instance)
 		if not m:IsA("Model") or seen[m] then
 			return
 		end
 		seen[m] = true
-		if ignoreSkipped and skippedMobs[m] then
-			if skippedMobs[m] > nowSkip then
-				return
-			end
-			skippedMobs[m] = nil
-		end
 		local okMob, eId, hum, mRoot = isHostileMob(m)
 		if not okMob or not hum or not mRoot then
 			return
@@ -9506,6 +9759,13 @@ local function scanMobs(filterEnemyId: string?, maxDist: number?, requireSafeBou
 			if not safeOk then
 				return
 			end
+		end
+		if ignoreSkipped and skippedMobs[m] then
+			if skippedMobs[m] > nowSkip then
+				skippedCount += 1
+				return
+			end
+			skippedMobs[m] = nil
 		end
 
 		local meta = gd and gd.Enemies and gd.Enemies[eId]
@@ -9525,9 +9785,9 @@ local function scanMobs(filterEnemyId: string?, maxDist: number?, requireSafeBou
 	for _, tagged in ipairs(CollectionService:GetTagged("Enemy")) do
 		consider(tagged)
 	end
-	if #out == 0 then
+	if #out == 0 and skippedCount == 0 then
 		local now = os.clock()
-		if now - lastFallbackMobScanClock >= 0.7 then
+		if now - lastFallbackMobScanClock >= 2.5 then
 			lastFallbackMobScanClock = now
 			for _, ch in ipairs(workspace:GetChildren()) do
 				if ch:IsA("Model") then
@@ -9546,7 +9806,7 @@ local function scanMobs(filterEnemyId: string?, maxDist: number?, requireSafeBou
 	table.sort(out, function(a, b)
 		return a.dist < b.dist
 	end)
-	return out
+	return out, skippedCount
 end
 
 --====================================================
@@ -10514,13 +10774,12 @@ local function startAutoHuntLoop(myToken: number)
 				continue
 			end
 
-			local targets = scanMobs(mobConfig.HuntFilter, mobConfig.MaxHuntDist, true, true)
+			local targets, skippedNearby = scanMobs(mobConfig.HuntFilter, mobConfig.MaxHuntDist, true, true)
 			if #targets == 0 then
 				currentAimModel = nil
 				currentAimPart = nil
-				local allTargets = scanMobs(mobConfig.HuntFilter, mobConfig.MaxHuntDist, true, false)
-				if #allTargets > 0 then
-					lastMobMsg = ("All %d nearby mobs blocked in buildings (waiting)..."):format(#allTargets)
+				if skippedNearby > 0 then
+					lastMobMsg = ("All %d nearby mobs blocked in buildings (waiting)..."):format(skippedNearby)
 				else
 					lastMobMsg = ("No %s nearby"):format(if mobConfig.HuntFilter == "ALL" then "mobs" else mobConfig.HuntFilter)
 				end
@@ -11225,6 +11484,105 @@ function Combat:SetEscapeAtPct(pct: number)
 	guardConfig.EscapeAtPct = math.clamp(math.round(pct), 10, 80)
 end
 
+local function triggerAntiAfkPulse()
+	if destroyed or not guardConfig.AntiAfk then
+		return
+	end
+	antiAfkCount += 1
+	pcall(function()
+		local vu = game:GetService("VirtualUser")
+		local cam = workspace.CurrentCamera
+		local cf = if cam then cam.CFrame else CFrame.new()
+		vu:CaptureController()
+		vu:ClickButton2(Vector2.new(0, 0), cf)
+		vu:Button2Down(Vector2.new(0, 0), cf)
+		task.delay(0.05, function()
+			pcall(function()
+				vu:Button2Up(Vector2.new(0, 0), cf)
+			end)
+		end)
+	end)
+	pcall(function()
+		local vim = game:GetService("VirtualInputManager")
+		vim:SendMouseMoveEvent(1, 1, game)
+	end)
+	pcall(function()
+		local cam = workspace.CurrentCamera
+		if cam then
+			local orig = cam.CFrame
+			cam.CFrame = orig * CFrame.Angles(0, 0.0001, 0)
+			task.delay(0.03, function()
+				if cam and cam.Parent then
+					cam.CFrame = orig
+				end
+			end)
+		end
+	end)
+end
+
+function Combat:SetAntiAfk(enabled: boolean)
+	guardConfig.AntiAfk = enabled == true
+	antiAfkToken += 1
+	local myToken = antiAfkToken
+
+	if antiAfkIdledConn then
+		antiAfkIdledConn:Disconnect()
+		antiAfkIdledConn = nil
+	end
+
+	if not guardConfig.AntiAfk then
+		for _, c in ipairs(antiAfkPrevConns) do
+			pcall(function()
+				if type(c.Enable) == "function" then
+					c:Enable()
+				end
+			end)
+		end
+		table.clear(antiAfkPrevConns)
+		return
+	end
+
+	-- 1) Disable built-in Roblox Idled disconnect connections on executors with getconnections
+	pcall(function()
+		local gc = rawget(_G, "getconnections")
+		if not gc and getgenv then
+			gc = getgenv().getconnections
+		end
+		if type(gc) == "function" then
+			for _, conn in ipairs(gc(LocalPlayer.Idled)) do
+				if conn and type(conn.Disable) == "function" then
+					table.insert(antiAfkPrevConns, conn)
+					pcall(function()
+						conn:Disable()
+					end)
+				end
+			end
+		end
+	end)
+
+	-- 2) Connect Idled listener to immediately reset idle timer via VirtualUser & VirtualInputManager
+	antiAfkIdledConn = LocalPlayer.Idled:Connect(function()
+		if guardConfig.AntiAfk and not destroyed then
+			triggerAntiAfkPulse()
+		end
+	end)
+
+	-- 3) Lightweight periodic pulse every 150s (zero frame-time cost, preserves AFK chair seating)
+	triggerAntiAfkPulse()
+	task.spawn(function()
+		while guardConfig.AntiAfk and myToken == antiAfkToken and not destroyed do
+			task.wait(150)
+			if guardConfig.AntiAfk and myToken == antiAfkToken and not destroyed then
+				triggerAntiAfkPulse()
+			end
+		end
+	end)
+end
+
+function Combat:IsAntiAfkEnabled(): boolean
+	return guardConfig.AntiAfk == true
+end
+
 function Combat:EnableAllGameProtections(): (boolean, string)
 	local pt = ReplicatedStorage:FindFirstChild("ProtectionToggle")
 	if not pt or not pt:IsA("RemoteFunction") then
@@ -11359,6 +11717,7 @@ function Combat:GetToggleStates(): { [string]: boolean }
 		AntiVoid = guardConfig.AntiVoid,
 		AutoHeal = guardConfig.AutoHeal,
 		AutoEscapeHome = guardConfig.AutoEscapeHome,
+		AntiAfk = guardConfig.AntiAfk,
 		AutoAim = mobConfig.AutoAim,
 		AutoHunt = mobConfig.AutoHunt,
 		MobEsp = mobConfig.MobEsp,
@@ -11369,16 +11728,21 @@ end
 function Combat:GetCombatStatusText(): string
 	local char, hum = getCharParts()
 	local hpStr = if hum then ("%d/%d (%.0f%%)"):format(math.floor(hum.Health), math.floor(hum.MaxHealth), (hum.Health / math.max(1, hum.MaxHealth)) * 100) else "N/A"
-	local mobs = scanMobs(mobConfig.HuntFilter, mobConfig.MaxHuntDist, false)
+	local now = os.clock()
+	if now - cachedStatusMobsClock >= 0.65 then
+		cachedStatusMobsClock = now
+		cachedStatusMobs = (scanMobs(mobConfig.HuntFilter, mobConfig.MaxHuntDist, false))
+	end
+	local mobs = cachedStatusMobs
 	local nearestStr = if mobs[1] then ("%s (%.0fm)"):format(mobs[1].displayName, mobs[1].dist) else "None"
-	return ("HP: %s | Mobs: %d | Nearest: %s\nGuardian: Void=%s Heal=%s AutoHome=%s | Kills: %d\nAimLock: %s | Farm Status: %s"):format(
+	return ("HP: %s | Mobs: %d | Nearest: %s\nGuardian: Void=%s Heal=%s Home=%s AFK=%s\nAimLock: %s | Farm Status: %s"):format(
 		hpStr,
 		#mobs,
 		nearestStr,
 		if guardConfig.AntiVoid then "ON" else "OFF",
 		if guardConfig.AutoHeal then "ON" else "OFF",
 		if guardConfig.AutoEscapeHome then "ON" else "OFF",
-		killedCount,
+		if guardConfig.AntiAfk then ("ON (%d)"):format(antiAfkCount) else "OFF",
 		if (mobConfig.AutoAim or mobConfig.AutoHunt) then "ACTIVE" else "OFF",
 		lastMobMsg
 	)
@@ -11409,6 +11773,7 @@ end
 
 function Combat:Destroy()
 	destroyed = true
+	self:SetAntiAfk(false)
 	guardConfig.AntiVoid = false
 	guardConfig.AutoHeal = false
 	guardConfig.AutoEscapeHome = false
@@ -11706,6 +12071,22 @@ local tglAntiVoid = CombatTab:CreateToggle({
 	Callback = function(enabled: boolean)
 		Combat:SetAntiVoid(enabled)
 		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+	end,
+})
+
+local tglAntiAfk = CombatTab:CreateToggle({
+	Name = "Anti-AFK (Prevent 20m Disconnect)",
+	Description = "Prevents Roblox 20-minute idle kick while farming or sitting in AFK mode",
+	CurrentValue = false,
+	Callback = function(enabled: boolean)
+		Combat:SetAntiAfk(enabled)
+		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+		Window:Notify({
+			Title = "Anti-AFK",
+			Content = if enabled then "Anti-AFK ENABLED (20m idle kick blocked)." else "Anti-AFK DISABLED.",
+			Duration = 2.5,
+			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
+		})
 	end,
 })
 
@@ -12363,7 +12744,7 @@ SettingsTab:CreateButton({
 
 SettingsTab:CreateSection("Performance & Weak Device")
 
-local monitorInterval = 0.45
+local monitorInterval = 0.65
 local savedGraphicsState: {
 	captured: boolean,
 	shadows: boolean?,
@@ -12382,7 +12763,7 @@ local function applyAllLowEndMode(enabled: boolean)
 	Material:SetLowEndMode(enabled)
 	Automation:SetLowEndMode(enabled)
 	Combat:SetLowEndMode(enabled)
-	monitorInterval = if enabled then 1.1 else 0.45
+	monitorInterval = if enabled then 1.25 else 0.65
 end
 
 local function isOwnEffect(inst: Instance): boolean
@@ -12515,6 +12896,7 @@ SettingsTab:CreateButton({
 		tglBuildAutoPrereq:Set(false, true)
 
 		Combat:SetAntiVoid(false)
+		Combat:SetAntiAfk(false)
 		Combat:SetAutoHeal(false)
 		Combat:SetAutoEscapeHome(false)
 		Combat:SetAutoAim(false)
@@ -12523,6 +12905,7 @@ SettingsTab:CreateButton({
 		Combat:SetAutoMission(false)
 		Combat:SetMissionAllowUnsafeBiomes(false)
 		tglAntiVoid:Set(false, true)
+		tglAntiAfk:Set(false, true)
 		tglAutoHeal:Set(false, true)
 		tglAutoEscapeHome:Set(false, true)
 		tglAutoAim:Set(false, true)
@@ -12628,7 +13011,9 @@ task.spawn(function()
 	while monitorActive do
 		task.wait(monitorInterval)
 		if monitorActive and Window:IsVisible() and not Window:IsMinimized() then
-			refreshActiveTabStatus(Window:GetActiveTabName())
+			if not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+				refreshActiveTabStatus(Window:GetActiveTabName())
+			end
 		end
 	end
 end)
