@@ -1,9 +1,24 @@
 --[[
-	RayfieldMenu_DeltaX.lua
-	Single-file standalone bundle for PortalG (DeltaX Mobile / Weak Executor / Studio).
+	RayfieldMenu (LocalScript)
+	Client controller in StarterPlayer.StarterPlayerScripts (and DeltaX Mobile single-file compatible).
+	Organized into 6 intuitive tabs with multi-select support, grouped action rows, and low-overhead updates.
 ]]
 
-local __mod_RayfieldLib = (function()
+if not game:IsLoaded() then
+	game.Loaded:Wait()
+end
+
+local prevCleanup = rawget(_G, "__RayfieldMenuCleanup")
+if type(prevCleanup) == "function" then
+	pcall(prevCleanup)
+end
+
+local Lighting = game:GetService("Lighting")
+local UserInputService = game:GetService("UserInputService")
+
+
+-- === MODULE: RayfieldLib ===
+local Rayfield = (function()
 --[[
 	RayfieldLib
 	Native Luau UI Framework inspired by Rayfield Interface Suite.
@@ -233,10 +248,11 @@ function RayfieldLib:CreateWindow(config)
 	screenGui.Parent = guiParent
 
 	local isolationHidden = false
+	local syntheticClickBlockedUntil = 0
 
 	-- Keep ScreenGui Enabled even when other scripts (ResearchLab / AssemblyBench) batch-hide PlayerGui
 	track(screenGui:GetPropertyChangedSignal("Enabled"):Connect(function()
-		if not destroyed and not isolationHidden and not screenGui.Enabled then
+		if not destroyed and not screenGui.Enabled then
 			task.defer(function()
 				if not destroyed and screenGui.Parent and not screenGui.Enabled then
 					screenGui.Enabled = true
@@ -289,6 +305,9 @@ function RayfieldLib:CreateWindow(config)
 	uiScale.Parent = mainFrame
 
 	local function getViewportSize(): Vector2
+		if screenGui.Parent and screenGui.AbsoluteSize.X > 50 and screenGui.AbsoluteSize.Y > 50 then
+			return screenGui.AbsoluteSize
+		end
 		local cam = workspace.CurrentCamera
 		if cam then
 			return cam.ViewportSize
@@ -296,14 +315,29 @@ function RayfieldLib:CreateWindow(config)
 		return Vector2.new(1280, 720)
 	end
 
+	local clampingPos = false
 	local function clampPosition(x: number, y: number, hOverride: number?): (number, number)
 		local vp = getViewportSize()
+		local margin = 6
+		local refH = hOverride or currentWindowH
+		local fitScale = math.min(uiScale.Scale, (vp.X - margin * 2) / WINDOW_W, (vp.Y - margin * 2) / math.max(1, refH))
+		local safeScale = math.clamp(math.round(fitScale * 100) / 100, 0.35, 1)
+		if safeScale < uiScale.Scale - 0.005 then
+			uiScale.Scale = safeScale
+		end
 		local sc = math.max(0.1, uiScale.Scale)
 		local visW = WINDOW_W * sc
-		local visH = (hOverride or currentWindowH) * sc
-		local maxX = math.max(8, vp.X - visW - 8)
-		local maxY = math.max(8, vp.Y - math.min(visH, vp.Y - 16) - 8)
-		return math.clamp(math.round(x), 8, maxX), math.clamp(math.round(y), 8, maxY)
+		local visH = refH * sc
+		local maxX = math.max(margin, math.floor(vp.X - visW - margin))
+		local maxY = math.max(margin, math.floor(vp.Y - visH - margin))
+		return math.clamp(math.round(x), margin, maxX), math.clamp(math.round(y), margin, maxY)
+	end
+
+	local function applyClampedMainPosition(x: number, y: number, hOverride: number?)
+		local nx, ny = clampPosition(x, y, hOverride)
+		clampingPos = true
+		mainFrame.Position = UDim2.fromOffset(nx, ny)
+		clampingPos = false
 	end
 
 	local function centerWindow()
@@ -311,18 +345,13 @@ function RayfieldLib:CreateWindow(config)
 		local sc = math.max(0.1, uiScale.Scale)
 		local cx = (vp.X - WINDOW_W * sc) * 0.5
 		local cy = (vp.Y - WINDOW_H * sc) * 0.5
-		local x, y = clampPosition(cx, cy, WINDOW_H)
-		mainFrame.Position = UDim2.fromOffset(x, y)
+		applyClampedMainPosition(cx, cy, WINDOW_H)
 	end
 
 	local lastVp = Vector2.zero
 	local hasCenteredOnce = false
 	local function updateResponsiveScale(forceCenter: boolean?)
-		local cam = workspace.CurrentCamera
-		if not cam then
-			return
-		end
-		local vp = cam.ViewportSize
+		local vp = getViewportSize()
 		if vp.X <= 50 or vp.Y <= 50 then
 			return
 		end
@@ -332,19 +361,33 @@ function RayfieldLib:CreateWindow(config)
 		end
 		lastVp = vp
 		hasCenteredOnce = true
-		local scaleX = (vp.X - 24) / WINDOW_W
-		local scaleY = (vp.Y - 24) / WINDOW_H
-		local nextScale = math.clamp(math.min(1, scaleX, scaleY), 0.55, 1)
+		local scaleX = (vp.X - 16) / WINDOW_W
+		local scaleY = (vp.Y - 16) / WINDOW_H
+		local nextScale = math.clamp(math.min(1, scaleX, scaleY), 0.35, 1)
 		uiScale.Scale = math.round(nextScale * 100) / 100
 		if shouldCenter then
 			centerWindow()
 		else
 			local curPos = mainFrame.Position
-			local x, y = clampPosition(curPos.X.Offset, curPos.Y.Offset)
-			mainFrame.Position = UDim2.fromOffset(x, y)
+			applyClampedMainPosition(curPos.X.Offset, curPos.Y.Offset)
 		end
 	end
 	updateResponsiveScale(true)
+	track(mainFrame:GetPropertyChangedSignal("Position"):Connect(function()
+		if clampingPos or destroyed then
+			return
+		end
+		local cur = mainFrame.Position
+		local nx, ny = clampPosition(cur.X.Offset, cur.Y.Offset)
+		if math.abs(cur.X.Scale) > 0.0001 or math.abs(cur.Y.Scale) > 0.0001 or cur.X.Offset ~= nx or cur.Y.Offset ~= ny then
+			clampingPos = true
+			mainFrame.Position = UDim2.fromOffset(nx, ny)
+			clampingPos = false
+		end
+	end))
+	track(screenGui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+		updateResponsiveScale(false)
+	end))
 	local function bindCameraScale()
 		local cam = workspace.CurrentCamera
 		if cam then
@@ -543,7 +586,7 @@ function RayfieldLib:CreateWindow(config)
 		end
 
 		track(topbar.InputBegan:Connect(function(input: InputObject)
-			if isPinned then
+			if isPinned or os.clock() < syntheticClickBlockedUntil then
 				return
 			end
 			if not dragInput and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
@@ -582,10 +625,8 @@ function RayfieldLib:CreateWindow(config)
 				end
 				dragMoved = true
 			end
-			-- Divide raw screen delta by uiScale so window follows pointer 1:1 regardless of mobile scaling
-			local sc = math.max(0.1, uiScale.Scale)
-			local nextX, nextY = clampPosition(startOffsetX + delta.X / sc, startOffsetY + delta.Y / sc)
-			mainFrame.Position = UDim2.fromOffset(nextX, nextY)
+			-- mainFrame.Position is in screenGui coordinates (UIScale is child of mainFrame), so apply screen delta 1:1 and clamp strictly within viewport
+			applyClampedMainPosition(startOffsetX + delta.X, startOffsetY + delta.Y)
 		end))
 
 		track(UserInputService.InputEnded:Connect(function(input: InputObject)
@@ -594,6 +635,8 @@ function RayfieldLib:CreateWindow(config)
 			end
 			if input == dragInput or (dragInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseButton1) then
 				dragInput = nil
+				local curPos = mainFrame.Position
+				applyClampedMainPosition(curPos.X.Offset, curPos.Y.Offset)
 			end
 		end))
 
@@ -707,7 +750,7 @@ function RayfieldLib:CreateWindow(config)
 
 		track(btn.Activated:Connect(function()
 			local now = os.clock()
-			if pressMoved or now < blockedUntil or didAnyScrollerMove() then
+			if now < syntheticClickBlockedUntil or pressMoved or now < blockedUntil or didAnyScrollerMove() then
 				pressMoved = false
 				return
 			end
@@ -730,7 +773,23 @@ function RayfieldLib:CreateWindow(config)
 		local pillStartX = 14
 		local pillStartY = 100
 
+		local function clampPill(x: number, y: number): (number, number)
+			local vp = getViewportSize()
+			return math.clamp(math.round(x), 6, math.max(6, vp.X - 116)), math.clamp(math.round(y), 6, math.max(6, vp.Y - 42))
+		end
+
+		track(screenGui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+			if destroyed then
+				return
+			end
+			local nx, ny = clampPill(togglePill.Position.X.Offset, togglePill.Position.Y.Offset)
+			togglePill.Position = UDim2.fromOffset(nx, ny)
+		end))
+
 		track(togglePill.InputBegan:Connect(function(input: InputObject)
+			if os.clock() < syntheticClickBlockedUntil then
+				return
+			end
 			if not pillInput and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
 				pillInput = input
 				pillDragMoved = false
@@ -758,9 +817,7 @@ function RayfieldLib:CreateWindow(config)
 				pillDragMoved = true
 			end
 			if pillDragMoved then
-				local vp = getViewportSize()
-				local nx = math.clamp(math.round(pillStartX + delta.X), 6, math.max(6, vp.X - 118))
-				local ny = math.clamp(math.round(pillStartY + delta.Y), 6, math.max(6, vp.Y - 44))
+				local nx, ny = clampPill(pillStartX + delta.X, pillStartY + delta.Y)
 				togglePill.Position = UDim2.fromOffset(nx, ny)
 			end
 		end))
@@ -779,7 +836,7 @@ function RayfieldLib:CreateWindow(config)
 		end))
 
 		track(togglePill.Activated:Connect(function()
-			if pillDragMoved then
+			if pillDragMoved or os.clock() < syntheticClickBlockedUntil then
 				return
 			end
 			Window:SetVisible(true)
@@ -860,27 +917,39 @@ function RayfieldLib:CreateWindow(config)
 		return isolationHidden
 	end
 
+	-- Keeps the Menu visible even during ResearchLab minigames while guarding against synthetic clicks
 	function Window:SetIsolationHidden(hidden: boolean)
 		if destroyed then
 			return
 		end
-		local nextHidden = hidden == true
-		isolationHidden = nextHidden
-		if nextHidden then
-			if activeDropdownClose then
-				activeDropdownClose()
-			end
-			screenGui.Enabled = false
-			mainFrame.Visible = false
-			togglePill.Visible = false
-		else
+		isolationHidden = (hidden == true)
+		if not screenGui.Enabled then
 			screenGui.Enabled = true
-			mainFrame.Visible = isVisible
-			togglePill.Visible = not isVisible
-			if isVisible and onTabChangedCb and activeTabName ~= "" then
-				task.defer(onTabChangedCb, activeTabName)
-			end
 		end
+		mainFrame.Visible = isVisible
+		togglePill.Visible = not isVisible
+	end
+
+	function Window:SetSyntheticClickBlock(durationOrFalse: any)
+		if durationOrFalse == false or durationOrFalse == nil then
+			syntheticClickBlockedUntil = 0
+		else
+			local dur = if type(durationOrFalse) == "number" then durationOrFalse else 0.08
+			syntheticClickBlockedUntil = math.max(syntheticClickBlockedUntil, os.clock() + dur)
+		end
+	end
+
+	function Window:IsPointInMenu(x: number, y: number): boolean
+		if destroyed or not screenGui.Enabled then
+			return false
+		end
+		local target: GuiObject? = if isVisible and mainFrame.Visible then mainFrame elseif togglePill.Visible then togglePill else nil
+		if not target then
+			return false
+		end
+		local ap = target.AbsolutePosition
+		local as = target.AbsoluteSize
+		return x >= ap.X and x <= ap.X + as.X and y >= ap.Y and y <= ap.Y + as.Y
 	end
 
 	function Window:SetMinimized(minimized: boolean)
@@ -895,8 +964,7 @@ function RayfieldLib:CreateWindow(config)
 			activeDropdownClose()
 		end
 		local curPos = mainFrame.Position
-		local x, y = clampPosition(curPos.X.Offset, curPos.Y.Offset, currentWindowH)
-		mainFrame.Position = UDim2.fromOffset(x, y)
+		applyClampedMainPosition(curPos.X.Offset, curPos.Y.Offset, currentWindowH)
 		tween(mainFrame, TWEEN_FAST, { Size = UDim2.fromOffset(WINDOW_W, currentWindowH) })
 		if not minimized and onTabChangedCb and activeTabName ~= "" then
 			task.defer(onTabChangedCb, activeTabName)
@@ -1011,14 +1079,23 @@ function RayfieldLib:CreateWindow(config)
 	end
 
 	track(pinBtn.Activated:Connect(function()
+		if os.clock() < syntheticClickBlockedUntil then
+			return
+		end
 		Window:SetPinned(not isPinned)
 	end))
 
 	track(minimizeBtn.Activated:Connect(function()
+		if os.clock() < syntheticClickBlockedUntil then
+			return
+		end
 		Window:SetMinimized(not isMinimized)
 	end))
 
 	track(closeBtn.Activated:Connect(function()
+		if os.clock() < syntheticClickBlockedUntil then
+			return
+		end
 		Window:SetVisible(false)
 		Window:Notify({
 			Title = windowTitle,
@@ -1636,6 +1713,9 @@ function RayfieldLib:CreateWindow(config)
 			end
 
 			track(hitArea.InputBegan:Connect(function(input: InputObject)
+				if os.clock() < syntheticClickBlockedUntil then
+					return
+				end
 				if not slideInput and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
 					slideInput = input
 					setScrollLock(true)
@@ -1685,11 +1765,13 @@ function RayfieldLib:CreateWindow(config)
 			CurrentOption: string?,
 			CurrentOptions: { string }?,
 			MultiSelect: boolean?,
+			AllowEmpty: boolean?,
 			Callback: ((any, any?) -> ())?,
 		})
 			local options = drpCfg.Options
 			local isMulti = drpCfg.MultiSelect == true
-			local selected = drpCfg.CurrentOption or options[1] or ""
+			local allowEmpty = isMulti and drpCfg.AllowEmpty == true
+			local selected = if allowEmpty then "" else (drpCfg.CurrentOption or options[1] or "")
 			local selectedMap: { [string]: boolean } = {}
 			local selectedOrder: { string } = {}
 
@@ -1700,14 +1782,35 @@ function RayfieldLib:CreateWindow(config)
 					or optName == "All Hostile Mobs"
 			end
 
-			local function rebuildSelectedOrder()
-				table.clear(selectedOrder)
-				for _, optName in ipairs(options) do
-					if selectedMap[optName] then
-						table.insert(selectedOrder, optName)
+			local function removeFromSelectedOrder(optName: string)
+				for idx = #selectedOrder, 1, -1 do
+					if selectedOrder[idx] == optName then
+						table.remove(selectedOrder, idx)
 					end
 				end
-				if #selectedOrder == 0 and options[1] then
+			end
+
+			local function ensureNonEmptySelection()
+				-- Keep exact user click order in selectedOrder, removing stale flags
+				local cleanOrder: { string } = {}
+				local seenInOrder: { [string]: boolean } = {}
+				for _, optName in ipairs(selectedOrder) do
+					if selectedMap[optName] and not seenInOrder[optName] then
+						seenInOrder[optName] = true
+						table.insert(cleanOrder, optName)
+					end
+				end
+				for _, optName in ipairs(options) do
+					if selectedMap[optName] and not seenInOrder[optName] then
+						seenInOrder[optName] = true
+						table.insert(cleanOrder, optName)
+					end
+				end
+				table.clear(selectedOrder)
+				for _, optName in ipairs(cleanOrder) do
+					table.insert(selectedOrder, optName)
+				end
+				if not allowEmpty and #selectedOrder == 0 and options[1] then
 					selectedMap[options[1]] = true
 					table.insert(selectedOrder, options[1])
 				end
@@ -1717,14 +1820,19 @@ function RayfieldLib:CreateWindow(config)
 			if isMulti then
 				if type(drpCfg.CurrentOptions) == "table" and #drpCfg.CurrentOptions > 0 then
 					for _, optName in ipairs(drpCfg.CurrentOptions) do
-						selectedMap[optName] = true
+						if not selectedMap[optName] then
+							selectedMap[optName] = true
+							table.insert(selectedOrder, optName)
+						end
 					end
-				elseif selected ~= "" then
+				elseif not allowEmpty and selected ~= "" then
 					selectedMap[selected] = true
-				elseif options[1] then
+					table.insert(selectedOrder, selected)
+				elseif not allowEmpty and options[1] then
 					selectedMap[options[1]] = true
+					table.insert(selectedOrder, options[1])
 				end
-				rebuildSelectedOrder()
+				ensureNonEmptySelection()
 			end
 
 			local open = false
@@ -1848,8 +1956,10 @@ function RayfieldLib:CreateWindow(config)
 			local lastStyledOption = ""
 
 			local function formatMultiSummary(): string
-				if #selectedOrder <= 1 then
-					return selectedOrder[1] or ""
+				if #selectedOrder == 0 then
+					return "None selected"
+				elseif #selectedOrder == 1 then
+					return selectedOrder[1]
 				end
 				local shortNames: { string } = {}
 				for i = 1, math.min(2, #selectedOrder) do
@@ -1862,10 +1972,22 @@ function RayfieldLib:CreateWindow(config)
 			local function refreshOptionVisuals()
 				if isMulti then
 					selectedLbl.Text = formatMultiSummary()
+					selectedLbl.TextColor3 = if #selectedOrder == 0 and allowEmpty then THEME.SubText else THEME.Accent
+					local orderIndex: { [string]: number } = {}
+					for idx, optName in ipairs(selectedOrder) do
+						orderIndex[optName] = idx
+					end
+					local multiCount = #selectedOrder
 					for optName, optBtn in pairs(optButtons) do
 						local on = selectedMap[optName] == true
 						optBtn.BackgroundColor3 = if on then THEME.AccentDark else THEME.ControlBg
-						optBtn.Text = (if on then "[+] " else "[ ] ") .. optName
+						if on then
+							local pos = orderIndex[optName]
+							local prefix = if multiCount > 1 and pos then ("[+%d] "):format(pos) else "[+] "
+							optBtn.Text = prefix .. optName
+						else
+							optBtn.Text = "[ ] " .. optName
+						end
 					end
 				else
 					selectedLbl.Text = selected
@@ -1893,16 +2015,19 @@ function RayfieldLib:CreateWindow(config)
 			function handle:Set(optionOrList: any, skipCallback: boolean?)
 				if isMulti then
 					table.clear(selectedMap)
+					table.clear(selectedOrder)
 					if type(optionOrList) == "table" then
 						for _, optName in ipairs(optionOrList) do
-							if type(optName) == "string" and optButtons[optName] then
+							if type(optName) == "string" and optButtons[optName] and not selectedMap[optName] then
 								selectedMap[optName] = true
+								table.insert(selectedOrder, optName)
 							end
 						end
-					elseif type(optionOrList) == "string" and optionOrList ~= "" then
+					elseif type(optionOrList) == "string" and optionOrList ~= "" and optButtons[optionOrList] then
 						selectedMap[optionOrList] = true
+						table.insert(selectedOrder, optionOrList)
 					end
-					rebuildSelectedOrder()
+					ensureNonEmptySelection()
 					refreshOptionVisuals()
 					if not skipCallback and drpCfg.Callback then
 						task.spawn(drpCfg.Callback, copySelectedOrder(), selected)
@@ -1962,7 +2087,7 @@ function RayfieldLib:CreateWindow(config)
 				end)
 			end
 
-			for i, optName in ipairs(options) do
+			local function buildOptionButton(i: number, optName: string)
 				local optBtn = Instance.new("TextButton")
 				optBtn.LayoutOrder = i
 				optBtn.Size = UDim2.new(1, -6, 0, 28)
@@ -1988,21 +2113,26 @@ function RayfieldLib:CreateWindow(config)
 						local clickedAll = isAllStyleOption(optName)
 						if clickedAll then
 							table.clear(selectedMap)
+							table.clear(selectedOrder)
 							selectedMap[optName] = true
+							table.insert(selectedOrder, optName)
 						else
 							-- Uncheck any ALL option when picking specific items
 							for k in pairs(selectedMap) do
 								if isAllStyleOption(k) then
 									selectedMap[k] = nil
+									removeFromSelectedOrder(k)
 								end
 							end
 							if selectedMap[optName] then
 								selectedMap[optName] = nil
+								removeFromSelectedOrder(optName)
 							else
 								selectedMap[optName] = true
+								table.insert(selectedOrder, optName)
 							end
 						end
-						rebuildSelectedOrder()
+						ensureNonEmptySelection()
 						refreshOptionVisuals()
 						if drpCfg.Callback then
 							task.spawn(drpCfg.Callback, copySelectedOrder(), selected)
@@ -2013,6 +2143,64 @@ function RayfieldLib:CreateWindow(config)
 					end
 				end)
 			end
+
+			local function populateOptions(optList: { string })
+				for _, btnInst in pairs(optButtons) do
+					btnInst:Destroy()
+				end
+				table.clear(optButtons)
+				options = optList
+				for i, optName in ipairs(options) do
+					buildOptionButton(i, optName)
+				end
+				if searchBox and searchBox.Text ~= "" then
+					local q = string.lower(searchBox.Text)
+					for optName, optBtn in pairs(optButtons) do
+						optBtn.Visible = (string.find(string.lower(optName), q, 1, true) ~= nil)
+					end
+				end
+			end
+
+			function handle:Refresh(newOptions: { string }, preserveSelection: boolean?)
+				local kept: { string } = {}
+				if preserveSelection then
+					if isMulti then
+						local validSet: { [string]: boolean } = {}
+						for _, n in ipairs(newOptions) do
+							validSet[n] = true
+						end
+						for _, cur in ipairs(selectedOrder) do
+							if validSet[cur] then
+								table.insert(kept, cur)
+							end
+						end
+					elseif selected ~= "" and table.find(newOptions, selected) then
+						kept[1] = selected
+					end
+				end
+				populateOptions(newOptions)
+				if isMulti then
+					table.clear(selectedMap)
+					table.clear(selectedOrder)
+					for _, k in ipairs(kept) do
+						selectedMap[k] = true
+						table.insert(selectedOrder, k)
+					end
+					ensureNonEmptySelection()
+				else
+					selected = kept[1] or (if allowEmpty then "" else (options[1] or ""))
+				end
+				refreshOptionVisuals()
+				if drpCfg.Callback then
+					if isMulti then
+						task.spawn(drpCfg.Callback, copySelectedOrder(), selected)
+					else
+						task.spawn(drpCfg.Callback, selected)
+					end
+				end
+			end
+
+			populateOptions(options)
 
 			if isMulti then
 				local actionBar = Instance.new("Frame")
@@ -2027,7 +2215,7 @@ function RayfieldLib:CreateWindow(config)
 				clearBtn.BackgroundColor3 = THEME.SidebarBg
 				clearBtn.BorderSizePixel = 0
 				clearBtn.Font = Enum.Font.GothamBold
-				clearBtn.Text = "Reset Default"
+				clearBtn.Text = if allowEmpty then "Clear All" else "Reset Default"
 				clearBtn.TextColor3 = THEME.SubText
 				clearBtn.TextSize = 11
 				clearBtn.AutoButtonColor = false
@@ -2050,10 +2238,12 @@ function RayfieldLib:CreateWindow(config)
 
 				bindScrollSafeTap(clearBtn, { page }, function()
 					table.clear(selectedMap)
-					if options[1] then
+					table.clear(selectedOrder)
+					if not allowEmpty and options[1] then
 						selectedMap[options[1]] = true
+						table.insert(selectedOrder, options[1])
 					end
-					rebuildSelectedOrder()
+					ensureNonEmptySelection()
 					refreshOptionVisuals()
 					if drpCfg.Callback then
 						task.spawn(drpCfg.Callback, copySelectedOrder(), selected)
@@ -2092,7 +2282,8 @@ end
 return RayfieldLib
 end)()
 
-local __mod_EspModule = (function()
+-- === MODULE: EspModule ===
+local Esp = (function()
 --[[
 	EspModule
 	Client-side Player ESP / Visual Tracker using Highlight + BillboardGui.
@@ -2698,7 +2889,8 @@ end
 return Esp
 end)()
 
-local __mod_MaterialModule = (function()
+-- === MODULE: MaterialModule ===
+local Material = (function()
 --[[
 	MaterialModule
 	Auto scan, ESP/guide beam visualization, and Instant Teleport + Anti-Hang Auto Loot for Materials in PortalG.
@@ -4884,7 +5076,9 @@ local function crossPortalInstance(portalModel: Model, side: string, targetDimId
 	local initialPortalPos = cfAttr.Position
 	local portalsFolder = workspace:FindFirstChild("Portals")
 
+	teleportForceToken += 1
 	stopFlightSession()
+	teleportForceToken += 1
 	releaseLootPhysics()
 	hum.Sit = false
 	hum.PlatformStand = false
@@ -6997,6 +7191,7 @@ local function findCleanSpotNearTarget(
 end
 
 local function prepareForTeleport(disableAutoCollectMsg: string?): (boolean, string)
+	teleportForceToken += 1
 	if config.AutoCollect then
 		config.AutoCollect = false
 		autoLoopToken += 1
@@ -7134,6 +7329,166 @@ function Material:TeleportToWorkbench(): (boolean, string)
 
 	teleportInProgress = false
 	return finalOk, finalMsg
+end
+
+local function isWorkbenchUiVisible(): boolean
+	local pg = LocalPlayer:FindFirstChild("PlayerGui")
+	local hud = pg and pg:FindFirstChild("HUD")
+	if not hud then
+		return false
+	end
+	for _, d in ipairs(hud:GetDescendants()) do
+		if d:IsA("TextLabel") and d.Text == "RICK'S WORKBENCH" then
+			local allVis = true
+			local cur: Instance? = d
+			while cur and cur ~= hud do
+				if cur:IsA("GuiObject") and not cur.Visible then
+					allVis = false
+					break
+				end
+				cur = cur.Parent
+			end
+			if allVis then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+function Material:IsWorkbenchOpen(): boolean
+	return isWorkbenchUiVisible()
+end
+
+function Material:OpenWorkbench(silentMode: boolean?): (boolean, string)
+	if destroyed then
+		return false, "Menu unloaded"
+	end
+	if isWorkbenchUiVisible() then
+		local msgAlready = "Workbench already open"
+		lastHomeMsg = msgAlready
+		return true, msgAlready
+	end
+
+	local okTp, msgTp = self:TeleportToWorkbench()
+	if not okTp then
+		return false, msgTp
+	end
+
+	local isPocket = LocalPlayer:GetAttribute("PocketWorkbench") == true or LocalPlayer:GetAttribute("RickEyeOn") == true
+	local function trySignalOpenUi(): boolean
+		local oc = ReplicatedStorage:FindFirstChild("OpenCrafting")
+		if not oc or not oc:IsA("RemoteEvent") then
+			return false
+		end
+		local fs = rawget(_G, "firesignal")
+		if type(fs) == "function" and pcall(fs, oc.OnClientEvent) then
+			return true
+		end
+		local gc = rawget(_G, "getconnections")
+		if type(gc) == "function" then
+			local okC, conns = pcall(gc, oc.OnClientEvent)
+			if okC and type(conns) == "table" and #conns > 0 then
+				local firedAny = false
+				for _, c in ipairs(conns) do
+					if pcall(function() (c :: any):Fire() end) then
+						firedAny = true
+					end
+				end
+				return firedAny
+			end
+		end
+		return false
+	end
+
+	local opened = false
+	if isPocket and trySignalOpenUi() then
+		opened = true
+		task.wait(0.05)
+	end
+
+	if not isWorkbenchUiVisible() and not opened then
+		local root = getRootPart()
+		local spec = QUICK_STATIONS.workbench
+		local house = findLocalPlayerBase()
+		local prompt: ProximityPrompt? = nil
+		local bestPos: Vector3? = nil
+		local bestDist = math.huge
+
+		if spec and root then
+			local pHouse, posHouse = findStationPromptInHouse(house, spec, root.Position)
+			if pHouse and posHouse then
+				prompt = pHouse
+				bestPos = posHouse
+				bestDist = (posHouse - root.Position).Magnitude
+			end
+
+			local nearPrompt: ProximityPrompt? = nil
+			local nearPos: Vector3? = nil
+			local nearDist = 45
+			for _, station in ipairs(CollectionService:GetTagged("CraftingStation")) do
+				if station:IsA("Model") and station:IsDescendantOf(workspace) then
+					local cp = findPromptInContainer(station, spec.promptNames)
+					if cp and cp.Enabled then
+						local pPos = getPromptWorldPos(cp)
+						if pPos then
+							local sDist = (pPos - root.Position).Magnitude
+							if sDist < nearDist then
+								nearDist = sDist
+								nearPrompt = cp
+								nearPos = pPos
+							end
+						end
+					end
+				end
+			end
+			if nearPrompt and nearDist < 24 and (not prompt or bestDist >= 24 or nearDist < bestDist) then
+				prompt = nearPrompt
+				bestPos = nearPos
+				bestDist = nearDist
+			end
+
+			if prompt and bestPos and bestDist > 6.0 then
+				local delta = root.Position - bestPos
+				local flatUnit = if Vector3.new(delta.X, 0, delta.Z).Magnitude > 0.25
+					then Vector3.new(delta.X, 0, delta.Z).Unit
+					else Vector3.new(-1, 0, 0)
+				local stepPos = bestPos + flatUnit * 3.5 + Vector3.new(0, 2.5, 0)
+				pivotCharacterSafely(stepPos, bestPos)
+				RunService.Heartbeat:Wait()
+				task.wait(0.06)
+			end
+		end
+
+		if prompt then
+			opened = fireOrHoldPrompt(prompt, function()
+				return not destroyed
+			end, false)
+			if opened then
+				local waitUiEnd = os.clock() + 0.14
+				while not isWorkbenchUiVisible() and os.clock() < waitUiEnd and not destroyed do
+					task.wait(0.03)
+				end
+			end
+		end
+
+		if (not opened or not isWorkbenchUiVisible()) and (isPocket or (prompt ~= nil and bestDist <= 22)) then
+			if trySignalOpenUi() then
+				opened = true
+			end
+		end
+	end
+
+	if isWorkbenchUiVisible() then
+		opened = true
+	end
+
+	local msg = if opened then "Workbench opened" else msgTp
+	lastHomeMsg = msg
+	if not silentMode then
+		sendNotice("Workbench", msg, Color3.fromRGB(52, 211, 153))
+	end
+	return true, msg
 end
 
 function Material:QuickInteract(stationKey: string): (boolean, string, boolean)
@@ -7359,8 +7714,8 @@ function Material:ForceSendHomeNow(): (boolean, string)
 	end
 
 	-- Preempt any active AutoCollect or stalled teleport immediately
-	teleportForceToken += 1
-	local myForceToken = teleportForceToken
+	local myForceToken = teleportForceToken + 1
+	teleportForceToken = myForceToken
 	teleportInProgress = true
 
 	local finalOk = false
@@ -7368,6 +7723,7 @@ function Material:ForceSendHomeNow(): (boolean, string)
 
 	local runOk, runErr = pcall(function()
 		local readyOk, readyErr = prepareForTeleport("Paused (Forced Home)")
+		myForceToken = teleportForceToken
 		if not readyOk then
 			finalMsg = readyErr
 			lastHomeMsg = finalMsg
@@ -7595,6 +7951,191 @@ function Material:ForceSendHomeNow(): (boolean, string)
 	return finalOk, finalMsg
 end
 
+function Material:TravelToCitadelStand(standKind: string?): (boolean, string, ProximityPrompt?)
+	if destroyed then
+		return false, "Menu unloaded", nil
+	end
+	if teleportInProgress then
+		local waitEnd = os.clock() + 2.5
+		while teleportInProgress and os.clock() < waitEnd and not destroyed do
+			task.wait(0.08)
+		end
+	end
+
+	teleportInProgress = true
+	local finalOk = false
+	local finalMsg = "Citadel travel failed"
+	local foundPrompt: ProximityPrompt? = nil
+
+	local runOk, runErr = pcall(function()
+		local readyOk, readyErr = prepareForTeleport("Paused (Citadel Shop)")
+		if not readyOk then
+			finalMsg = readyErr
+			return
+		end
+
+		local root0 = getRootPart()
+		local curDim = tostring(LocalPlayer:GetAttribute("CurrentDimension") or "")
+		local citReq = getWorldTargetFromId("Citadel")
+
+		if root0 and curDim ~= "Citadel" then
+			savedReturnCFrame = root0.CFrame
+			savedReturnDim = LocalPlayer:GetAttribute("CurrentDimension")
+		end
+
+		if curDim ~= "Citadel" and citReq then
+			local okP = tryPortalGunToTarget(citReq)
+			if not okP then
+				local okW, msgW = directCoordinateWarpToWorld(citReq)
+				if not okW then
+					finalMsg = msgW
+					return
+				end
+			else
+				task.wait(0.25)
+			end
+		end
+
+		local kind = string.lower(tostring(standKind or "market"))
+		local kwMap: { [string]: { string } } = {
+			pawn = { "pawn", "sell", "scrap", "material", "trade" },
+			serum = { "serum", "race", "dna", "gene" },
+			morty = { "morty", "daycare", "gacha" },
+			market = { "market", "schmeckle", "crate", "shop", "vendor", "merchant" },
+		}
+		local keywords = kwMap[kind] or kwMap.market
+
+		local function scanCitadelStand(): (ProximityPrompt?, Vector3?)
+			local cit = workspace:FindFirstChild("Dim_Citadel")
+			if not cit then
+				return nil, nil
+			end
+			local bestScore = -1
+			local bestP: ProximityPrompt? = nil
+			local bestPos: Vector3? = nil
+			local rNow = getRootPart()
+			for _, desc in ipairs(cit:GetDescendants()) do
+				if desc:IsA("ProximityPrompt") and desc.Enabled then
+					local pPos = getPromptWorldPos(desc)
+					if pPos then
+						local haystack = string.lower(
+							(desc.Name or "")
+								.. " "
+								.. (desc.ActionText or "")
+								.. " "
+								.. (desc.ObjectText or "")
+								.. " "
+								.. (if desc.Parent then desc.Parent.Name else "")
+								.. " "
+								.. (if desc.Parent and desc.Parent.Parent then desc.Parent.Parent.Name else "")
+						)
+						local score = 1
+						for idx, kw in ipairs(keywords) do
+							if string.find(haystack, kw, 1, true) then
+								score = 100 - idx
+								break
+							end
+						end
+						if score == 1 and (string.find(haystack, "market", 1, true) or string.find(haystack, "shop", 1, true) or string.find(haystack, "pawn", 1, true)) then
+							score = 25
+						end
+						if score > bestScore or (score == bestScore and rNow and bestPos and (pPos - rNow.Position).Magnitude < (bestPos - rNow.Position).Magnitude) then
+							bestScore = score
+							bestP = desc
+							bestPos = pPos
+						end
+					end
+				end
+			end
+			return bestP, bestPos
+		end
+
+		local pStand, posStand = scanCitadelStand()
+		if not pStand then
+			local cit = workspace:FindFirstChild("Dim_Citadel")
+			local centerPos: Vector3? = nil
+			if cit then
+				local tc = cit:GetAttribute("TrafficCenter")
+				if typeof(tc) == "Vector3" then
+					centerPos = tc
+				else
+					local sc = cit:FindFirstChild("Domes") and cit.Domes:FindFirstChild("Shell_Central")
+					if sc and sc:IsA("Model") then
+						local okCf, cf = pcall(function() return sc:GetPivot() end)
+						if okCf and cf then
+							centerPos = Vector3.new(cf.Position.X, cf.Position.Y - 260, cf.Position.Z)
+						end
+					end
+				end
+			end
+			if centerPos then
+				pcall(function()
+					LocalPlayer:RequestStreamAroundAsync(centerPos, 4)
+				end)
+				local hit = workspace:Raycast(centerPos + Vector3.new(0, 120, 0), Vector3.new(0, -300, 0), sharedFloorParams)
+				local landPos = if hit then (hit.Position + Vector3.new(0, 4.0 * getCharacterScale(), 0)) else (centerPos + Vector3.new(0, 4.5, 0))
+				pivotCharacterSafely(landPos, landPos + Vector3.new(0, 0, -10))
+				task.wait(0.25)
+				pStand, posStand = scanCitadelStand()
+			end
+		end
+
+		if pStand and posStand then
+			foundPrompt = pStand
+			local rNow = getRootPart()
+			if rNow and (posStand - rNow.Position).Magnitude > 6.5 then
+				local stepDir = Vector3.new(rNow.Position.X - posStand.X, 0, rNow.Position.Z - posStand.Z)
+				local unitDir = if stepDir.Magnitude > 0.3 then stepDir.Unit else Vector3.new(-1, 0, 0)
+				local standSpot = posStand + unitDir * 3.8 + Vector3.new(0, 2.2, 0)
+				pivotCharacterSafely(standSpot, posStand)
+				RunService.Heartbeat:Wait()
+				task.wait(0.1)
+			end
+		end
+
+		local rFinal = getRootPart()
+		if rFinal and rFinal.Parent then
+			rFinal.Anchored = false
+			rFinal.AssemblyLinearVelocity = Vector3.zero
+			rFinal.AssemblyAngularVelocity = Vector3.zero
+		end
+		-- Allow 2 physics/replication beats so Server sees updated unanchored HumanoidRootPart position before shop invoke
+		task.wait(0.22)
+
+		finalOk = true
+		finalMsg = if foundPrompt
+			then ("At Citadel %s stand (%s)"):format(kind, tostring(foundPrompt.ObjectText ~= "" and foundPrompt.ObjectText or foundPrompt.Name))
+			else ("Arrived in Citadel Central (%s)"):format(kind)
+		lastHomeMsg = finalMsg
+	end)
+
+	teleportInProgress = false
+	if not runOk then
+		finalMsg = "Citadel travel error: " .. tostring(runErr)
+		return false, finalMsg, nil
+	end
+	return finalOk, finalMsg, foundPrompt
+end
+
+function Material:OpenCitadelStand(standKind: string?): (boolean, string)
+	if destroyed then
+		return false, "Menu unloaded"
+	end
+	local ok, msg, prompt = self:TravelToCitadelStand(standKind)
+	if not ok then
+		return false, msg
+	end
+	if prompt and prompt.Enabled then
+		local triggered = fireOrHoldPrompt(prompt, function()
+			return not destroyed
+		end, false)
+		if triggered then
+			return true, msg .. " (Opened)"
+		end
+	end
+	return true, msg
+end
+
 function Material:IsAutoCollecting(): boolean
 	return config.AutoCollect == true
 end
@@ -7638,7 +8179,8 @@ return Material
 
 end)()
 
-local __mod_AutomationModule = (function()
+-- === MODULE: AutomationModule ===
+local Automation = (function()
 --[[
 	AutomationModule
 	Fast Auto Research & Auto Craft module for PortalG.
@@ -7711,8 +8253,12 @@ local learnedMinAssembleDelay = 0
 local economyConfig = {
 	AutoMoney = false,
 	AutoIQ = false,
-	SelectedMarketItem = "FinishResearch",
-	SelectedMarketItems = { "FinishResearch" } :: { string },
+	SelectedMarketItem = "",
+	SelectedMarketItems = {} :: { string },
+	SelectedSellItems = {} :: { string },
+	SellQty = 0, -- 0 = sell all owned in Bag
+	AutoReturnAfterShop = false,
+	SelectedDupeItem = "",
 	DupeBurstCount = 6,
 }
 local economyMoneyToken = 0
@@ -7720,6 +8266,7 @@ local economyIqToken = 0
 local economyBusy = false
 local redeemedCodesOnce = false
 local lastEconomyMsg = "Ready"
+local lastShopMsg = "Ready"
 
 local buildConfig = {
 	AutoEnabled = false,
@@ -7752,12 +8299,27 @@ local researchLoopToken = 0
 local craftLoopToken = 0
 local notifyCallback: ((string, string, Color3?) -> ())? = nil
 local menuVisCallback: ((boolean?) -> boolean)? = nil
+local menuSynthBlockCallback: ((any) -> ())? = nil
+local menuPointCheckCallback: ((number, number) -> boolean)? = nil
 
 local isResearchIsolated = false
 local savedMouseIconForLab: boolean? = nil
-local wasMenuVisibleBeforeLab = false
 local labCursorBound = false
 local LAB_CURSOR_BIND_NAME = "RF_HideLabCursor"
+
+local function updateLabCursorVisibility()
+	if not isResearchIsolated or destroyed then
+		return
+	end
+	pcall(function()
+		local cursorOverMenu = false
+		if menuPointCheckCallback then
+			local mLoc = UserInputService:GetMouseLocation()
+			cursorOverMenu = menuPointCheckCallback(mLoc.X, mLoc.Y) == true
+		end
+		UserInputService.MouseIconEnabled = cursorOverMenu
+	end)
+end
 
 local function setResearchIsolation(active: boolean)
 	if active then
@@ -7767,25 +8329,19 @@ local function setResearchIsolation(active: boolean)
 		isResearchIsolated = true
 		pcall(function()
 			savedMouseIconForLab = UserInputService.MouseIconEnabled
-			UserInputService.MouseIconEnabled = false
 		end)
+		updateLabCursorVisibility()
 		if not labCursorBound then
 			labCursorBound = true
 			pcall(function()
 				RunService:BindToRenderStep(LAB_CURSOR_BIND_NAME, Enum.RenderPriority.Last.Value + 1005, function()
-					if isResearchIsolated and not destroyed then
-						pcall(function()
-							UserInputService.MouseIconEnabled = false
-						end)
-					end
+					updateLabCursorVisibility()
 				end)
 			end)
 		end
+		-- Keep Menu visible (never hide ScreenGui/MainWindow) so user never loses Menu during the 3 minigames
 		if menuVisCallback then
-			local okVis, prevVis = pcall(menuVisCallback, false)
-			wasMenuVisibleBeforeLab = (okVis and prevVis == true)
-		else
-			wasMenuVisibleBeforeLab = false
+			pcall(menuVisCallback, true)
 		end
 		return true
 	else
@@ -7803,10 +8359,9 @@ local function setResearchIsolation(active: boolean)
 			UserInputService.MouseIconEnabled = if savedMouseIconForLab ~= nil then savedMouseIconForLab else true
 		end)
 		savedMouseIconForLab = nil
-		if wasMenuVisibleBeforeLab and menuVisCallback then
-			pcall(menuVisCallback, true)
+		if menuSynthBlockCallback then
+			pcall(menuSynthBlockCallback, false)
 		end
-		wasMenuVisibleBeforeLab = false
 		return false
 	end
 end
@@ -8009,6 +8564,9 @@ local function releaseMixHold()
 
 	if mixHoldViaVim then
 		mixHoldViaVim = false
+		if menuSynthBlockCallback then
+			pcall(menuSynthBlockCallback, 0.12)
+		end
 		local okGui, inset = pcall(function()
 			return GuiService:GetGuiInset()
 		end)
@@ -8038,6 +8596,9 @@ local function sendLabClick(screenX: number, screenY: number, vpX: number?, vpY:
 		end
 	end
 
+	if menuSynthBlockCallback then
+		pcall(menuSynthBlockCallback, 0.12)
+	end
 	local okGui, inset = pcall(function()
 		return GuiService:GetGuiInset()
 	end)
@@ -8077,6 +8638,9 @@ local function sendLabHold(holdDown: boolean, screenX: number, screenY: number)
 		end
 	end
 
+	if menuSynthBlockCallback then
+		pcall(menuSynthBlockCallback, 0.12)
+	end
 	local okGui, inset = pcall(function()
 		return GuiService:GetGuiInset()
 	end)
@@ -8188,14 +8752,9 @@ local function stepMinigameSolver()
 		return
 	end
 
-	-- Hide cursor & shield Rayfield Menu UI across all 3 minigames so clicks never hit menu elements
-	if setResearchIsolation(true) then
-		lastResearchMsg = "Isolated UI & Cursor for Lab..."
-		return
-	end
-	pcall(function()
-		UserInputService.MouseIconEnabled = false
-	end)
+	-- Keep Menu visible while guarding synthetic clicks & hiding cursor only outside Menu bounds
+	setResearchIsolation(true)
+	updateLabCursorVisibility()
 	if not stage then
 		releaseMixHold()
 		return
@@ -8774,6 +9333,11 @@ end
 
 function Automation:SetMenuVisibilityHook(cb: ((boolean?) -> boolean)?)
 	menuVisCallback = cb
+end
+
+function Automation:SetMenuLabHooks(synthBlockCb: ((any) -> ())?, pointCheckCb: ((number, number) -> boolean)?)
+	menuSynthBlockCallback = synthBlockCb
+	menuPointCheckCallback = pointCheckCb
 end
 
 function Automation:IsResearchIsolated(): boolean
@@ -9378,44 +9942,125 @@ local function getWorkbenchProximity(): (boolean, string)
 	return false, "Too Far (Go Home -> Garage)"
 end
 
-local function ensureWorkbenchAccess(allowTeleport: boolean): (boolean, string)
-	local near, reason = getWorkbenchProximity()
-	if near then
-		return true, reason
+local lastAutoBenchOpenClock = 0
+
+local function isWorkbenchUiOpen(): boolean
+	if materialDep and type(materialDep.IsWorkbenchOpen) == "function" then
+		return materialDep:IsWorkbenchOpen()
 	end
+	local pg = LocalPlayer:FindFirstChild("PlayerGui")
+	local hud = pg and pg:FindFirstChild("HUD")
+	if not hud then
+		return false
+	end
+	for _, d in ipairs(hud:GetDescendants()) do
+		if d:IsA("TextLabel") and d.Text == "RICK'S WORKBENCH" then
+			local allVis = true
+			local cur: Instance? = d
+			while cur and cur ~= hud do
+				if cur:IsA("GuiObject") and not cur.Visible then
+					allVis = false
+					break
+				end
+				cur = cur.Parent
+			end
+			if allVis then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+local function trySignalOpenCraftingUi(): boolean
+	local oc = ReplicatedStorage:FindFirstChild("OpenCrafting")
+	if not oc or not oc:IsA("RemoteEvent") then
+		return false
+	end
+	local fs = rawget(_G, "firesignal")
+	if type(fs) == "function" then
+		if pcall(fs, oc.OnClientEvent) then
+			return true
+		end
+	end
+	local gc = rawget(_G, "getconnections")
+	if type(gc) == "function" then
+		local okC, conns = pcall(gc, oc.OnClientEvent)
+		if okC and type(conns) == "table" and #conns > 0 then
+			local anyOk = false
+			for _, c in ipairs(conns) do
+				if pcall(function() (c :: any):Fire() end) then
+					anyOk = true
+				end
+			end
+			if anyOk then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+local function ensureWorkbenchAccess(allowTeleport: boolean, autoOpenBench: boolean?): (boolean, string)
+	local near, reason = getWorkbenchProximity()
 
 	-- Tier 1: If player owns Rick's Eye Implant research, activate RickEyeOn remotely for Pocket Workbench anywhere
-	if LocalPlayer:GetAttribute("RickEye") == true and LocalPlayer:GetAttribute("RickEyeOn") ~= true then
+	if not near and LocalPlayer:GetAttribute("RickEye") == true and LocalPlayer:GetAttribute("RickEyeOn") ~= true then
 		local re = ReplicatedStorage:FindFirstChild("RickEye")
 		if re and re:IsA("RemoteEvent") then
 			pcall(function()
 				re:FireServer(true)
 			end)
 			task.wait(0.14)
-			local nearAfterEye, reasonAfterEye = getWorkbenchProximity()
-			if nearAfterEye then
-				return true, reasonAfterEye
+			near, reason = getWorkbenchProximity()
+		end
+	end
+
+	-- Tier 2: Auto-Teleport to Home Garage Workbench (& auto-open Workbench if requested)
+	if (not near or autoOpenBench) and allowTeleport and materialDep then
+		local nowClk = os.clock()
+		local needOpen = (autoOpenBench == true) and (not isWorkbenchUiOpen()) and (nowClk - lastAutoBenchOpenClock >= 2.0)
+		if not near or needOpen then
+			if needOpen and type(materialDep.OpenWorkbench) == "function" then
+				lastAutoBenchOpenClock = nowClk
+				lastCraftMsg = "Opening Workbench..."
+				local okOpen, msgOpen = materialDep:OpenWorkbench(true)
+				if okOpen then
+					task.wait(0.12)
+					if not isWorkbenchUiOpen() then
+						trySignalOpenCraftingUi()
+					end
+					local nearNow, rNow = getWorkbenchProximity()
+					return true, if nearNow then rNow else tostring(msgOpen)
+				elseif not near then
+					return false, tostring(msgOpen or "Workbench open failed")
+				end
+			elseif not near and type(materialDep.TeleportToWorkbench) == "function" then
+				lastCraftMsg = "Auto-teleporting to Garage Workbench..."
+				local okTp, msgTp = materialDep:TeleportToWorkbench()
+				if okTp then
+					task.wait(0.16)
+					local nearAfterTp, reasonAfterTp = getWorkbenchProximity()
+					if autoOpenBench and not isWorkbenchUiOpen() then
+						lastAutoBenchOpenClock = nowClk
+						trySignalOpenCraftingUi()
+					end
+					return true, if nearAfterTp then reasonAfterTp else msgTp
+				end
+				return false, tostring(msgTp or "Workbench teleport failed")
+			elseif not near and type(materialDep.TeleportToHome) == "function" then
+				materialDep:TeleportToHome(false)
+				task.wait(0.2)
 			end
 		end
 	end
 
-	-- Tier 2: Auto-Teleport to Home Garage Workbench without opening the full-screen Workbench UI
-	if allowTeleport and materialDep then
-		lastCraftMsg = "Auto-teleporting to Garage Workbench..."
-		if type(materialDep.TeleportToWorkbench) == "function" then
-			local okTp, msgTp = materialDep:TeleportToWorkbench()
-			if okTp then
-				task.wait(0.16)
-				local nearAfterTp, reasonAfterTp = getWorkbenchProximity()
-				if nearAfterTp then
-					return true, reasonAfterTp
-				end
-				return true, msgTp
-			end
-			return false, tostring(msgTp or "Workbench teleport failed")
-		elseif type(materialDep.TeleportToHome) == "function" then
-			materialDep:TeleportToHome(false)
-			task.wait(0.2)
+	if near and autoOpenBench and not isWorkbenchUiOpen() and (os.clock() - lastAutoBenchOpenClock >= 2.0) then
+		lastAutoBenchOpenClock = os.clock()
+		if materialDep and type(materialDep.OpenWorkbench) == "function" then
+			materialDep:OpenWorkbench(true)
+		else
+			trySignalOpenCraftingUi()
 		end
 	end
 
@@ -9446,22 +10091,26 @@ function Automation:CraftOnce(targetRecipeId: string?, forceFast: boolean?): (bo
 	ensureInventoryAndStashSynced(0.65)
 
 	local recId = if targetRecipeId and targetRecipeId ~= "" then targetRecipeId else nil
+	local orderTag = ""
+	local pendingNextIdx: number? = nil
+	local listLen = 0
 	if not recId then
 		local list = craftConfig.SelectedIds
 		if #list == 0 and craftConfig.SelectedId ~= "" then
 			list = { craftConfig.SelectedId }
 		end
-		if #list == 0 and #gd.Recipes > 0 then
-			list = { tostring(gd.Recipes[1].id or "") }
-			craftConfig.SelectedIds = list
-			craftConfig.SelectedId = list[1]
+		if #list == 0 then
+			lastCraftMsg = "No recipe selected (pick 1+ recipes above)"
+			return false, lastCraftMsg
 		end
-		-- Pick next craftable recipe across all checked selections
+		listLen = #list
+		-- Pick next craftable recipe in exact user selection order (#1 -> #2 -> #3 ...)
 		local pickedIdx = 1
-		if #list > 1 then
+		if listLen > 1 then
+			local startIdx = ((craftConfig.cycleIdx - 1) % listLen) + 1
 			local foundReady = false
-			for offset = 0, #list - 1 do
-				local idx = ((craftConfig.cycleIdx - 1 + offset) % #list) + 1
+			for offset = 0, listLen - 1 do
+				local idx = ((startIdx - 1 + offset) % listLen) + 1
 				local candRec = findRecipeById(list[idx])
 				if candRec and knowsRecipe(gd, candRec) and getAffordCount(candRec) > 0 and getRemainingCraftCapacity(gd, candRec) > 0 then
 					pickedIdx = idx
@@ -9470,15 +10119,22 @@ function Automation:CraftOnce(targetRecipeId: string?, forceFast: boolean?): (bo
 				end
 			end
 			if not foundReady then
-				pickedIdx = ((craftConfig.cycleIdx - 1) % #list) + 1
+				pickedIdx = startIdx
 			end
-			craftConfig.cycleIdx = (pickedIdx % #list) + 1
+			pendingNextIdx = (pickedIdx % listLen) + 1
+			orderTag = ("[%d/%d] "):format(pickedIdx, listLen)
 		end
 		recId = list[pickedIdx] or craftConfig.SelectedId
 		if recId and recId ~= "" then
 			craftConfig.SelectedId = recId
 		end
 	end
+	local function advanceOrderIfMulti()
+		if pendingNextIdx and listLen > 1 then
+			craftConfig.cycleIdx = pendingNextIdx
+		end
+	end
+
 	local recipe = findRecipeById(recId)
 	if not recipe then
 		lastCraftMsg = "No valid recipe selected"
@@ -9488,20 +10144,23 @@ function Automation:CraftOnce(targetRecipeId: string?, forceFast: boolean?): (bo
 	if not knowsRecipe(gd, recipe) then
 		local reqId = gd.RecipeResearch[recipe.id]
 		local rName = if gd.ResearchById and gd.ResearchById[reqId] then gd.ResearchById[reqId].name else tostring(reqId)
-		lastCraftMsg = ("Research locked: %s"):format(tostring(rName))
+		lastCraftMsg = ("%sResearch locked: %s"):format(orderTag, tostring(rName))
+		advanceOrderIfMulti()
 		return false, lastCraftMsg
 	end
 
 	local afford = getAffordCount(recipe)
 	if afford <= 0 then
-		lastCraftMsg = getMissingIngredientsSummary(gd, recipe)
+		lastCraftMsg = orderTag .. getMissingIngredientsSummary(gd, recipe)
+		advanceOrderIfMulti()
 		return false, lastCraftMsg
 	end
 
 	local room = getRemainingCraftCapacity(gd, recipe)
 	if room <= 0 then
 		local owned = getBagOwned(recipe.result)
-		lastCraftMsg = ("Max owned reached (%d)"):format(owned)
+		lastCraftMsg = ("%sMax owned reached (%d)"):format(orderTag, owned)
+		advanceOrderIfMulti()
 		return false, lastCraftMsg
 	end
 
@@ -9510,14 +10169,14 @@ function Automation:CraftOnce(targetRecipeId: string?, forceFast: boolean?): (bo
 	if craftConfig.AutoClampMax then
 		finalQty = math.clamp(math.min(requestedQty, afford, room), 1, 50)
 	elseif requestedQty > afford then
-		lastCraftMsg = ("Enough materials for max x%d"):format(afford)
+		lastCraftMsg = ("%sEnough materials for max x%d"):format(orderTag, afford)
 		return false, lastCraftMsg
 	end
 
-	-- Automatically teleport to Garage Workbench if out of range
-	local benchOk, benchMsg = ensureWorkbenchAccess(craftConfig.AutoTeleportBench ~= false)
+	-- Automatically teleport to Garage Workbench & open Workbench if needed
+	local benchOk, benchMsg = ensureWorkbenchAccess(craftConfig.AutoTeleportBench ~= false, true)
 	if not benchOk then
-		lastCraftMsg = "Workbench required: " .. tostring(benchMsg)
+		lastCraftMsg = orderTag .. "Workbench required: " .. tostring(benchMsg)
 		return false, lastCraftMsg
 	end
 
@@ -9560,7 +10219,7 @@ function Automation:CraftOnce(targetRecipeId: string?, forceFast: boolean?): (bo
 							learnedMinAssembleDelay = math.clamp(math.ceil(totalElapsed * 2) / 2, 0, 15)
 						end
 						finalOk = true
-						finalMsg = ("Fast Crafted x%d %s"):format(finalQty, itemName)
+						finalMsg = ("%sFast Crafted x%d %s"):format(orderTag, finalQty, itemName)
 						requestInventorySync(true)
 						refreshStash(true, false)
 						return
@@ -9606,13 +10265,17 @@ function Automation:CraftOnce(targetRecipeId: string?, forceFast: boolean?): (bo
 			return
 		end
 		finalOk = true
-		finalMsg = ("Crafted x%d %s"):format(finalQty, itemName)
+		finalMsg = ("%sCrafted x%d %s"):format(orderTag, finalQty, itemName)
 		requestInventorySync(true)
 		refreshStash(true, false)
 	end)
 
 	LocalPlayer:SetAttribute("Crafting", false)
 	craftBusy = false
+
+	if finalOk then
+		advanceOrderIfMulti()
+	end
 
 	if not runOk then
 		lastCraftMsg = "Craft error: " .. tostring(runErr)
@@ -9635,11 +10298,14 @@ function Automation:SetAutoCraft(enabled: boolean)
 		return
 	end
 
+	craftConfig.cycleIdx = 1
 	initInventorySync()
 	refreshStash(false, false)
 	hookAssemblyBench()
 
 	task.spawn(function()
+		-- Immediately teleport to & open Workbench when Auto Craft starts
+		ensureWorkbenchAccess(craftConfig.AutoTeleportBench ~= false, true)
 		local lastNotifiedErr = ""
 		while craftConfig.AutoEnabled and myToken == craftLoopToken and not destroyed do
 			local ok, msg = self:CraftOnce(nil)
@@ -9732,13 +10398,7 @@ function Automation:GetRecipeOptions(): ({ string }, { [string]: string })
 		table.insert(options, label)
 		labelToId[label] = rec.id
 	end
-	if #options > 0 and craftConfig.SelectedId == "" then
-		local firstId = labelToId[options[1]] or ""
-		craftConfig.SelectedId = firstId
-		if firstId ~= "" then
-			craftConfig.SelectedIds = { firstId }
-		end
-	end
+	-- Keep recipe selection empty initially so user explicitly chooses item(s) & order
 	return options, labelToId
 end
 
@@ -9752,9 +10412,10 @@ function Automation:GetCraftIngredientsText(): string
 
 	local list = if #craftConfig.SelectedIds > 0 then craftConfig.SelectedIds elseif craftConfig.SelectedId ~= "" then { craftConfig.SelectedId } else {}
 	if #list == 0 then
-		return "Select 1 or more recipes above to inspect required materials."
+		return "No recipe selected.\nOpen the dropdown above & pick 1 or more items.\n(Items craft in the exact order selected: #1 -> #2 -> #3)"
 	end
 
+	local nextIdx = ((craftConfig.cycleIdx - 1) % #list) + 1
 	local blocks: { string } = {}
 	local shownLimit = math.min(#list, 4)
 	for idx = 1, shownLimit do
@@ -9775,7 +10436,8 @@ function Automation:GetCraftIngredientsText(): string
 			then "LOCKED"
 			elseif afford > 0 then ("Can Craft x%d"):format(afford)
 			else "Missing Mats"
-		table.insert(blocks, ("[%d/%d] %s (Bag: %d | Stash: %d | %s)"):format(idx, #list, display, bagCnt, stashCnt, reqTag))
+		local nextTag = if #list > 1 and idx == nextIdx then " -> [NEXT]" else ""
+		table.insert(blocks, ("[%d/%d]%s %s (Bag: %d | Stash: %d | %s)"):format(idx, #list, nextTag, display, bagCnt, stashCnt, reqTag))
 
 		if not unlocked then
 			local reqId = gd.RecipeResearch and gd.RecipeResearch[recipe.id]
@@ -9842,10 +10504,15 @@ function Automation:GetCraftStatusText(): string
 		return "GameData.Recipes not loaded"
 	end
 	local list = if #craftConfig.SelectedIds > 0 then craftConfig.SelectedIds elseif craftConfig.SelectedId ~= "" then { craftConfig.SelectedId } else {}
-	if #list == 0 then
-		return "No recipe selected"
+	local nearBench, benchStatus = getWorkbenchProximity()
+	if not nearBench and craftConfig.AutoTeleportBench then
+		benchStatus = "Auto-Open + TP Ready"
 	end
-	local recipe = findRecipeById(craftConfig.SelectedId ~= "" and craftConfig.SelectedId or list[1])
+	if #list == 0 then
+		return ("Selected: None (Open dropdown above to pick recipes)\nBench: %s | Mode: Auto-Open Workbench\nStatus: %s"):format(benchStatus, lastCraftMsg)
+	end
+	local activeIdx = ((craftConfig.cycleIdx - 1) % #list) + 1
+	local recipe = findRecipeById(list[activeIdx] or craftConfig.SelectedId or list[1])
 	if not recipe then
 		return "No recipe selected"
 	end
@@ -9856,17 +10523,13 @@ function Automation:GetCraftStatusText(): string
 	local afford = getAffordCount(recipe)
 	local owned = getBagOwned(recipe.result)
 	local stashed = tonumber(stash[recipe.result]) or 0
-	local nearBench, benchStatus = getWorkbenchProximity()
-	if not nearBench and craftConfig.AutoTeleportBench then
-		benchStatus = "Auto-TP Ready"
-	end
 
 	local craftableText = if afford > 0
 		then ("Up to %dx"):format(afford)
 		else getMissingIngredientsSummary(gd, recipe)
-	local selTag = if #list > 1 then (" (+%d more)"):format(#list - 1) else ""
+	local selTag = if #list > 1 then (" [Queue %d/%d]"):format(activeIdx, #list) else ""
 
-	return ("Item: %s%s (Bag: %d | Stash: %d)\nUnlocked: %s | Bench: %s\nCraftable: %s\nStatus: %s"):format(
+	return ("Next: %s%s (Bag: %d | Stash: %d)\nUnlocked: %s | Bench: %s\nCraftable: %s\nStatus: %s"):format(
 		display,
 		selTag,
 		owned,
@@ -9881,23 +10544,132 @@ end
 --====================================================
 -- STABLE ITEM DUPE / STASH SYNC, MONEY ($) & IQ BOOSTER SUITE
 --====================================================
-local MARKET_SHOP_ITEMS = {
+--====================================================
+-- CITADEL SHOP (AUTO-STAND TRAVEL, BUY & OWNED SELL) + STASH/ECONOMY
+--====================================================
+local cachedMoneyData: any = nil
+local moneyDataChecked = false
+
+local function getMoneyData(): any?
+	if moneyDataChecked then
+		return cachedMoneyData
+	end
+	moneyDataChecked = true
+	local okMod, mod = pcall(function()
+		local inst = ReplicatedStorage:FindFirstChild("MoneyData")
+		if inst and inst:IsA("ModuleScript") then
+			return require(inst)
+		end
+		return nil
+	end)
+	if okMod and type(mod) == "table" then
+		cachedMoneyData = mod
+	end
+	return cachedMoneyData
+end
+
+local FALLBACK_MARKET_SHOP_ITEMS = {
 	{ id = "FinishResearch", label = "Finish Research Now ($20,000) [FinishResearch]", price = 20000 },
-	{ id = "Boost2xIQ", label = "2x IQ Gain - 15m ($15,000) [Boost2xIQ]", price = 15000 },
-	{ id = "Boost2xHarvest", label = "2x Harvest Speed - 15m ($9,000) [Boost2xHarvest]", price = 9000 },
-	{ id = "MegaSeeds", label = "Mega Seeds IQ Pack ($7,500) [MegaSeeds]", price = 7500 },
-	{ id = "SpaceCrate", label = "Space Supply Crate ($6,500) [SpaceCrate]", price = 6500 },
-	{ id = "ReadyClones", label = "Ready Clones Fill ($5,000) [ReadyClones]", price = 5000 },
-	{ id = "GarageCrate", label = "Garage Material Crate ($1,800) [GarageCrate]", price = 1800 },
-	{ id = "FluidRefill", label = "Portal Fluid Refill x3 ($900) [FluidRefill]", price = 900 },
-	{ id = "Medkit", label = "Emergency Medkit ($400) [Medkit]", price = 400 },
-	{ id = "Serum", label = "Stabilized Serum ($30,000) [Serum]", price = 30000 },
+	{ id = "Boost2xIQ", label = "2x IQ - 30 min ($15,000) [Boost2xIQ]", price = 15000 },
+	{ id = "Boost2xHarvest", label = "2x Harvest - 30 min ($9,000) [Boost2xHarvest]", price = 9000 },
+	{ id = "MegaSeeds", label = "Mega Seeds ($7,500) [MegaSeeds]", price = 7500 },
+	{ id = "SpaceCrate", label = "Space Crate ($6,500) [SpaceCrate]", price = 6500 },
+	{ id = "ReadyClones", label = "3 Ready Clones ($5,000) [ReadyClones]", price = 5000 },
+	{ id = "GarageCrate", label = "Garage Crate ($1,800) [GarageCrate]", price = 1800 },
+	{ id = "FluidRefill", label = "Portal Fluid Refill ($900) [FluidRefill]", price = 900 },
+	{ id = "Tickets100", label = "100 Arcade Tickets ($800) [Tickets100]", price = 800 },
+	{ id = "Medkit", label = "Plumbus Medkit ($400) [Medkit]", price = 400 },
+	{ id = "Serum", label = "Species Serum ($30,000) [Serum]", price = 30000 },
 }
+
+local function getMarketShopCatalog(): { { id: string, label: string, price: number, standKind: string } }
+	local md = getMoneyData()
+	local out: { { id: string, label: string, price: number, standKind: string } } = {}
+	if md and type(md.SHOP) == "table" and #md.SHOP > 0 then
+		for _, entry in ipairs(md.SHOP) do
+			if type(entry) == "table" and entry.key then
+				local k = tostring(entry.key)
+				local p = tonumber(entry.price) or 0
+				local priceFmt = if type(md.fmt) == "function" then md.fmt(p) else tostring(p)
+				local lbl = ("%s ($%s) [%s]"):format(tostring(entry.name or k), priceFmt, k)
+				local stand = if entry.serum then "serum" else "market"
+				table.insert(out, { id = k, label = lbl, price = p, standKind = stand })
+			end
+		end
+	end
+	if #out == 0 then
+		for _, entry in ipairs(FALLBACK_MARKET_SHOP_ITEMS) do
+			local stand = if entry.id == "Serum" then "serum" else "market"
+			table.insert(out, { id = entry.id, label = entry.label, price = entry.price, standKind = stand })
+		end
+	end
+	return out
+end
+
+local function isStandDistanceError(errText: string): boolean
+	local low = string.lower(tostring(errText or ""))
+	return string.find(low, "stand", 1, true) ~= nil
+		or string.find(low, "citadel", 1, true) ~= nil
+		or string.find(low, "close", 1, true) ~= nil
+		or string.find(low, "far", 1, true) ~= nil
+		or string.find(low, "distance", 1, true) ~= nil
+		or string.find(low, "visit", 1, true) ~= nil
+		or string.find(low, "market", 1, true) ~= nil
+		or string.find(low, "pawn", 1, true) ~= nil
+		or string.find(low, "serum", 1, true) ~= nil
+		or string.find(low, "near", 1, true) ~= nil
+		or string.find(low, "rejected", 1, true) ~= nil
+end
+
+local function getItemSellUnitPrice(itemId: string, gd: any, md: any, serverSellMap: { [string]: number }?): number
+	if serverSellMap and serverSellMap[itemId] then
+		return serverSellMap[itemId]
+	end
+	local meta = gd and gd.Items and gd.Items[itemId]
+	if md and type(md.sellValue) == "function" then
+		local okV, val = pcall(md.sellValue, itemId, meta)
+		if okV and type(val) == "number" then
+			return math.max(0, math.floor(val))
+		end
+	end
+	if meta and (meta.gear or meta.tool or meta.gadget) then
+		return 0
+	end
+	if md and type(md.NO_SELL) == "table" and md.NO_SELL[itemId] then
+		return 0
+	end
+	if md and type(md.SELL_OVERRIDE) == "table" and md.SELL_OVERRIDE[itemId] then
+		return tonumber(md.SELL_OVERRIDE[itemId]) or 0
+	end
+	if meta and meta.planet then
+		return 15
+	end
+	return if meta then 4 else 0
+end
+
+local function fetchServerSellMap(): { [string]: number }
+	local out: { [string]: number } = {}
+	if tostring(LocalPlayer:GetAttribute("CurrentDimension") or "") ~= "Citadel" then
+		return out
+	end
+	local ma = ReplicatedStorage:FindFirstChild("MoneyAction")
+	if ma and ma:IsA("RemoteFunction") then
+		local okList, listRes = safeInvokeServer(ma, 0.55, "sellList")
+		if okList and type(listRes) == "table" then
+			for _, entry in ipairs(listRes) do
+				if type(entry) == "table" and entry.id and tonumber(entry.value) then
+					out[tostring(entry.id)] = tonumber(entry.value) :: number
+				end
+			end
+		end
+	end
+	return out
+end
 
 function Automation:GetMarketOptions(): ({ string }, { [string]: string })
 	local opts: { string } = {}
 	local map: { [string]: string } = {}
-	for _, entry in ipairs(MARKET_SHOP_ITEMS) do
+	for _, entry in ipairs(getMarketShopCatalog()) do
 		table.insert(opts, entry.label)
 		map[entry.label] = entry.id
 	end
@@ -9914,11 +10686,8 @@ function Automation:SetSelectedMarketItems(shopKeys: { string })
 			table.insert(clean, id)
 		end
 	end
-	if #clean == 0 then
-		clean = { "FinishResearch" }
-	end
 	economyConfig.SelectedMarketItems = clean
-	economyConfig.SelectedMarketItem = clean[1]
+	economyConfig.SelectedMarketItem = clean[1] or ""
 end
 
 function Automation:SetSelectedMarketItem(shopKey: string)
@@ -9931,55 +10700,339 @@ function Automation:GetSelectedMarketItems(): { string }
 	return table.clone(economyConfig.SelectedMarketItems)
 end
 
+function Automation:GetOwnedSellableOptions(fastLocalOnly: boolean?): ({ string }, { [string]: string })
+	initInventorySync()
+	if not fastLocalOnly then
+		ensureInventoryAndStashSynced(0.35)
+	end
+	local gd = getGameData()
+	local md = getMoneyData()
+	local serverSellMap = if fastLocalOnly then {} else fetchServerSellMap()
+
+	local merged: { [string]: number } = {}
+	for id, cnt in pairs(decodeAttrTable("Bag")) do
+		local n = tonumber(cnt) or 0
+		if n > 0 then
+			merged[tostring(id)] = n
+		end
+	end
+	for id, cnt in pairs(inventory) do
+		local n = tonumber(cnt) or 0
+		if n > (merged[tostring(id)] or 0) then
+			merged[tostring(id)] = n
+		end
+	end
+
+	local rows: { { id: string, label: string, totalVal: number } } = {}
+	for itemId, qty in pairs(merged) do
+		local unitPrice = getItemSellUnitPrice(itemId, gd, md, serverSellMap)
+		if qty > 0 and unitPrice > 0 then
+			local meta = gd and gd.Items and gd.Items[itemId]
+			local displayName = if meta and meta.name then tostring(meta.name) else itemId
+			local totalVal = qty * unitPrice
+			local lbl = ("%s [%s] x%d ($%d ea = $%d)"):format(displayName, itemId, qty, unitPrice, totalVal)
+			table.insert(rows, { id = itemId, label = lbl, totalVal = totalVal })
+		end
+	end
+
+	table.sort(rows, function(a, b)
+		if a.totalVal ~= b.totalVal then
+			return a.totalVal > b.totalVal
+		end
+		return a.label < b.label
+	end)
+
+	local opts: { string } = {}
+	local map: { [string]: string } = {}
+	for _, r in ipairs(rows) do
+		table.insert(opts, r.label)
+		map[r.label] = r.id
+	end
+	return opts, map
+end
+
+function Automation:SetSelectedSellItems(itemIds: { string })
+	local clean: { string } = {}
+	local seen: { [string]: boolean } = {}
+	for _, raw in ipairs(itemIds) do
+		local id = tostring(raw or "")
+		if id ~= "" and not seen[id] then
+			seen[id] = true
+			table.insert(clean, id)
+		end
+	end
+	economyConfig.SelectedSellItems = clean
+end
+
+function Automation:GetSelectedSellItems(): { string }
+	return table.clone(economyConfig.SelectedSellItems)
+end
+
+function Automation:SetSellQuantity(qty: number)
+	economyConfig.SellQty = math.clamp(math.floor(tonumber(qty) or 0), 0, 999)
+end
+
+function Automation:SetShopAutoReturnHome(enabled: boolean)
+	economyConfig.AutoReturnAfterShop = enabled == true
+end
+
+function Automation:GetShopPreviewText(): string
+	local money = tonumber(LocalPlayer:GetAttribute("Schmeckles")) or 0
+	local curDim = tostring(LocalPlayer:GetAttribute("CurrentDimension") or "?")
+	local inCitadel = curDim == "Citadel"
+	local md = getMoneyData()
+	local gd = getGameData()
+	local catalog = getMarketShopCatalog()
+	local priceById: { [string]: number } = {}
+	for _, e in ipairs(catalog) do
+		priceById[e.id] = e.price
+	end
+
+	local buyCount = #economyConfig.SelectedMarketItems
+	local buyCost = 0
+	for _, k in ipairs(economyConfig.SelectedMarketItems) do
+		buyCost += priceById[k] or 0
+	end
+
+	local sellLines: { string } = {}
+	local sellTotal = 0
+	for _, itemId in ipairs(economyConfig.SelectedSellItems) do
+		local owned = getBagOwned(itemId)
+		local qtyToSell = if economyConfig.SellQty > 0 then math.min(owned, economyConfig.SellQty) else owned
+		local unitP = getItemSellUnitPrice(itemId, gd, md, nil)
+		local sub = qtyToSell * unitP
+		sellTotal += sub
+		if #sellLines < 3 then
+			table.insert(sellLines, ("%s: %d/%d ($%d)"):format(itemId, qtyToSell, owned, sub))
+		end
+	end
+	local sellSummary = if #economyConfig.SelectedSellItems == 0
+		then "Sell Picked: None (select items below)"
+		elseif #economyConfig.SelectedSellItems > 3 then ("Sell Picked (%d): +%s ... = +$%d"):format(#economyConfig.SelectedSellItems, table.concat(sellLines, ", "), sellTotal)
+		else ("Sell Picked (%d): %s = +$%d"):format(#economyConfig.SelectedSellItems, table.concat(sellLines, ", "), sellTotal)
+
+	local locLabel = if inCitadel then "At Citadel (Stand Direct)" else ("In " .. curDim .. " (Auto-Visits Citadel Stand)")
+	return ("Balance: $%d | Location: %s\nBuy Queue: %d packs ($%d) | Mode: %s\n%s\nStatus: %s"):format(
+		money,
+		locLabel,
+		buyCount,
+		buyCost,
+		if economyConfig.AutoReturnAfterShop then "Auto Return Home" else "Stay After Visit",
+		sellSummary,
+		lastShopMsg
+	)
+end
+
+local function tryEnsureAtCitadelStand(standKind: string): (boolean, boolean, string)
+	local startedOutsideCitadel = tostring(LocalPlayer:GetAttribute("CurrentDimension") or "") ~= "Citadel"
+	if not materialDep or type(materialDep.TravelToCitadelStand) ~= "function" then
+		return startedOutsideCitadel, false, "Material travel module unavailable"
+	end
+	local ok, msg = materialDep:TravelToCitadelStand(standKind)
+	return startedOutsideCitadel, ok, msg
+end
+
+local function maybeReturnHomeAfterShop(leftNonCitadel: boolean)
+	if leftNonCitadel and economyConfig.AutoReturnAfterShop and materialDep and type(materialDep.ForceSendHomeNow) == "function" then
+		task.wait(0.12)
+		materialDep:ForceSendHomeNow()
+	end
+end
+
 function Automation:BuyRemoteMarketItem(shopKey: string?): (boolean, string)
 	if destroyed then
 		return false, "Menu unloaded"
 	end
 	local key = if type(shopKey) == "string" and shopKey ~= "" then shopKey else economyConfig.SelectedMarketItem
+	if key == "" then
+		lastShopMsg = "No Shop package selected"
+		return false, lastShopMsg
+	end
 	if key == "FinishResearch" then
-		return self:BuyFinishResearchNow()
+		local okFin, msgFin = self:BuyFinishResearchNow()
+		if okFin or not isStandDistanceError(msgFin) then
+			lastShopMsg = msgFin
+			return okFin, msgFin
+		end
 	end
 	local moneyAction = ReplicatedStorage:FindFirstChild("MoneyAction")
 	if not moneyAction or not moneyAction:IsA("RemoteFunction") then
 		return false, "RemoteFunction MoneyAction not found"
 	end
+
 	local okInv, buyOk, buyRes = safeInvokeServer(moneyAction, 2.0, "buy", key)
+	local errStr = if not okInv then tostring(buyRes or buyOk) else tostring(buyRes or "Purchase rejected")
+	if not (okInv and buyOk) and (tostring(LocalPlayer:GetAttribute("CurrentDimension") or "") ~= "Citadel" or isStandDistanceError(errStr)) then
+		local leftHome, okVisit = tryEnsureAtCitadelStand(if key == "Serum" then "serum" else "market")
+		if okVisit then
+			okInv, buyOk, buyRes = safeInvokeServer(moneyAction, 2.0, "buy", key)
+			if not (okInv and buyOk) and isStandDistanceError(tostring(buyRes or buyOk)) then
+				task.wait(0.25)
+				okInv, buyOk, buyRes = safeInvokeServer(moneyAction, 2.0, "buy", key)
+			end
+			maybeReturnHomeAfterShop(leftHome)
+		end
+	end
+
 	if okInv and buyOk then
 		requestInventorySync(true)
 		refreshStash(true, false)
-		local msg = ("Purchased %s remotely!"):format(key)
+		local msg = ("Purchased %s!"):format(key)
 		lastEconomyMsg = msg
-		sendNotice("Remote Market", msg, Color3.fromRGB(52, 211, 153))
+		lastShopMsg = msg
+		sendNotice("Citadel Shop", msg, Color3.fromRGB(52, 211, 153))
 		return true, msg
 	end
-	local errStr = if not okInv then tostring(buyRes or buyOk) else tostring(buyRes or "Purchase rejected")
+	errStr = if not okInv then tostring(buyRes or buyOk) else tostring(buyRes or "Purchase rejected")
 	lastEconomyMsg = ("Buy %s failed: %s"):format(key, errStr)
-	return false, lastEconomyMsg
+	lastShopMsg = lastEconomyMsg
+	return false, lastShopMsg
 end
 
 function Automation:BuySelectedMarketPackages(): (boolean, string)
 	if destroyed then
 		return false, "Menu unloaded"
 	end
-	local list = if #economyConfig.SelectedMarketItems > 0 then economyConfig.SelectedMarketItems else { economyConfig.SelectedMarketItem }
+	local list = if #economyConfig.SelectedMarketItems > 0 then economyConfig.SelectedMarketItems else (if economyConfig.SelectedMarketItem ~= "" then { economyConfig.SelectedMarketItem } else {})
+	if #list == 0 then
+		lastShopMsg = "No package selected above"
+		return false, lastShopMsg
+	end
+	local moneyAction = ReplicatedStorage:FindFirstChild("MoneyAction")
 	local bought = 0
 	local lastRes = ""
-	for _, key in ipairs(list) do
-		local ok, msg = self:BuyRemoteMarketItem(key)
+	local leftHomeForBatch = false
+
+	for idx, key in ipairs(list) do
+		local ok = false
+		local msg = ""
+		if key == "FinishResearch" then
+			ok, msg = self:BuyFinishResearchNow()
+		elseif moneyAction and moneyAction:IsA("RemoteFunction") then
+			local okInv, buyOk, buyRes = safeInvokeServer(moneyAction, 2.0, "buy", key)
+			if okInv and buyOk then
+				ok = true
+				msg = "Purchased " .. key
+			else
+				msg = if not okInv then tostring(buyRes or buyOk) else tostring(buyRes or "Purchase rejected")
+			end
+		else
+			msg = "MoneyAction missing"
+		end
+
+		-- If rejected due to needing Citadel stand, visit stand once for the whole batch and retry
+		if not ok and moneyAction and moneyAction:IsA("RemoteFunction") and (tostring(LocalPlayer:GetAttribute("CurrentDimension") or "") ~= "Citadel" or isStandDistanceError(msg)) then
+			local leftHome, okVisit = tryEnsureAtCitadelStand(if key == "Serum" then "serum" else "market")
+			if leftHome then
+				leftHomeForBatch = true
+			end
+			if okVisit then
+				local okInv2, buyOk2, buyRes2 = safeInvokeServer(moneyAction, 2.0, "buy", key)
+				if okInv2 and buyOk2 then
+					ok = true
+					msg = "Purchased " .. key
+				else
+					msg = if not okInv2 then tostring(buyRes2 or buyOk2) else tostring(buyRes2 or "Purchase rejected")
+				end
+			end
+		end
+
 		lastRes = msg
 		if ok then
 			bought += 1
 		end
-		if #list > 1 then
+		if idx < #list then
 			task.wait(0.08)
 		end
 	end
+
+	requestInventorySync(true)
+	refreshStash(true, false)
+	maybeReturnHomeAfterShop(leftHomeForBatch)
+
 	if #list == 1 then
+		lastShopMsg = lastRes
+		lastEconomyMsg = lastRes
 		return bought == 1, lastRes
 	end
-	local summary = ("Citadel Remote Buy: %d/%d packages succeeded (%s)"):format(bought, #list, lastRes)
+	local summary = ("Citadel Shop Buy: %d/%d succeeded (%s)"):format(bought, #list, lastRes)
 	lastEconomyMsg = summary
+	lastShopMsg = summary
 	return bought > 0, summary
+end
+
+function Automation:SellSelectedOwnedItems(itemIds: { string }?, customQty: number?): (boolean, string)
+	if destroyed then
+		return false, "Menu unloaded"
+	end
+	local ma = ReplicatedStorage:FindFirstChild("MoneyAction")
+	if not ma or not ma:IsA("RemoteFunction") then
+		return false, "RemoteFunction MoneyAction not found"
+	end
+	initInventorySync()
+	ensureInventoryAndStashSynced(0.45)
+
+	local targets = if type(itemIds) == "table" and #itemIds > 0 then itemIds else economyConfig.SelectedSellItems
+	if #targets == 0 then
+		lastShopMsg = "Select 1+ owned Bag items below to sell"
+		return false, lastShopMsg
+	end
+
+	local qtyLimit = if customQty ~= nil then math.max(0, math.floor(customQty)) else economyConfig.SellQty
+	local toSell: { { id: string, qty: number } } = {}
+	for _, id in ipairs(targets) do
+		local owned = getBagOwned(id)
+		if owned > 0 then
+			local sellCount = if qtyLimit > 0 then math.min(owned, qtyLimit) else owned
+			if sellCount > 0 then
+				table.insert(toSell, { id = id, qty = sellCount })
+			end
+		end
+	end
+
+	if #toSell == 0 then
+		lastShopMsg = "Selected item(s) have 0 qty left in Bag (click Refresh Bag)"
+		return false, lastShopMsg
+	end
+
+	local beforeMoney = tonumber(LocalPlayer:GetAttribute("Schmeckles")) or 0
+	local soldUnits = 0
+	local soldTypes = 0
+	local visitedStand = false
+	local leftHomeForBatch = false
+
+	for _, item in ipairs(toSell) do
+		local okS, sOk, sErr = safeInvokeServer(ma, 1.0, "sell", item.id, item.qty)
+		if not (okS and sOk) and not visitedStand and (tostring(LocalPlayer:GetAttribute("CurrentDimension") or "") ~= "Citadel" or isStandDistanceError(tostring(sErr or sOk))) then
+			visitedStand = true
+			local leftHome, okVisit = tryEnsureAtCitadelStand("pawn")
+			if leftHome then
+				leftHomeForBatch = true
+			end
+			if okVisit then
+				okS, sOk, sErr = safeInvokeServer(ma, 1.0, "sell", item.id, item.qty)
+			end
+		end
+		if okS and sOk then
+			soldUnits += item.qty
+			soldTypes += 1
+		end
+	end
+
+	requestInventorySync(true)
+	refreshStash(true, false)
+	maybeReturnHomeAfterShop(leftHomeForBatch)
+	task.wait(0.1)
+
+	local afterMoney = tonumber(LocalPlayer:GetAttribute("Schmeckles")) or 0
+	local gained = afterMoney - beforeMoney
+	local msg = if soldUnits > 0
+		then ("Sold %d selected (%d types) (+$%d)"):format(soldUnits, soldTypes, math.max(0, gained))
+		else "Sell rejected (try clicking TP Citadel Pawn Stand)"
+	lastEconomyMsg = msg
+	lastShopMsg = msg
+	sendNotice("Citadel Shop Sell", msg, if soldUnits > 0 then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36))
+	return soldUnits > 0, msg
 end
 
 function Automation:SellAllBagMaterialsRemote(keepQty: number?): (boolean, string)
@@ -9995,10 +11048,14 @@ function Automation:SellAllBagMaterialsRemote(keepQty: number?): (boolean, strin
 	local beforeMoney = tonumber(LocalPlayer:GetAttribute("Schmeckles")) or 0
 	local keep = math.max(0, math.floor(tonumber(keepQty) or 0))
 	local gd = getGameData()
+	local md = getMoneyData()
 
 	local toSell: { { id: string, qty: number } } = {}
+	local visitedStand = false
+	local leftHomeForBatch = false
+
 	local okList, listRes = safeInvokeServer(ma, 1.5, "sellList")
-	if okList and type(listRes) == "table" then
+	if okList and type(listRes) == "table" and #listRes > 0 then
 		for _, entry in ipairs(listRes) do
 			if type(entry) == "table" and entry.id then
 				local cnt = tonumber(entry.qty or entry.count or entry.amount) or getBagOwned(tostring(entry.id))
@@ -10019,9 +11076,8 @@ function Automation:SellAllBagMaterialsRemote(keepQty: number?): (boolean, strin
 				if not seen[id] then
 					seen[id] = true
 					local cnt = tonumber(rawCnt) or 0
-					local meta = gd and gd.Items and gd.Items[id]
-					local isGear = type(meta) == "table" and (meta.gadget or meta.gear or meta.tool)
-					if not isGear and cnt > keep then
+					local unitP = getItemSellUnitPrice(id, gd, md, nil)
+					if unitP > 0 and cnt > keep then
 						table.insert(toSell, { id = id, qty = cnt - keep })
 					end
 				end
@@ -10034,13 +11090,24 @@ function Automation:SellAllBagMaterialsRemote(keepQty: number?): (boolean, strin
 	if #toSell == 0 then
 		local emptyMsg = "No sellable materials in Bag"
 		lastEconomyMsg = emptyMsg
+		lastShopMsg = emptyMsg
 		return false, emptyMsg
 	end
 
 	local soldUnits = 0
 	local soldTypes = 0
 	for _, item in ipairs(toSell) do
-		local okS, sOk = safeInvokeServer(ma, 0.9, "sell", item.id, item.qty)
+		local okS, sOk, sErr = safeInvokeServer(ma, 0.9, "sell", item.id, item.qty)
+		if not (okS and sOk) and not visitedStand and (tostring(LocalPlayer:GetAttribute("CurrentDimension") or "") ~= "Citadel" or isStandDistanceError(tostring(sErr or sOk))) then
+			visitedStand = true
+			local leftHome, okVisit = tryEnsureAtCitadelStand("pawn")
+			if leftHome then
+				leftHomeForBatch = true
+			end
+			if okVisit then
+				okS, sOk, sErr = safeInvokeServer(ma, 0.9, "sell", item.id, item.qty)
+			end
+		end
 		if okS and sOk then
 			soldUnits += item.qty
 			soldTypes += 1
@@ -10049,13 +11116,15 @@ function Automation:SellAllBagMaterialsRemote(keepQty: number?): (boolean, strin
 
 	requestInventorySync(true)
 	refreshStash(true, false)
+	maybeReturnHomeAfterShop(leftHomeForBatch)
 	task.wait(0.1)
 	local afterMoney = tonumber(LocalPlayer:GetAttribute("Schmeckles")) or 0
 	local gained = afterMoney - beforeMoney
 	local msg = if soldUnits > 0
-		then ("Pawn Sold %d items (%d types) (+$%d)"):format(soldUnits, soldTypes, gained)
-		else "Remote sell rejected by server (check item lock or server distance rule)"
+		then ("Pawn Sold %d items (%d types) (+$%d)"):format(soldUnits, soldTypes, math.max(0, gained))
+		else "Sell rejected (try TP Citadel Pawn stand)"
 	lastEconomyMsg = msg
+	lastShopMsg = msg
 	sendNotice("Citadel Pawn Shop", msg, if soldUnits > 0 then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36))
 	return soldUnits > 0, msg
 end
@@ -10101,54 +11170,71 @@ local function triggerClientEventSignal(ev: RemoteEvent?, ...: any): boolean
 	return false
 end
 
-function Automation:OpenCitadelShop(mode: string): (boolean, string)
+function Automation:OpenCitadelShop(mode: string, travelFirst: boolean?): (boolean, string)
 	if destroyed then
 		return false, "Menu unloaded"
 	end
 	local m = string.lower(tostring(mode or "market"))
 	if m == "wallet" then
 		local fn = rawget(_G, "PG_OpenWallet")
-		if type(fn) == "function" then
-			local ok = pcall(fn, true)
-			if ok then
-				lastEconomyMsg = "Opened Citadel Wallet"
-				return true, lastEconomyMsg
-			end
+		if type(fn) == "function" and pcall(fn, true) then
+			lastShopMsg = "Opened Citadel Wallet"
+			lastEconomyMsg = lastShopMsg
+			return true, lastShopMsg
 		end
 		return false, "_G.PG_OpenWallet unavailable"
 	elseif m == "shop" or m == "gear" then
 		local fn = rawget(_G, "PG_OpenShop")
-		if type(fn) == "function" then
-			local ok = pcall(fn, true)
-			if ok then
-				lastEconomyMsg = "Opened Gear & Skin Shop"
-				return true, lastEconomyMsg
-			end
+		if type(fn) == "function" and pcall(fn, true) then
+			lastShopMsg = "Opened Gear & Skin Shop"
+			lastEconomyMsg = lastShopMsg
+			return true, lastShopMsg
 		end
 		return false, "_G.PG_OpenShop unavailable"
-	elseif m == "morty" then
+	end
+
+	-- Visit Citadel stand first when requested or when not already in Citadel
+	local standMsg = ""
+	if (travelFirst ~= false) and materialDep and type(materialDep.OpenCitadelStand) == "function" then
+		local okStand, sMsg = materialDep:OpenCitadelStand(m)
+		if okStand then
+			standMsg = sMsg
+		end
+	end
+
+	if m == "morty" then
 		local ev = ReplicatedStorage:FindFirstChild("OpenMortyShop")
 		if ev and ev:IsA("RemoteEvent") and triggerClientEventSignal(ev, "legal") then
-			lastEconomyMsg = "Opened Citadel Morty Daycare"
-			return true, lastEconomyMsg
+			lastShopMsg = "Opened Citadel Morty Daycare"
+			lastEconomyMsg = lastShopMsg
+			return true, lastShopMsg
 		end
-		return false, "Morty shop signal needs executor firesignal/getconnections (or visit Citadel Central Dome)"
+	else
+		local ev = ReplicatedStorage:FindFirstChild("MarketOpen")
+		if ev and ev:IsA("RemoteEvent") and triggerClientEventSignal(ev, m) then
+			local titleMap = { market = "Schmeckle Market", pawn = "Pawn Shop", serum = "Serum Lab" }
+			lastShopMsg = "Opened Citadel " .. (titleMap[m] or m)
+			lastEconomyMsg = lastShopMsg
+			return true, lastShopMsg
+		end
 	end
 
-	-- "market" | "pawn" | "serum"
-	local ev = ReplicatedStorage:FindFirstChild("MarketOpen")
-	if ev and ev:IsA("RemoteEvent") and triggerClientEventSignal(ev, m) then
-		local titleMap = { market = "Schmeckle Market", pawn = "Pawn Shop", serum = "Serum Lab" }
-		lastEconomyMsg = "Opened Citadel " .. (titleMap[m] or m)
-		return true, lastEconomyMsg
+	if standMsg ~= "" then
+		lastShopMsg = standMsg
+		lastEconomyMsg = standMsg
+		return true, standMsg
 	end
 
-	local msg = "Citadel UI opener requires executor firesignal/getconnections; use Remote Buy / Sell buttons below!"
+	local msg = "Citadel stand visit ready - use Buy/Sell in Menu or walk to stand prompt"
 	lastEconomyMsg = msg
+	lastShopMsg = msg
 	return false, msg
 end
 
 local function resolveTargetDupeItem(): string
+	if type(economyConfig.SelectedDupeItem) == "string" and economyConfig.SelectedDupeItem ~= "" then
+		return economyConfig.SelectedDupeItem
+	end
 	local recipe = findRecipeById(craftConfig.SelectedId)
 	if recipe and type(recipe.result) == "string" and recipe.result ~= "" then
 		if totalOwned(recipe.result) > 0 then
@@ -10191,6 +11277,10 @@ local function resolveTargetDupeItem(): string
 	return bestItem
 end
 
+function Automation:SetSelectedDupeItem(itemId: string)
+	economyConfig.SelectedDupeItem = tostring(itemId or "")
+end
+
 function Automation:RunStashDupeCycle(targetItemId: string?, burstCount: number?): (boolean, string)
 	if destroyed then
 		return false, "Menu unloaded"
@@ -10206,27 +11296,24 @@ function Automation:RunStashDupeCycle(targetItemId: string?, burstCount: number?
 	local beforeTotal = totalOwned(itemId)
 
 	pcall(function()
-		-- 1) Pull any passive ButterBot storage for the item first (non-blocking timeout)
 		local bb = ReplicatedStorage:FindFirstChild("ButterBot")
 		if bb and bb:IsA("RemoteFunction") then
 			safeInvokeServer(bb, 0.6, "item", itemId)
 			safeInvokeServer(bb, 0.6, "unload")
 		end
 
-		-- 2) If DevTestAction is active in the place, grant a batch directly
 		local devAct = ReplicatedStorage:FindFirstChild("DevTestAction")
 		if devAct and devAct:IsA("RemoteFunction") then
 			safeInvokeServer(devAct, 0.6, "give", { item = itemId, count = 25 })
 		end
 
-		-- 3) Concurrent StashAction put/take race burst + InventorySync flush
 		local stashAction = ReplicatedStorage:FindFirstChild("StashAction")
 		local invSync = ReplicatedStorage:FindFirstChild("InventorySync")
 		if stashAction and stashAction:IsA("RemoteFunction") then
 			local bagCnt = math.max(1, getBagOwned(itemId))
 			local stashCnt = math.max(1, tonumber(stash[itemId]) or bagCnt)
 			local pending = 0
-			for i = 1, cycles do
+			for _ = 1, cycles do
 				pending += 2
 				task.spawn(function()
 					safeInvokeServer(stashAction, 0.8, "put", itemId, bagCnt)
@@ -10260,10 +11347,10 @@ function Automation:RunStashDupeCycle(targetItemId: string?, burstCount: number?
 	local meta = gd and gd.Items and gd.Items[itemId]
 	local iName = if meta and meta.name then tostring(meta.name) else itemId
 	local msg = if delta > 0
-		then ("Dupe / Burst %s: +%d (Now Bag: %d | Stash: %d)"):format(iName, delta, getBagOwned(itemId), tonumber(stash[itemId]) or 0)
-		else ("Synced %s x%d (Bag: %d | Stash: %d) - %d concurrent threads"):format(iName, afterTotal, getBagOwned(itemId), tonumber(stash[itemId]) or 0, cycles * 2)
+		then ("Dupe/Claim %s: +%d (Bag: %d | Stash: %d)"):format(iName, delta, getBagOwned(itemId), tonumber(stash[itemId]) or 0)
+		else ("Synced %s x%d (Bag: %d | Stash: %d) - Server blocked free grant"):format(iName, afterTotal, getBagOwned(itemId), tonumber(stash[itemId]) or 0)
 	lastEconomyMsg = msg
-	return true, msg
+	return delta > 0, msg
 end
 
 function Automation:StashAllBagItems(): (boolean, string)
@@ -11562,7 +12649,8 @@ end
 return Automation
 end)()
 
-local __mod_CombatModule = (function()
+-- === MODULE: CombatModule ===
+local Combat = (function()
 --[[
 	CombatModule
 	Character Guardian (Anti-Void, Auto-Heal/Regen, Auto Emergency Force-Home),
@@ -14238,29 +15326,7 @@ return Combat
 
 end)()
 
---[[
-	RayfieldMenu (LocalScript)
-	Client controller in StarterPlayer.StarterPlayerScripts (and DeltaX Mobile single-file compatible).
-	Organized into 6 intuitive tabs with multi-select support, grouped action rows, and low-overhead updates.
-]]
-
-if not game:IsLoaded() then
-	game.Loaded:Wait()
-end
-
-local prevCleanup = rawget(_G, "__RayfieldMenuCleanup")
-if type(prevCleanup) == "function" then
-	pcall(prevCleanup)
-end
-
-local Lighting = game:GetService("Lighting")
-local UserInputService = game:GetService("UserInputService")
-
-local Rayfield = __mod_RayfieldLib
-local Esp = __mod_EspModule
-local Material = __mod_MaterialModule
-local Automation = __mod_AutomationModule
-local Combat = __mod_CombatModule
+-- === MAIN CONTROLLER ===
 
 Automation:SetDependencies(Material)
 Combat:SetDependencies(Material, Automation)
@@ -14300,15 +15366,14 @@ Automation:SetNotifyCallback(notify)
 Material:SetNotifyCallback(notify)
 Combat:SetNotifyCallback(notify)
 
-Automation:SetMenuVisibilityHook(function(show: boolean?): boolean
-	if show == false then
-		local wasOpen = not Window:IsIsolationHidden()
-		Window:SetIsolationHidden(true)
-		return wasOpen
-	else
-		Window:SetIsolationHidden(false)
-		return true
-	end
+Automation:SetMenuVisibilityHook(function(_show: boolean?): boolean
+	return Window:IsVisible()
+end)
+
+Automation:SetMenuLabHooks(function(durationOrFalse: any)
+	Window:SetSyntheticClickBlock(durationOrFalse)
+end, function(x: number, y: number): boolean
+	return Window:IsPointInMenu(x, y)
 end)
 
 local function mapDropdownIds(selectedArg: any, lookupMap: { [string]: string }, fallbackId: string): { string }
@@ -14354,9 +15419,14 @@ local combatStatus: any
 local researchStatus: any
 local craftStatus: any
 local craftIngredientsPanel: any
+local shopStatus: any
 local economyStatus: any
 local buildStatus: any
 local homeStatus: any
+
+local refreshSellDropdown: ((boolean?) -> number)? = nil
+
+local tglShopAutoReturn: any
 
 local tglMatAutoCollect: any
 local tglMatCrossPlanet: any
@@ -14814,15 +15884,13 @@ do
 	})
 
 	local recipeOpts, recipeMap = Automation:GetRecipeOptions()
-	if recipeOpts[1] and recipeMap[recipeOpts[1]] then
-		Automation:SetSelectedRecipes({ recipeMap[recipeOpts[1]] })
-	end
 
 	Tab:CreateDropdown({
 		Name = "Select Item / Recipe (Multi-Select)",
 		Options = recipeOpts,
-		CurrentOptions = { recipeOpts[1] },
+		CurrentOptions = {},
 		MultiSelect = true,
+		AllowEmpty = true,
 		Callback = function(selectedList: { string })
 			Automation:SetSelectedRecipes(mapDropdownIds(selectedList, recipeMap, ""))
 			craftStatus:Set({ Content = Automation:GetCraftStatusText() })
@@ -14841,11 +15909,12 @@ do
 
 	tglAutoCraft = Tab:CreateToggle({
 		Name = "Enable Auto Craft Loop",
-		Description = "Auto-TP to Workbench & crafts all checked recipes continuously",
+		Description = "Auto-opens Workbench & crafts all selected items in order (#1 -> #2 -> #3)",
 		CurrentValue = false,
 		Callback = function(enabled: boolean)
 			Automation:SetAutoCraft(enabled)
-			notify("Auto Craft", if enabled then "Enabled." else "Disabled.", if enabled then COLOR_OK else COLOR_ERR, 2)
+			craftStatus:Set({ Content = Automation:GetCraftStatusText() })
+			notify("Auto Craft", if enabled then "Enabled (Auto-Open Workbench & Craft in order)." else "Disabled.", if enabled then COLOR_OK else COLOR_ERR, 2)
 		end,
 	})
 
@@ -14893,12 +15962,12 @@ do
 				end,
 			},
 			{
-				Text = "TP to Workbench",
+				Text = "Open & TP Workbench",
 				Color = COLOR_INFO,
 				Callback = function()
-					local ok, msg = Material:TeleportToWorkbench()
+					local ok, msg = Material:OpenWorkbench(false)
 					craftStatus:Set({ Content = Automation:GetCraftStatusText() })
-					notify("Workbench Teleport", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
+					notify("Workbench", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
 				end,
 			},
 		},
@@ -14906,23 +15975,243 @@ do
 end
 
 --====================================================
--- TAB 4: CITADEL & BUILD (ECONOMY + SHOPS + BUILDING)
+-- TAB 4: CITADEL SHOP (BUY PACKAGES + SELL OWNED BAG ITEMS + AUTO-STAND)
 --====================================================
 do
-	local Tab = Window:CreateTab("Citadel & Build")
+	local Tab = Window:CreateTab("Citadel Shop")
 
-	Tab:CreateSection("1. Money ($), IQ & Stash Dupe")
+	shopStatus = Tab:CreateParagraph({
+		Title = "Citadel Shop & Bag Payout Preview",
+		Content = Automation:GetShopPreviewText(),
+		FixedHeight = 76,
+		AccentColor = COLOR_OK,
+	})
+
+	Tab:CreateSection("1. Buy Packages (Auto-Visits Stand if Far)")
+
+	local marketOpts, marketMap = Automation:GetMarketOptions()
+	Automation:SetSelectedMarketItems({})
+
+	Tab:CreateDropdown({
+		Name = "Select Shop Package to Buy (Multi-Select)",
+		Options = marketOpts,
+		CurrentOptions = {},
+		MultiSelect = true,
+		AllowEmpty = true,
+		Callback = function(selectedList: { string })
+			Automation:SetSelectedMarketItems(mapDropdownIds(selectedList, marketMap, ""))
+			shopStatus:Set({ Content = Automation:GetShopPreviewText() })
+		end,
+	})
+
+	Tab:CreateButtonRow({
+		Buttons = {
+			{
+				Text = "Buy Selected Packs ($)",
+				Color = COLOR_OK,
+				Callback = function()
+					local ok, msg = Automation:BuySelectedMarketPackages()
+					shopStatus:Set({ Content = Automation:GetShopPreviewText() })
+					researchStatus:Set({ Content = Automation:GetResearchStatusText() })
+					economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
+					if refreshSellDropdown then
+						refreshSellDropdown(true)
+					end
+					notify("Citadel Shop", msg, if ok then COLOR_OK else COLOR_WARN, 3)
+				end,
+			},
+			{
+				Text = "Finish Research ($20k)",
+				Color = COLOR_PURPLE,
+				Callback = function()
+					local ok, msg = Automation:BuyRemoteMarketItem("FinishResearch")
+					shopStatus:Set({ Content = Automation:GetShopPreviewText() })
+					researchStatus:Set({ Content = Automation:GetResearchStatusText() })
+					notify("Finish Research", msg, if ok then COLOR_OK else COLOR_WARN, 3)
+				end,
+			},
+		},
+	})
+
+	Tab:CreateSection("2. Sell Owned Items in Bag (Select & Sell)")
+
+	local sellOpts, sellMap = Automation:GetOwnedSellableOptions(true)
+	local drpOwnedSell: any = nil
+	local lastSellOptsSig = table.concat(sellOpts, "\0")
+
+	drpOwnedSell = Tab:CreateDropdown({
+		Name = "Select Owned Bag Items to Sell (Multi-Select)",
+		Options = sellOpts,
+		CurrentOptions = {},
+		MultiSelect = true,
+		AllowEmpty = true,
+		Callback = function(selectedList: { string })
+			Automation:SetSelectedSellItems(mapDropdownIds(selectedList, sellMap, ""))
+			shopStatus:Set({ Content = Automation:GetShopPreviewText() })
+		end,
+	})
+
+	refreshSellDropdown = function(forceRebuild: boolean?): number
+		local newOpts, newMap = Automation:GetOwnedSellableOptions(not forceRebuild)
+		local sig = table.concat(newOpts, "\0")
+		if forceRebuild or sig ~= lastSellOptsSig then
+			lastSellOptsSig = sig
+			sellMap = newMap
+			if drpOwnedSell and type(drpOwnedSell.Refresh) == "function" then
+				drpOwnedSell:Refresh(newOpts, true)
+			end
+		end
+		shopStatus:Set({ Content = Automation:GetShopPreviewText() })
+		return #newOpts
+	end
+
+	Tab:CreateSlider({
+		Name = "Sell Qty Per Selected Item (0 = ALL Owned)",
+		Range = { 0, 200 },
+		Increment = 1,
+		CurrentValue = 0,
+		Callback = function(value: number)
+			Automation:SetSellQuantity(value)
+			shopStatus:Set({ Content = Automation:GetShopPreviewText() })
+		end,
+	})
+
+	Tab:CreateButtonRow({
+		Buttons = {
+			{
+				Text = "Sell Selected Owned ($)",
+				Color = COLOR_WARN,
+				Callback = function()
+					local ok, msg = Automation:SellSelectedOwnedItems()
+					if refreshSellDropdown then
+						refreshSellDropdown(true)
+					end
+					economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
+					craftStatus:Set({ Content = Automation:GetCraftStatusText() })
+					if craftIngredientsPanel then
+						craftIngredientsPanel:Set({ Content = Automation:GetCraftIngredientsText() })
+					end
+					notify("Citadel Sell", msg, if ok then COLOR_OK else COLOR_WARN, 3)
+				end,
+			},
+			{
+				Text = "Refresh Bag Items",
+				Color = COLOR_INFO,
+				Callback = function()
+					local cnt = if refreshSellDropdown then refreshSellDropdown(true) else 0
+					notify("Owned Bag", ("Found %d sellable item types in Bag."):format(cnt), COLOR_INFO, 2)
+				end,
+			},
+			{
+				Text = "Sell All Bag ($)",
+				Color = COLOR_ERR,
+				Callback = function()
+					local ok, msg = Automation:SellAllBagMaterialsRemote(0)
+					if refreshSellDropdown then
+						refreshSellDropdown(true)
+					end
+					economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
+					craftStatus:Set({ Content = Automation:GetCraftStatusText() })
+					if craftIngredientsPanel then
+						craftIngredientsPanel:Set({ Content = Automation:GetCraftIngredientsText() })
+					end
+					notify("Pawn Sell All", msg, if ok then COLOR_OK else COLOR_WARN, 3)
+				end,
+			},
+		},
+	})
+
+	Tab:CreateSection("3. Citadel Stand Travel & Native UI")
+
+	tglShopAutoReturn = Tab:CreateToggle({
+		Name = "Auto Return Home After Shop",
+		Description = "When ON, automatically returns to Home Garage after Citadel Shop buy/sell",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Automation:SetShopAutoReturnHome(enabled)
+			shopStatus:Set({ Content = Automation:GetShopPreviewText() })
+		end,
+	})
+
+	Tab:CreateButtonRow({
+		Buttons = {
+			{
+				Text = "TP & Open Market",
+				Color = COLOR_OK,
+				Callback = function()
+					local ok, msg = Automation:OpenCitadelShop("market", true)
+					shopStatus:Set({ Content = Automation:GetShopPreviewText() })
+					notify("Citadel Market", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
+				end,
+			},
+			{
+				Text = "TP & Open Pawn",
+				Color = COLOR_WARN,
+				Callback = function()
+					local ok, msg = Automation:OpenCitadelShop("pawn", true)
+					shopStatus:Set({ Content = Automation:GetShopPreviewText() })
+					notify("Citadel Pawn Shop", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
+				end,
+			},
+			{
+				Text = "TP & Open Serum",
+				Color = COLOR_PURPLE,
+				Callback = function()
+					local ok, msg = Automation:OpenCitadelShop("serum", true)
+					shopStatus:Set({ Content = Automation:GetShopPreviewText() })
+					notify("Citadel Serum Lab", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
+				end,
+			},
+		},
+	})
+
+	Tab:CreateButtonRow({
+		Buttons = {
+			{
+				Text = "TP & Open Morty",
+				Callback = function()
+					local ok, msg = Automation:OpenCitadelShop("morty", true)
+					notify("Morty Daycare", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
+				end,
+			},
+			{
+				Text = "Wallet & Gear",
+				Callback = function()
+					local ok, msg = Automation:OpenCitadelShop("wallet", false)
+					Automation:OpenCitadelShop("shop", false)
+					notify("Wallet & Gear", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
+				end,
+			},
+			{
+				Text = "Go Home Now",
+				Color = COLOR_INFO,
+				Callback = function()
+					Material:ForceSendHomeNow()
+					shopStatus:Set({ Content = Automation:GetShopPreviewText() })
+				end,
+			},
+		},
+	})
+end
+
+--====================================================
+-- TAB 5: BUILD & STASH (MONEY + IQ + STASH SYNC + AUTO BUILD)
+--====================================================
+do
+	local Tab = Window:CreateTab("Build & Stash")
+
+	Tab:CreateSection("1. Money ($), IQ & Stash Sync")
 
 	economyStatus = Tab:CreateParagraph({
-		Title = "Economy & Dupe Info",
+		Title = "Economy & Stash Info",
 		Content = Automation:GetEconomyStatusText(),
 		FixedHeight = 60,
 		AccentColor = COLOR_OK,
 	})
 
 	tglAutoMoney = Tab:CreateToggle({
-		Name = "Auto Money ($) & Remote Pawn Farm",
-		Description = "Claims gifts/codes, unloads jobs & remote-sells surplus Bag items",
+		Name = "Auto Money ($) & Odd Job Collector",
+		Description = "Claims daily gifts/codes/ButterBot/jobs & sells excess loose Bag items",
 		CurrentValue = false,
 		Callback = function(enabled: boolean)
 			Automation:SetAutoMoneyFarm(enabled)
@@ -14932,8 +16221,8 @@ do
 	})
 
 	tglAutoIQ = Tab:CreateToggle({
-		Name = "Auto IQ & ButterBot Booster",
-		Description = "Claims remote IQ sources & buys MegaSeeds IQ when affordable",
+		Name = "Auto IQ & MegaSeeds Booster",
+		Description = "Claims IQ rewards & buys MegaSeeds IQ when you have $7,500+",
 		CurrentValue = false,
 		Callback = function(enabled: boolean)
 			Automation:SetAutoIQBoost(enabled)
@@ -14945,16 +16234,17 @@ do
 	Tab:CreateButtonRow({
 		Buttons = {
 			{
-				Text = "Instant Money ($)",
+				Text = "Claim / Boost ($)",
 				Color = COLOR_OK,
 				Callback = function()
 					local ok, msg = Automation:BoostMoneyNow()
 					economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
+					shopStatus:Set({ Content = Automation:GetShopPreviewText() })
 					notify("Money Boost", msg, if ok then COLOR_OK else COLOR_INFO, 3)
 				end,
 			},
 			{
-				Text = "Instant IQ Boost",
+				Text = "Boost IQ Now",
 				Color = COLOR_PURPLE,
 				Callback = function()
 					local ok, msg = Automation:BoostIQNow()
@@ -14974,115 +16264,30 @@ do
 				Callback = function()
 					local ok, msg = Automation:StashAllBagItems()
 					economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
+					shopStatus:Set({ Content = Automation:GetShopPreviewText() })
+					if refreshSellDropdown then
+						refreshSellDropdown(true)
+					end
 					craftStatus:Set({ Content = Automation:GetCraftStatusText() })
 					craftIngredientsPanel:Set({ Content = Automation:GetCraftIngredientsText() })
 					notify("Stash Protect", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
 				end,
 			},
 			{
-				Text = "Item Dupe / Sync",
+				Text = "Stash Sync / Dupe Try",
 				Color = COLOR_WARN,
 				Callback = function()
 					local ok, msg = Automation:RunStashDupeCycle(nil, 6)
 					economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
 					craftStatus:Set({ Content = Automation:GetCraftStatusText() })
 					craftIngredientsPanel:Set({ Content = Automation:GetCraftIngredientsText() })
-					notify("Dupe / Sync", msg, if ok then COLOR_OK else COLOR_WARN, 3)
+					notify("Stash Sync", msg, if ok then COLOR_OK else COLOR_WARN, 3)
 				end,
 			},
 		},
 	})
 
-	Tab:CreateSection("2. Citadel Remote Shops (Buy & Sell Anywhere)")
-
-	local marketOpts, marketMap = Automation:GetMarketOptions()
-	if marketOpts[1] and marketMap[marketOpts[1]] then
-		Automation:SetSelectedMarketItems({ marketMap[marketOpts[1]] })
-	end
-
-	Tab:CreateDropdown({
-		Name = "Select Remote Citadel Market Package (Multi-Select)",
-		Options = marketOpts,
-		CurrentOptions = { marketOpts[1] },
-		MultiSelect = true,
-		Callback = function(selectedList: { string })
-			Automation:SetSelectedMarketItems(mapDropdownIds(selectedList, marketMap, "FinishResearch"))
-		end,
-	})
-
-	Tab:CreateButtonRow({
-		Buttons = {
-			{
-				Text = "Buy Selected Packs ($)",
-				Color = COLOR_OK,
-				Callback = function()
-					local ok, msg = Automation:BuySelectedMarketPackages()
-					economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
-					researchStatus:Set({ Content = Automation:GetResearchStatusText() })
-					notify("Remote Market", msg, if ok then COLOR_OK else COLOR_WARN, 3)
-				end,
-			},
-			{
-				Text = "Remote Sell Bag (Pawn)",
-				Color = COLOR_WARN,
-				Callback = function()
-					local ok, msg = Automation:SellAllBagMaterialsRemote(0)
-					economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
-					craftStatus:Set({ Content = Automation:GetCraftStatusText() })
-					craftIngredientsPanel:Set({ Content = Automation:GetCraftIngredientsText() })
-					notify("Remote Pawn Sell", msg, if ok then COLOR_OK else COLOR_WARN, 3)
-				end,
-			},
-		},
-	})
-
-	Tab:CreateButtonRow({
-		Buttons = {
-			{
-				Text = "Open Market",
-				Callback = function()
-					local ok, msg = Automation:OpenCitadelShop("market")
-					notify("Citadel Market", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
-				end,
-			},
-			{
-				Text = "Open Pawn Shop",
-				Callback = function()
-					local ok, msg = Automation:OpenCitadelShop("pawn")
-					notify("Citadel Pawn Shop", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
-				end,
-			},
-			{
-				Text = "Open Serum Lab",
-				Callback = function()
-					local ok, msg = Automation:OpenCitadelShop("serum")
-					notify("Citadel Serum Lab", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
-				end,
-			},
-		},
-	})
-
-	Tab:CreateButtonRow({
-		Buttons = {
-			{
-				Text = "Open Morty Shop",
-				Callback = function()
-					local ok, msg = Automation:OpenCitadelShop("morty")
-					notify("Morty Daycare", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
-				end,
-			},
-			{
-				Text = "Open Wallet & Gear",
-				Callback = function()
-					local ok, msg = Automation:OpenCitadelShop("wallet")
-					Automation:OpenCitadelShop("shop")
-					notify("Wallet & Gear Shop", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
-				end,
-			},
-		},
-	})
-
-	Tab:CreateSection("3. Auto Building (Base & Bunker)")
+	Tab:CreateSection("2. Auto Building (Base & Bunker)")
 
 	buildStatus = Tab:CreateParagraph({
 		Title = "Construction Status",
@@ -15593,6 +16798,8 @@ do
 		Automation:SetFastAssemble(false)
 		tglAutoCraft:Set(false, true)
 		tglFastAssemble:Set(false, true)
+		Automation:SetShopAutoReturnHome(false)
+		tglShopAutoReturn:Set(false, true)
 		Automation:SetAutoMoneyFarm(false)
 		Automation:SetAutoIQBoost(false)
 		tglAutoMoney:Set(false, true)
@@ -15675,7 +16882,13 @@ local function refreshActiveTabStatus(tabName: string)
 		if craftIngredientsPanel then
 			craftIngredientsPanel:Set({ Content = Automation:GetCraftIngredientsText() })
 		end
-	elseif tabName == "Citadel & Build" then
+	elseif tabName == "Citadel Shop" then
+		if refreshSellDropdown then
+			refreshSellDropdown(false)
+		else
+			shopStatus:Set({ Content = Automation:GetShopPreviewText() })
+		end
+	elseif tabName == "Build & Stash" then
 		economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
 		buildStatus:Set({ Content = Automation:GetBuildStatusText() })
 	elseif tabName == "World & Visual" then
@@ -15747,4 +16960,4 @@ task.spawn(function()
 	end
 end)
 
-notify("Rayfield Pro Ready", "6 Clean Tabs • RightShift to toggle menu.", COLOR_INFO, 3.5)
+notify("Rayfield Pro Ready", "7 Clean Tabs • RightShift to toggle menu.", COLOR_INFO, 3.5)
