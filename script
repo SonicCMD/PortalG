@@ -262,10 +262,10 @@ function RayfieldLib:CreateWindow(config)
 	notifyLayout.Parent = notifyContainer
 
 	-- Main Window (Top-left anchored in offset px so minimize/scale/dropdowns never jump topbar)
-	local WINDOW_W = 584
-	local WINDOW_H = 432
-	local SIDEBAR_W = 148
-	local TOPBAR_H = 48
+	local WINDOW_W = 616
+	local WINDOW_H = 446
+	local SIDEBAR_W = 144
+	local TOPBAR_H = 46
 
 	local isPinned = false
 	local onPinChangedCb: ((boolean) -> ())? = nil
@@ -1071,13 +1071,13 @@ function RayfieldLib:CreateWindow(config)
 		local tabBtn = Instance.new("TextButton")
 		tabBtn.Name = "Tab_" .. tabName
 		tabBtn.Active = true
-		tabBtn.Size = UDim2.new(1, 0, 0, 34)
+		tabBtn.Size = UDim2.new(1, 0, 0, 36)
 		tabBtn.LayoutOrder = tabOrder
 		tabBtn.BackgroundColor3 = THEME.SidebarBg
 		tabBtn.BorderSizePixel = 0
 		tabBtn.Text = "   " .. tabName
 		tabBtn.Font = Enum.Font.GothamSemibold
-		tabBtn.TextSize = 13
+		tabBtn.TextSize = 12
 		tabBtn.TextColor3 = THEME.SubText
 		tabBtn.TextXAlignment = Enum.TextXAlignment.Left
 		tabBtn.TextTruncate = Enum.TextTruncate.AtEnd
@@ -1145,18 +1145,26 @@ function RayfieldLib:CreateWindow(config)
 
 		function Tab:CreateSection(sectionTitle: string)
 			local secRow = Instance.new("Frame")
-			secRow.Size = UDim2.new(1, 0, 0, 24)
+			secRow.Size = UDim2.new(1, 0, 0, 26)
 			secRow.LayoutOrder = nextOrder()
 			secRow.BackgroundTransparency = 1
 			secRow.Parent = page
 
+			local pip = Instance.new("Frame")
+			pip.Size = UDim2.fromOffset(3, 12)
+			pip.Position = UDim2.fromOffset(0, 6)
+			pip.BackgroundColor3 = THEME.Accent
+			pip.BorderSizePixel = 0
+			pip.Parent = secRow
+			makeCorner(pip, 2)
+
 			local label = Instance.new("TextLabel")
-			label.Size = UDim2.new(1, 0, 0, 18)
-			label.Position = UDim2.fromOffset(0, 2)
+			label.Size = UDim2.new(1, -8, 0, 18)
+			label.Position = UDim2.fromOffset(8, 3)
 			label.BackgroundTransparency = 1
 			label.Font = Enum.Font.GothamBold
 			label.Text = string.upper(sectionTitle)
-			label.TextColor3 = THEME.SubText
+			label.TextColor3 = Color3.fromRGB(203, 213, 225)
 			label.TextSize = 11
 			label.TextXAlignment = Enum.TextXAlignment.Left
 			label.Parent = secRow
@@ -1165,7 +1173,7 @@ function RayfieldLib:CreateWindow(config)
 			line.Size = UDim2.new(1, 0, 0, 1)
 			line.Position = UDim2.new(0, 0, 1, -1)
 			line.BackgroundColor3 = THEME.Stroke
-			line.BackgroundTransparency = 0.35
+			line.BackgroundTransparency = 0.25
 			line.BorderSizePixel = 0
 			line.Parent = secRow
 			return secRow
@@ -1255,9 +1263,10 @@ function RayfieldLib:CreateWindow(config)
 			return handle
 		end
 
-		function Tab:CreateButton(btnCfg: { Name: string, Description: string?, Callback: (() -> ())? })
+		function Tab:CreateButton(btnCfg: { Name: string, Description: string?, AccentColor: Color3?, BadgeText: string?, Callback: (() -> ())? })
 			local hasDesc = btnCfg.Description ~= nil and btnCfg.Description ~= ""
-			local height = if hasDesc then 52 else 38
+			local height = if hasDesc then 50 else 36
+			local accentCol = btnCfg.AccentColor or THEME.Accent
 
 			local btn = Instance.new("TextButton")
 			btn.Size = UDim2.new(1, 0, 0, height)
@@ -1268,12 +1277,12 @@ function RayfieldLib:CreateWindow(config)
 			btn.AutoButtonColor = false
 			btn.Parent = page
 			makeCorner(btn, 8)
-			makeStroke(btn, THEME.Stroke, 1, 0.35)
+			makeStroke(btn, if btnCfg.AccentColor then accentCol else THEME.Stroke, 1, if btnCfg.AccentColor then 0.45 else 0.35)
 
 			local lbl = Instance.new("TextLabel")
 			lbl.BackgroundTransparency = 1
-			lbl.Position = UDim2.fromOffset(12, if hasDesc then 7 else 0)
-			lbl.Size = UDim2.new(1, -60, 0, if hasDesc then 20 else height)
+			lbl.Position = UDim2.fromOffset(12, if hasDesc then 6 else 0)
+			lbl.Size = UDim2.new(1, -68, 0, if hasDesc then 20 else height)
 			lbl.Font = Enum.Font.GothamSemibold
 			lbl.Text = btnCfg.Name
 			lbl.TextColor3 = THEME.Text
@@ -1284,8 +1293,8 @@ function RayfieldLib:CreateWindow(config)
 			if hasDesc then
 				local desc = Instance.new("TextLabel")
 				desc.BackgroundTransparency = 1
-				desc.Position = UDim2.fromOffset(12, 26)
-				desc.Size = UDim2.new(1, -60, 0, 18)
+				desc.Position = UDim2.fromOffset(12, 25)
+				desc.Size = UDim2.new(1, -68, 0, 18)
 				desc.Font = Enum.Font.Gotham
 				desc.Text = btnCfg.Description :: string
 				desc.TextColor3 = THEME.SubText
@@ -1298,11 +1307,11 @@ function RayfieldLib:CreateWindow(config)
 			local badge = Instance.new("TextLabel")
 			badge.AnchorPoint = Vector2.new(1, 0.5)
 			badge.Position = UDim2.new(1, -12, 0.5, 0)
-			badge.Size = UDim2.fromOffset(48, 22)
+			badge.Size = UDim2.fromOffset(50, 22)
 			badge.BackgroundColor3 = THEME.ControlBg
 			badge.Font = Enum.Font.GothamBold
-			badge.Text = "Run"
-			badge.TextColor3 = THEME.Accent
+			badge.Text = btnCfg.BadgeText or "Run"
+			badge.TextColor3 = accentCol
 			badge.TextSize = 11
 			badge.Parent = btn
 			makeCorner(badge, 6)
@@ -1316,10 +1325,10 @@ function RayfieldLib:CreateWindow(config)
 				end))
 			end
 			bindScrollSafeTap(btn, { page }, function()
-				tween(badge, TWEEN_FAST, { BackgroundColor3 = THEME.Accent, TextColor3 = THEME.WindowBg })
+				tween(badge, TWEEN_FAST, { BackgroundColor3 = accentCol, TextColor3 = THEME.WindowBg })
 				task.delay(0.15, function()
 					if badge.Parent then
-						tween(badge, TWEEN_FAST, { BackgroundColor3 = THEME.ControlBg, TextColor3 = THEME.Accent })
+						tween(badge, TWEEN_FAST, { BackgroundColor3 = THEME.ControlBg, TextColor3 = accentCol })
 					end
 				end)
 				if btnCfg.Callback then
@@ -1328,6 +1337,74 @@ function RayfieldLib:CreateWindow(config)
 			end)
 
 			return btn
+		end
+
+		function Tab:CreateButtonRow(rowCfg: {
+			Buttons: { { Text: string, Color: Color3?, Callback: (() -> ())? } },
+			Height: number?,
+		})
+			local items = rowCfg.Buttons or {}
+			local n = #items
+			if n <= 0 then
+				return nil
+			end
+			local rowH = rowCfg.Height or 34
+			local gap = 6
+
+			local rowFrame = Instance.new("Frame")
+			rowFrame.Name = "ButtonRow"
+			rowFrame.Size = UDim2.new(1, 0, 0, rowH)
+			rowFrame.LayoutOrder = nextOrder()
+			rowFrame.BackgroundTransparency = 1
+			rowFrame.Parent = page
+
+			local btnScale = 1 / n
+			local gapTotal = gap * (n - 1)
+			local btnDeduction = gapTotal / n
+
+			for idx, bInfo in ipairs(items) do
+				local accent = bInfo.Color or THEME.Accent
+				local hasTint = bInfo.Color ~= nil
+				local baseBg = if hasTint then THEME.TopbarBg else THEME.CardBg
+
+				local b = Instance.new("TextButton")
+				b.Size = UDim2.new(btnScale, -btnDeduction, 1, 0)
+				b.Position = UDim2.new((idx - 1) * btnScale, (idx - 1) * (gap - btnDeduction), 0, 0)
+				b.BackgroundColor3 = baseBg
+				b.BorderSizePixel = 0
+				b.Font = Enum.Font.GothamBold
+				b.Text = tostring(bInfo.Text or "Action")
+				b.TextColor3 = if hasTint then accent else THEME.Text
+				b.TextSize = 12
+				b.TextTruncate = Enum.TextTruncate.AtEnd
+				b.AutoButtonColor = false
+				b.Parent = rowFrame
+				makeCorner(b, 7)
+				makePadding(b, 0, 0, 6, 6)
+				makeStroke(b, if hasTint then accent else THEME.Stroke, 1, if hasTint then 0.45 else 0.3)
+
+				if not isTouchOnly then
+					track(b.MouseEnter:Connect(function()
+						tween(b, TWEEN_FAST, { BackgroundColor3 = THEME.CardHover })
+					end))
+					track(b.MouseLeave:Connect(function()
+						tween(b, TWEEN_FAST, { BackgroundColor3 = baseBg })
+					end))
+				end
+				bindScrollSafeTap(b, { page }, function()
+					tween(b, TWEEN_FAST, { BackgroundColor3 = accent, TextColor3 = THEME.WindowBg })
+					task.delay(0.14, function()
+						if b.Parent then
+							tween(b, TWEEN_FAST, { BackgroundColor3 = baseBg, TextColor3 = if hasTint then accent else THEME.Text })
+						end
+					end)
+					if bInfo.Callback then
+						task.spawn(bInfo.Callback)
+					end
+				end)
+			end
+
+			return rowFrame
 		end
 
 		function Tab:CreateToggle(tglCfg: {
@@ -14164,7 +14241,7 @@ end)()
 --[[
 	RayfieldMenu (LocalScript)
 	Client controller in StarterPlayer.StarterPlayerScripts (and DeltaX Mobile single-file compatible).
-	Builds a Rayfield-style UI menu with Material (Fly & Collect), ESP, Research, Craft, Home, and Settings tabs.
+	Organized into 6 intuitive tabs with multi-select support, grouped action rows, and low-overhead updates.
 ]]
 
 if not game:IsLoaded() then
@@ -14177,7 +14254,6 @@ if type(prevCleanup) == "function" then
 end
 
 local Lighting = game:GetService("Lighting")
-local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 
 local Rayfield = __mod_RayfieldLib
@@ -14189,30 +14265,40 @@ local Combat = __mod_CombatModule
 Automation:SetDependencies(Material)
 Combat:SetDependencies(Material, Automation)
 
+local COLOR_OK = Color3.fromRGB(52, 211, 153)
+local COLOR_WARN = Color3.fromRGB(251, 191, 36)
+local COLOR_ERR = Color3.fromRGB(248, 113, 113)
+local COLOR_INFO = Color3.fromRGB(56, 189, 248)
+local COLOR_PURPLE = Color3.fromRGB(192, 132, 252)
+
 local ESP_COLORS: { [string]: Color3 } = {
-	Cyan = Color3.fromRGB(56, 189, 248),
+	Cyan = COLOR_INFO,
 	Green = Color3.fromRGB(74, 222, 128),
-	Red = Color3.fromRGB(248, 113, 113),
+	Red = COLOR_ERR,
 	Yellow = Color3.fromRGB(250, 204, 21),
-	Purple = Color3.fromRGB(192, 132, 252),
+	Purple = COLOR_PURPLE,
 	White = Color3.fromRGB(248, 250, 252),
 }
 
 local Window = Rayfield:CreateWindow({
-	Name = "Rayfield Client Menu",
-	Subtitle = "PortalG Utility • Stable Anti-Jump Edition",
+	Name = "Rayfield Pro",
+	Subtitle = "PortalG Suite • Organized & Low-Lag",
 	ToggleKey = Enum.KeyCode.RightShift,
 	DisplayOrder = 500,
 })
 
-Automation:SetNotifyCallback(function(title: string, content: string, color: Color3?)
+local function notify(title: string, content: string, color: Color3?, duration: number?)
 	Window:Notify({
 		Title = title,
 		Content = content,
-		Duration = 2.5,
+		Duration = duration or 2.5,
 		Color = color,
 	})
-end)
+end
+
+Automation:SetNotifyCallback(notify)
+Material:SetNotifyCallback(notify)
+Combat:SetNotifyCallback(notify)
 
 Automation:SetMenuVisibilityHook(function(show: boolean?): boolean
 	if show == false then
@@ -14248,1263 +14334,1076 @@ local function mapDropdownIds(selectedArg: any, lookupMap: { [string]: string },
 	return out
 end
 
-Material:SetNotifyCallback(function(title: string, content: string, color: Color3?)
-	Window:Notify({
-		Title = title,
-		Content = content,
-		Duration = 2.5,
-		Color = color,
-	})
-end)
-
-Combat:SetNotifyCallback(function(title: string, content: string, color: Color3?)
-	Window:Notify({
-		Title = title,
-		Content = content,
-		Duration = 2.5,
-		Color = color,
-	})
-end)
-
---====================================================
--- TAB 1: MATERIAL (LOOT, OFF-WORLD TRAVEL & RADAR)
---====================================================
-local MaterialTab = Window:CreateTab("Material")
-
-local materialStatus = MaterialTab:CreateParagraph({
-	Title = "Material Radar",
-	Content = Material:GetStatusText(),
-	FixedHeight = 68,
-})
-
-MaterialTab:CreateSection("Target & Collection")
-
-local matOpts, matMap = Material:GetMaterialOptions()
-if matOpts[1] and matMap[matOpts[1]] then
-	Material:SetSelectedItems({ matMap[matOpts[1]] })
+local function triggerQuickStation(stationKey: string, refreshFn: (() -> ())?)
+	local ok, msg, openedFullUi = Material:QuickInteract(stationKey)
+	if refreshFn then
+		refreshFn()
+	end
+	if ok and openedFullUi then
+		Window:SetVisible(false)
+		notify("Quick Station", msg .. " (Tap 'RF Menu' to reopen)", COLOR_OK, 3)
+	elseif not ok then
+		notify("Quick Station", msg, COLOR_ERR, 3)
+	end
 end
 
-MaterialTab:CreateDropdown({
-	Name = "Select Material (Multi-Select)",
-	Options = matOpts,
-	CurrentOptions = { matOpts[1] },
-	MultiSelect = true,
-	Callback = function(selectedList: { string })
-		Material:SetSelectedItems(mapDropdownIds(selectedList, matMap, "ALL"))
-		materialStatus:Set({ Content = Material:GetStatusText() })
-	end,
-})
+-- Forward-declared refs for status panels & toggle resets
+local materialStatus: any
+local missionStatus: any
+local combatStatus: any
+local researchStatus: any
+local craftStatus: any
+local craftIngredientsPanel: any
+local economyStatus: any
+local buildStatus: any
+local homeStatus: any
 
-local MOVE_MODES = {
-	["Teleport (Instant Loot)"] = "Teleport",
-	["Fly (Hover + Noclip)"] = "FlyNoclip",
-	["Fly (Collision On)"] = "FlySolid",
-	["Walk (Pathfind)"] = "Walk",
-}
+local tglMatAutoCollect: any
+local tglMatCrossPlanet: any
+local tglAutoMission: any
+local tglMissionUnsafe: any
 
-MaterialTab:CreateDropdown({
-	Name = "Move Mode",
-	Options = { "Teleport (Instant Loot)", "Fly (Hover + Noclip)", "Fly (Collision On)", "Walk (Pathfind)" },
-	CurrentOption = "Teleport (Instant Loot)",
-	Callback = function(option: string)
-		Material:SetMoveMode(MOVE_MODES[option] or "Teleport")
-	end,
-})
+local tglAutoAim: any
+local tglNoOverheat: any
+local sldShotMult: any
+local tglAutoHunt: any
+local tglLockCamAim: any
+local tglAntiVoid: any
+local tglAutoHeal: any
+local tglAutoEscapeHome: any
 
-local tglMatAutoCollect = MaterialTab:CreateToggle({
-	Name = "Auto Loot Material (Teleport / Fast)",
-	Description = "Instantly teleports/moves to matching materials with anti-hang prompt & GroundGuard recovery",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Material:SetAutoCollect(enabled)
-		Window:Notify({
-			Title = "Auto Loot Material",
-			Content = if enabled then "Auto Loot Material ENABLED." else "Auto Loot Material DISABLED.",
-			Duration = 2.5,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
+local tglAutoResearch: any
+local tglAutoBuyFinish: any
+local tglAutoCraft: any
+local tglFastAssemble: any
 
-MaterialTab:CreateButton({
-	Name = "Quick Scan Now",
-	Description = "Refresh nearby Material counts and closest node distance",
-	Callback = function()
-		local summary = Material:ScanNow()
-		materialStatus:Set({ Content = Material:GetStatusText() })
-		Window:Notify({
-			Title = "Material Scan",
-			Content = summary,
-			Duration = 3,
-		})
-	end,
-})
+local tglAutoMoney: any
+local tglAutoIQ: any
+local tglAutoBuild: any
+local tglBuildAutoPrereq: any
 
-MaterialTab:CreateSection("Off-World Travel (Planets & Dimensions)")
+local tglMatScanEsp: any
+local tglMatBeam: any
+local tglMobEsp: any
+local tglEspMaster: any
+local tglEspHighlight: any
+local tglEspNameDist: any
+local tglEspHealth: any
+local tglEspTeamCheck: any
 
-local TRAVEL_MODES = {
-	["Smart (Planet Bypass + Portal Gun)"] = "SmartAuto",
-	["Planet Bypass Only (Fastest)"] = "BypassOnly",
-	["Portal Gun (Open & Cross)"] = "PortalGunOnly",
-}
+local tglAntiAfk: any
+local tglLockWindow: any
+local tglLowEndMode: any
+local tglFpsBooster: any
 
-MaterialTab:CreateDropdown({
-	Name = "Off-World Travel Method",
-	Options = { "Smart (Planet Bypass + Portal Gun)", "Planet Bypass Only (Fastest)", "Portal Gun (Open & Cross)" },
-	CurrentOption = "Smart (Planet Bypass + Portal Gun)",
-	Callback = function(option: string)
-		Material:SetTravelMethod(TRAVEL_MODES[option] or "SmartAuto")
-	end,
-})
+--====================================================
+-- TAB 1: FARM & LOOT (MATERIALS + AUTO MISSION)
+--====================================================
+do
+	local Tab = Window:CreateTab("Farm & Loot")
 
-local tglMatCrossPlanet = MaterialTab:CreateToggle({
-	Name = "Auto Travel Planets / Dimensions",
-	Description = "Uses PlanetTravel bypass or opens Portal Gun when selected material is on another planet/world",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Material:SetAutoCrossPlanet(enabled)
-		Window:Notify({
-			Title = "Off-World Auto Loot",
-			Content = if enabled then "Auto Planet/Portal Travel ENABLED." else "Auto Planet/Portal Travel DISABLED.",
-			Duration = 2.5,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
+	materialStatus = Tab:CreateParagraph({
+		Title = "Material Radar",
+		Content = Material:GetStatusText(),
+		FixedHeight = 62,
+	})
 
-MaterialTab:CreateButton({
-	Name = "Travel to Selected Material World",
-	Description = "Bypass or open Portal Gun straight to the planet/dimension for the selected material",
-	Callback = function()
-		local ok, msg = Material:TravelToSelectedItemWorld()
-		materialStatus:Set({ Content = Material:GetStatusText() })
-		Window:Notify({
-			Title = "Off-World Travel",
-			Content = msg,
-			Duration = 3,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
-		})
-	end,
-})
+	Tab:CreateSection("1. Auto Material Farming")
 
-MaterialTab:CreateSection("Scanner & Tuning")
+	local matOpts, matMap = Material:GetMaterialOptions()
+	if matOpts[1] and matMap[matOpts[1]] then
+		Material:SetSelectedItems({ matMap[matOpts[1]] })
+	end
 
-local tglMatScanEsp = MaterialTab:CreateToggle({
-	Name = "Material Scanner (ESP)",
-	Description = "Highlight & display distance for ready material nodes",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Material:SetScanEsp(enabled)
-		Window:Notify({
-			Title = "Material Radar",
-			Content = if enabled then "Material Scanner ENABLED." else "Material Scanner DISABLED.",
-			Duration = 2,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
+	Tab:CreateDropdown({
+		Name = "Select Material (Multi-Select)",
+		Options = matOpts,
+		CurrentOptions = { matOpts[1] },
+		MultiSelect = true,
+		Callback = function(selectedList: { string })
+			Material:SetSelectedItems(mapDropdownIds(selectedList, matMap, "ALL"))
+			materialStatus:Set({ Content = Material:GetStatusText() })
+		end,
+	})
 
-local tglMatBeam = MaterialTab:CreateToggle({
-	Name = "Guide Beam to Nearest Material",
-	Description = "Draw a guide beam to the closest Material or Wild Land biome",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Material:SetShowBeam(enabled)
-	end,
-})
+	local MOVE_MODES = {
+		["Teleport (Instant Loot)"] = "Teleport",
+		["Fly (Hover + Noclip)"] = "FlyNoclip",
+		["Fly (Collision On)"] = "FlySolid",
+		["Walk (Pathfind)"] = "Walk",
+	}
 
-MaterialTab:CreateSlider({
-	Name = "Scan Radius",
-	Range = { 200, 8000 },
-	Increment = 200,
-	Suffix = "m",
-	CurrentValue = 3000,
-	Callback = function(value: number)
-		Material:SetMaxDistance(value)
-	end,
-})
+	Tab:CreateDropdown({
+		Name = "Move Mode",
+		Options = { "Teleport (Instant Loot)", "Fly (Hover + Noclip)", "Fly (Collision On)", "Walk (Pathfind)" },
+		CurrentOption = "Teleport (Instant Loot)",
+		Callback = function(option: string)
+			Material:SetMoveMode(MOVE_MODES[option] or "Teleport")
+		end,
+	})
 
-MaterialTab:CreateSlider({
-	Name = "Teleport Loot Delay",
-	Range = { 0.03, 0.35 },
-	Increment = 0.02,
-	Suffix = "s",
-	CurrentValue = 0.05,
-	Callback = function(value: number)
-		Material:SetLootDelay(value)
-	end,
-})
+	local TRAVEL_MODES = {
+		["Smart (Planet Bypass + Portal Gun)"] = "SmartAuto",
+		["Planet Bypass Only (Fastest)"] = "BypassOnly",
+		["Portal Gun (Open & Cross)"] = "PortalGunOnly",
+	}
 
-MaterialTab:CreateSlider({
-	Name = "Fly Speed (Fly Mode)",
-	Range = { 25, 250 },
-	Increment = 5,
-	Suffix = "stud/s",
-	CurrentValue = 90,
-	Callback = function(value: number)
-		Material:SetFlySpeed(value)
-	end,
-})
+	Tab:CreateDropdown({
+		Name = "Off-World Travel Method",
+		Options = { "Smart (Planet Bypass + Portal Gun)", "Planet Bypass Only (Fastest)", "Portal Gun (Open & Cross)" },
+		CurrentOption = "Smart (Planet Bypass + Portal Gun)",
+		Callback = function(option: string)
+			Material:SetTravelMethod(TRAVEL_MODES[option] or "SmartAuto")
+		end,
+	})
+
+	tglMatAutoCollect = Tab:CreateToggle({
+		Name = "Auto Loot Materials",
+		Description = "Teleports/flies to all checked materials & harvests cleanly",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Material:SetAutoCollect(enabled)
+			materialStatus:Set({ Content = Material:GetStatusText() })
+			notify("Auto Loot", if enabled then "Enabled." else "Disabled.", if enabled then COLOR_OK else COLOR_ERR, 2)
+		end,
+	})
+
+	tglMatCrossPlanet = Tab:CreateToggle({
+		Name = "Auto Travel Planets / Dimensions",
+		Description = "Cycles across worlds automatically to farm all checked materials",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Material:SetAutoCrossPlanet(enabled)
+			notify("Off-World Farm", if enabled then "Cross-Planet travel ON." else "Cross-Planet travel OFF.", if enabled then COLOR_OK else COLOR_ERR, 2)
+		end,
+	})
+
+	Tab:CreateButtonRow({
+		Buttons = {
+			{
+				Text = "Scan Nearby Now",
+				Color = COLOR_INFO,
+				Callback = function()
+					local summary = Material:ScanNow()
+					materialStatus:Set({ Content = Material:GetStatusText() })
+					notify("Material Scan", summary, COLOR_INFO, 3)
+				end,
+			},
+			{
+				Text = "Go Material World",
+				Color = COLOR_OK,
+				Callback = function()
+					local ok, msg = Material:TravelToSelectedItemWorld()
+					materialStatus:Set({ Content = Material:GetStatusText() })
+					notify("Off-World Travel", msg, if ok then COLOR_OK else COLOR_WARN, 3)
+				end,
+			},
+		},
+	})
+
+	Tab:CreateSection("2. Speed & Radar Tuning")
+
+	Tab:CreateSlider({
+		Name = "Scan Radius",
+		Range = { 200, 8000 },
+		Increment = 200,
+		Suffix = "m",
+		CurrentValue = 3000,
+		Callback = function(value: number)
+			Material:SetMaxDistance(value)
+		end,
+	})
+
+	Tab:CreateSlider({
+		Name = "Loot Delay",
+		Range = { 0.03, 0.35 },
+		Increment = 0.02,
+		Suffix = "s",
+		CurrentValue = 0.05,
+		Callback = function(value: number)
+			Material:SetLootDelay(value)
+		end,
+	})
+
+	Tab:CreateSlider({
+		Name = "Fly Speed",
+		Range = { 25, 250 },
+		Increment = 5,
+		Suffix = "stud/s",
+		CurrentValue = 90,
+		Callback = function(value: number)
+			Material:SetFlySpeed(value)
+		end,
+	})
+
+	Tab:CreateSection("3. Auto Mission (Safe Bounds)")
+
+	missionStatus = Tab:CreateParagraph({
+		Title = "Active Mission Tracker",
+		Content = Combat:GetMissionStatusText(),
+		FixedHeight = 68,
+		AccentColor = Color3.fromRGB(250, 204, 21),
+	})
+
+	tglAutoMission = Tab:CreateToggle({
+		Name = "Enable Auto Mission",
+		Description = "Completes active missions safely inside world boundaries",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Combat:SetAutoMission(enabled)
+			missionStatus:Set({ Content = Combat:GetMissionStatusText() })
+			notify("Auto Mission", if enabled then "Started." else "Stopped.", if enabled then COLOR_OK else COLOR_ERR, 2)
+		end,
+	})
+
+	tglMissionUnsafe = Tab:CreateToggle({
+		Name = "Allow Hazard Biomes Without Suit",
+		Description = "Skip Volcano/Snow/Cave suit protection check",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Combat:SetMissionAllowUnsafeBiomes(enabled)
+		end,
+	})
+
+	Tab:CreateButton({
+		Name = "Run 1 Mission Step Now",
+		Description = "Executes one safe progress step for your current mission",
+		Callback = function()
+			local ok, msg = Combat:RunMissionStepOnce()
+			missionStatus:Set({ Content = Combat:GetMissionStatusText() })
+			notify("Mission Step", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
+		end,
+	})
+end
 
 Material:SetBeforeTeleportCallback(function()
 	tglMatAutoCollect:Set(false, true)
 end)
 
 --====================================================
--- TAB 2: COMBAT & GUARDIAN
+-- TAB 2: COMBAT (WEAPONS, SILENT AIM & GUARDIAN)
 --====================================================
-local CombatTab = Window:CreateTab("Combat")
+do
+	local Tab = Window:CreateTab("Combat")
 
-local combatStatus = CombatTab:CreateParagraph({
-	Title = "Guardian & Combat Status",
-	Content = Combat:GetCombatStatusText(),
-	FixedHeight = 68,
-	AccentColor = Color3.fromRGB(52, 211, 153),
-})
+	combatStatus = Tab:CreateParagraph({
+		Title = "Combat & Guardian Status",
+		Content = Combat:GetCombatStatusText(),
+		FixedHeight = 66,
+		AccentColor = COLOR_OK,
+	})
 
-CombatTab:CreateSection("Survival Guardian (Anti-Void & Heal)")
+	Tab:CreateSection("1. Aim, Gun Overdrive & Mob Farm")
 
-local tglAntiVoid = CombatTab:CreateToggle({
-	Name = "Anti-Void & Fall Guard",
-	Description = "Prevents falling into Void/Lava, softens extreme falls, clears ragdoll traps",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Combat:SetAntiVoid(enabled)
-		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
-	end,
-})
+	local enemyOpts, enemyMap = Combat:GetEnemyFilterOptions()
+	Tab:CreateDropdown({
+		Name = "Target Mob Filter (Multi-Select)",
+		Options = enemyOpts,
+		CurrentOptions = { enemyOpts[1] },
+		MultiSelect = true,
+		Callback = function(selectedList: { string })
+			Combat:SetHuntFilters(mapDropdownIds(selectedList, enemyMap, "ALL"))
+			combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+		end,
+	})
 
-local tglAntiAfk = CombatTab:CreateToggle({
-	Name = "Anti-AFK (Prevent 20m Disconnect)",
-	Description = "Prevents Roblox 20-minute idle kick while farming or sitting in AFK mode",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Combat:SetAntiAfk(enabled)
-		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
-		Window:Notify({
-			Title = "Anti-AFK",
-			Content = if enabled then "Anti-AFK ENABLED (20m idle kick blocked)." else "Anti-AFK DISABLED.",
-			Duration = 2.5,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
+	tglAutoAim = Tab:CreateToggle({
+		Name = "Auto Aim (Silent Aim Default)",
+		Description = "Locks aim silently via PG_AimLock without rotating Camera",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Combat:SetAutoAim(enabled)
+			combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+		end,
+	})
 
-local tglAutoHeal = CombatTab:CreateToggle({
-	Name = "Auto-Heal & Auto-Regen",
-	Description = "Fires RequestRegen and uses SurgeonKit / ArmorGoo / food when hurt",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Combat:SetAutoHeal(enabled)
-		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
-	end,
-})
+	tglNoOverheat = Tab:CreateToggle({
+		Name = "No Overheat / Unlimited Gun Fire",
+		Description = "Resets LaserHeat & overheat lockouts continuously for nonstop shots",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Combat:SetNoOverheat(enabled)
+			combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+		end,
+	})
 
-CombatTab:CreateSlider({
-	Name = "Auto-Heal Trigger HP %",
-	Range = { 20, 95 },
-	Increment = 5,
-	Suffix = "%",
-	CurrentValue = 70,
-	Callback = function(val: number)
-		Combat:SetHealAtPct(val)
-	end,
-})
+	sldShotMult = Tab:CreateSlider({
+		Name = "Stacked Multi-Shot Burst (x100 Damage Stack)",
+		Range = { 1, 100 },
+		Increment = 1,
+		Suffix = "x",
+		CurrentValue = 1,
+		Callback = function(val: number)
+			Combat:SetShotMultiplier(val)
+			combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+		end,
+	})
 
-local tglAutoEscapeHome = CombatTab:CreateToggle({
-	Name = "Auto Emergency Force-Home",
-	Description = "Instantly forces you to Garage before lethal HP or critical hazard",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Combat:SetAutoEscapeHome(enabled)
-		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
-	end,
-})
+	tglAutoHunt = Tab:CreateToggle({
+		Name = "Auto Farm Mobs (Tele/Fly + LOS)",
+		Description = "Moves to clear line-of-sight & shoots all checked mobs",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Combat:SetAutoHunt(enabled)
+			combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+		end,
+	})
 
-CombatTab:CreateSlider({
-	Name = "Emergency Escape Below HP %",
-	Range = { 10, 75 },
-	Increment = 5,
-	Suffix = "%",
-	CurrentValue = 30,
-	Callback = function(val: number)
-		Combat:SetEscapeAtPct(val)
-	end,
-})
+	tglLockCamAim = Tab:CreateToggle({
+		Name = "Lock Camera on Aim (Legacy)",
+		Description = "OFF = Silent Aim (Recommended). ON = Snap camera to target",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Combat:SetLockCameraOnAim(enabled)
+			combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+		end,
+	})
 
-CombatTab:CreateButton({
-	Name = "Enable All Unlocked Protections",
-	Description = "Activates unlocked suits & implants via ProtectionToggle",
-	Callback = function()
-		local ok, msg = Combat:EnableAllGameProtections()
-		Window:Notify({
-			Title = "Protections",
-			Content = msg,
-			Duration = 2.5,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
-		})
-	end,
-})
+	Tab:CreateSlider({
+		Name = "Auto Aim Range",
+		Range = { 25, 250 },
+		Increment = 5,
+		Suffix = "m",
+		CurrentValue = 140,
+		Callback = function(val: number)
+			Combat:SetAimRange(val)
+		end,
+	})
 
-CombatTab:CreateSection("Auto Aim & Farm Mobs")
+	Tab:CreateSlider({
+		Name = "Farm Shooting Distance",
+		Range = { 6, 45 },
+		Increment = 2,
+		Suffix = "m",
+		CurrentValue = 24,
+		Callback = function(val: number)
+			Combat:SetEngageDistance(val)
+		end,
+	})
 
-local enemyOpts, enemyMap = Combat:GetEnemyFilterOptions()
-CombatTab:CreateDropdown({
-	Name = "Target Mob Filter (Multi-Select)",
-	Options = enemyOpts,
-	CurrentOptions = { enemyOpts[1] },
-	MultiSelect = true,
-	Callback = function(selectedList: { string })
-		Combat:SetHuntFilters(mapDropdownIds(selectedList, enemyMap, "ALL"))
-		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
-	end,
-})
+	Tab:CreateSection("2. Survival Guardian (Auto Protection)")
 
-local tglAutoAim = CombatTab:CreateToggle({
-	Name = "Auto Aim (Silent Aim Default)",
-	Description = "Locks aim silently via PG_AimLock + AimCenter without moving your Camera",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Combat:SetAutoAim(enabled)
-		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
-	end,
-})
+	tglAntiVoid = Tab:CreateToggle({
+		Name = "Anti-Void & Fall Guard",
+		Description = "Rescues from Void/Lava & softens lethal falls",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Combat:SetAntiVoid(enabled)
+			combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+		end,
+	})
 
-local tglLockCamAim = CombatTab:CreateToggle({
-	Name = "Lock Camera on Aim (Legacy)",
-	Description = "OFF = Silent Aim (Recommended: leaves camera untouched). ON = Snap Camera to target",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Combat:SetLockCameraOnAim(enabled)
-		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
-	end,
-})
+	tglAutoHeal = Tab:CreateToggle({
+		Name = "Auto-Heal & Regen",
+		Description = "Triggers regen & heals with kits/goo/food automatically",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Combat:SetAutoHeal(enabled)
+			combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+		end,
+	})
 
-local tglNoOverheat = CombatTab:CreateToggle({
-	Name = "No Overheat / Unlimited Gun Fire",
-	Description = "Clears LaserHeat & overheat locks continuously so overheat-limited guns shoot non-stop",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Combat:SetNoOverheat(enabled)
-		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
-	end,
-})
+	Tab:CreateSlider({
+		Name = "Heal Below HP %",
+		Range = { 20, 95 },
+		Increment = 5,
+		Suffix = "%",
+		CurrentValue = 70,
+		Callback = function(val: number)
+			Combat:SetHealAtPct(val)
+		end,
+	})
 
-local sldShotMult = CombatTab:CreateSlider({
-	Name = "Stacked Multi-Shot Burst (x100 Damage Stack)",
-	Range = { 1, 100 },
-	Increment = 1,
-	Suffix = "x",
-	CurrentValue = 1,
-	Callback = function(val: number)
-		Combat:SetShotMultiplier(val)
-		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
-	end,
-})
+	tglAutoEscapeHome = Tab:CreateToggle({
+		Name = "Auto Emergency Force-Home",
+		Description = "Forces safe escape to Garage before dying",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Combat:SetAutoEscapeHome(enabled)
+			combatStatus:Set({ Content = Combat:GetCombatStatusText() })
+		end,
+	})
 
-local tglAutoHunt = CombatTab:CreateToggle({
-	Name = "Auto Farm Mobs (Smart Tele/Fly + LOS)",
-	Description = "Finds clear line-of-sight around/inside buildings & skips solid-trapped mobs",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Combat:SetAutoHunt(enabled)
-		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
-	end,
-})
+	Tab:CreateSlider({
+		Name = "Escape Below HP %",
+		Range = { 10, 75 },
+		Increment = 5,
+		Suffix = "%",
+		CurrentValue = 30,
+		Callback = function(val: number)
+			Combat:SetEscapeAtPct(val)
+		end,
+	})
 
-CombatTab:CreateSlider({
-	Name = "Auto Aim Range",
-	Range = { 25, 250 },
-	Increment = 5,
-	Suffix = "m",
-	CurrentValue = 140,
-	Callback = function(val: number)
-		Combat:SetAimRange(val)
-	end,
-})
-
-CombatTab:CreateSlider({
-	Name = "Farm Shooting Distance",
-	Range = { 6, 45 },
-	Increment = 2,
-	Suffix = "m",
-	CurrentValue = 24,
-	Callback = function(val: number)
-		Combat:SetEngageDistance(val)
-	end,
-})
-
---====================================================
--- TAB 3: AUTO MISSION
---====================================================
-local MissionTab = Window:CreateTab("Mission")
-
-local missionStatus = MissionTab:CreateParagraph({
-	Title = "Active Mission Tracker",
-	Content = Combat:GetMissionStatusText(),
-	FixedHeight = 76,
-	AccentColor = Color3.fromRGB(250, 204, 21),
-})
-
-MissionTab:CreateSection("Mission Automation (Void & Space Safe)")
-
-local tglAutoMission = MissionTab:CreateToggle({
-	Name = "Enable Auto Mission",
-	Description = "Follows active Mission strictly inside safe dimension bounds",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Combat:SetAutoMission(enabled)
-		missionStatus:Set({ Content = Combat:GetMissionStatusText() })
-		Window:Notify({
-			Title = "Auto Mission",
-			Content = if enabled then "Auto Mission STARTED." else "Auto Mission STOPPED.",
-			Duration = 2.5,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
-
-local tglMissionUnsafe = MissionTab:CreateToggle({
-	Name = "Allow Hazard Biomes Without Suit",
-	Description = "Skip Volcano/Snow/Cave suit safety check (NOT recommended unless healed)",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Combat:SetMissionAllowUnsafeBiomes(enabled)
-	end,
-})
-
-MissionTab:CreateButton({
-	Name = "Run Current Mission Step Once",
-	Description = "Execute one safe step toward your current mission goal",
-	Callback = function()
-		local ok, msg = Combat:RunMissionStepOnce()
-		missionStatus:Set({ Content = Combat:GetMissionStatusText() })
-		Window:Notify({
-			Title = "Mission Step",
-			Content = msg,
-			Duration = 2.5,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
-		})
-	end,
-})
-
---====================================================
--- TAB 4: LAB & CRAFT (RESEARCH + WORKBENCH)
---====================================================
-local LabCraftTab = Window:CreateTab("Lab & Craft")
-
-LabCraftTab:CreateSection("Research Lab")
-local researchStatus = LabCraftTab:CreateParagraph({
-	Title = "Lab Progress",
-	Content = Automation:GetResearchStatusText(),
-	FixedHeight = 64,
-	AccentColor = Color3.fromRGB(192, 132, 252),
-})
-
-local tglAutoResearch = LabCraftTab:CreateToggle({
-	Name = "Enable Auto Research",
-	Description = "Solves all 3 research minigames quickly without auto-canceling",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Automation:SetAutoResearch(enabled)
-		Window:Notify({
-			Title = "Auto Research",
-			Content = if enabled then "Auto Research ENABLED (auto-solving 3 minigames)." else "Auto Research DISABLED.",
-			Duration = 2.5,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
-
-LabCraftTab:CreateSlider({
-	Name = "3-Step Completion Time",
-	Range = { 0, 20 },
-	Increment = 0.5,
-	Suffix = "s",
-	CurrentValue = 10.5,
-	Callback = function(value: number)
-		Automation:SetResearchConfirmDelay(value)
-	end,
-})
-
-local tglAutoBuyFinish = LabCraftTab:CreateToggle({
-	Name = "Auto Buy $20,000 Finish Research (Remote)",
-	Description = "Automatically buys the $20,000 Market package remotely to finish active research timer",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Automation:SetAutoBuyFinishResearch(enabled)
-		Window:Notify({
-			Title = "Remote Finish Research",
-			Content = if enabled then "Auto Buy $20,000 Finish Research ENABLED." else "Auto Buy $20,000 Finish Research DISABLED.",
-			Duration = 2.5,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
-
-LabCraftTab:CreateButton({
-	Name = "Buy $20,000 Finish Research Now (Remote)",
-	Description = "Remotely purchase 'Finish Research Now' ($20,000) from anywhere without visiting Citadel",
-	Callback = function()
-		local ok, msg = Automation:BuyFinishResearchNow()
-		researchStatus:Set({ Content = Automation:GetResearchStatusText() })
-		Window:Notify({
-			Title = "Finish Research ($20k)",
-			Content = msg,
-			Duration = 3,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
-		})
-	end,
-})
-
-LabCraftTab:CreateSection("Workbench & Fast Craft")
-local craftStatus = LabCraftTab:CreateParagraph({
-	Title = "Craft Info",
-	Content = Automation:GetCraftStatusText(),
-	FixedHeight = 64,
-})
-
-local recipeOpts, recipeMap = Automation:GetRecipeOptions()
-if recipeOpts[1] and recipeMap[recipeOpts[1]] then
-	Automation:SetSelectedRecipes({ recipeMap[recipeOpts[1]] })
+	Tab:CreateButton({
+		Name = "Enable All Unlocked Suits & Implants",
+		Description = "Activates unlocked protections via ProtectionToggle",
+		AccentColor = COLOR_OK,
+		BadgeText = "Equip",
+		Callback = function()
+			local ok, msg = Combat:EnableAllGameProtections()
+			notify("Protections", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
+		end,
+	})
 end
 
-local craftIngredientsPanel = nil :: any
+--====================================================
+-- TAB 3: LAB & CRAFT (RESEARCH + WORKBENCH + INGREDIENTS)
+--====================================================
+do
+	local Tab = Window:CreateTab("Lab & Craft")
 
-LabCraftTab:CreateDropdown({
-	Name = "Select Item / Recipe (Multi-Select)",
-	Options = recipeOpts,
-	CurrentOptions = { recipeOpts[1] },
-	MultiSelect = true,
-	Callback = function(selectedList: { string })
-		Automation:SetSelectedRecipes(mapDropdownIds(selectedList, recipeMap, ""))
-		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
-		if craftIngredientsPanel then
-			craftIngredientsPanel:Set({ Content = Automation:GetCraftIngredientsText() })
-		end
-	end,
-})
+	Tab:CreateSection("1. Research Lab (3-Minigame Safe Solver)")
 
-craftIngredientsPanel = LabCraftTab:CreateParagraph({
-	Title = "Required Ingredients & Costs (Bag + Stash)",
-	Content = Automation:GetCraftIngredientsText(),
-	FixedHeight = 112,
-	AccentColor = Color3.fromRGB(251, 191, 36),
-})
+	researchStatus = Tab:CreateParagraph({
+		Title = "Lab Progress",
+		Content = Automation:GetResearchStatusText(),
+		FixedHeight = 60,
+		AccentColor = COLOR_PURPLE,
+	})
 
-LabCraftTab:CreateSlider({
-	Name = "Craft Quantity",
-	Range = { 1, 50 },
-	Increment = 1,
-	Suffix = "x",
-	CurrentValue = 1,
-	Callback = function(value: number)
-		Automation:SetCraftQuantity(value)
-	end,
-})
+	tglAutoResearch = Tab:CreateToggle({
+		Name = "Enable Auto Research",
+		Description = "Auto-solves 3 minigames while hiding cursor & Menu UI safely",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Automation:SetAutoResearch(enabled)
+			notify("Auto Research", if enabled then "Enabled (Auto-solves 3 minigames)." else "Disabled.", if enabled then COLOR_OK else COLOR_ERR, 2)
+		end,
+	})
 
-local tglFastAssemble = LabCraftTab:CreateToggle({
-	Name = "Fast Assemble (Auto-Finish / Bypass)",
-	Description = "Uses paced CraftFinish & auto-solves Workbench minigame",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Automation:SetFastAssemble(enabled)
-	end,
-})
+	tglAutoBuyFinish = Tab:CreateToggle({
+		Name = "Auto Buy $20,000 Finish Research",
+		Description = "Automatically buys FinishResearch remotely to skip wait timers",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Automation:SetAutoBuyFinishResearch(enabled)
+			notify("Remote Finish", if enabled then "Auto $20k Finish ON." else "Auto $20k Finish OFF.", if enabled then COLOR_OK else COLOR_ERR, 2)
+		end,
+	})
 
-LabCraftTab:CreateSlider({
-	Name = "Fast Assemble Delay",
-	Range = { 0, 15 },
-	Increment = 0.5,
-	Suffix = "s",
-	CurrentValue = 2.0,
-	Callback = function(value: number)
-		Automation:SetAssembleDelay(value)
-	end,
-})
+	Tab:CreateSlider({
+		Name = "3-Step Completion Time",
+		Range = { 0, 20 },
+		Increment = 0.5,
+		Suffix = "s",
+		CurrentValue = 10.5,
+		Callback = function(value: number)
+			Automation:SetResearchConfirmDelay(value)
+		end,
+	})
 
-local tglAutoCraft = LabCraftTab:CreateToggle({
-	Name = "Enable Auto Craft Loop",
-	Description = "Auto-teleports to Garage Workbench when out of range & continuously crafts selected item",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Automation:SetAutoCraft(enabled)
-		Window:Notify({
-			Title = "Auto Craft",
-			Content = if enabled then "Auto Craft ENABLED (Auto-Teleport to Workbench active)." else "Auto Craft DISABLED.",
-			Duration = 2.5,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
+	Tab:CreateButton({
+		Name = "Buy $20,000 Finish Research Now (Remote)",
+		Description = "Instant remote Finish Research without visiting Citadel",
+		AccentColor = COLOR_WARN,
+		BadgeText = "$20k",
+		Callback = function()
+			local ok, msg = Automation:BuyFinishResearchNow()
+			researchStatus:Set({ Content = Automation:GetResearchStatusText() })
+			notify("Finish Research ($20k)", msg, if ok then COLOR_OK else COLOR_WARN, 3)
+		end,
+	})
 
-local function triggerQuickStation(stationKey: string)
-	local ok, msg, openedFullUi = Material:QuickInteract(stationKey)
-	if ok and openedFullUi then
-		Window:SetVisible(false)
-		Window:Notify({
-			Title = "Quick Interact",
-			Content = msg .. " (Tap 'RF Menu' to reopen menu)",
-			Duration = 3,
-			Color = Color3.fromRGB(52, 211, 153),
-		})
-	elseif not ok then
-		Window:Notify({
-			Title = "Quick Interact",
-			Content = msg,
-			Duration = 3,
-			Color = Color3.fromRGB(248, 113, 113),
-		})
+	Tab:CreateSection("2. Workbench Craft & Live Ingredients")
+
+	craftStatus = Tab:CreateParagraph({
+		Title = "Craft Info",
+		Content = Automation:GetCraftStatusText(),
+		FixedHeight = 60,
+	})
+
+	local recipeOpts, recipeMap = Automation:GetRecipeOptions()
+	if recipeOpts[1] and recipeMap[recipeOpts[1]] then
+		Automation:SetSelectedRecipes({ recipeMap[recipeOpts[1]] })
 	end
+
+	Tab:CreateDropdown({
+		Name = "Select Item / Recipe (Multi-Select)",
+		Options = recipeOpts,
+		CurrentOptions = { recipeOpts[1] },
+		MultiSelect = true,
+		Callback = function(selectedList: { string })
+			Automation:SetSelectedRecipes(mapDropdownIds(selectedList, recipeMap, ""))
+			craftStatus:Set({ Content = Automation:GetCraftStatusText() })
+			if craftIngredientsPanel then
+				craftIngredientsPanel:Set({ Content = Automation:GetCraftIngredientsText() })
+			end
+		end,
+	})
+
+	craftIngredientsPanel = Tab:CreateParagraph({
+		Title = "Required Ingredients & Costs (Bag + Stash)",
+		Content = Automation:GetCraftIngredientsText(),
+		FixedHeight = 110,
+		AccentColor = COLOR_WARN,
+	})
+
+	tglAutoCraft = Tab:CreateToggle({
+		Name = "Enable Auto Craft Loop",
+		Description = "Auto-TP to Workbench & crafts all checked recipes continuously",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Automation:SetAutoCraft(enabled)
+			notify("Auto Craft", if enabled then "Enabled." else "Disabled.", if enabled then COLOR_OK else COLOR_ERR, 2)
+		end,
+	})
+
+	tglFastAssemble = Tab:CreateToggle({
+		Name = "Fast Assemble (Bypass Minigame)",
+		Description = "Uses paced CraftFinish & auto-solves AssemblyBench",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Automation:SetFastAssemble(enabled)
+		end,
+	})
+
+	Tab:CreateSlider({
+		Name = "Craft Quantity",
+		Range = { 1, 50 },
+		Increment = 1,
+		Suffix = "x",
+		CurrentValue = 1,
+		Callback = function(value: number)
+			Automation:SetCraftQuantity(value)
+		end,
+	})
+
+	Tab:CreateSlider({
+		Name = "Fast Assemble Delay",
+		Range = { 0, 15 },
+		Increment = 0.5,
+		Suffix = "s",
+		CurrentValue = 2.0,
+		Callback = function(value: number)
+			Automation:SetAssembleDelay(value)
+		end,
+	})
+
+	Tab:CreateButtonRow({
+		Buttons = {
+			{
+				Text = "Fast Craft Now (Auto-TP)",
+				Color = COLOR_OK,
+				Callback = function()
+					local ok, msg = Automation:CraftOnce(nil, true)
+					craftStatus:Set({ Content = Automation:GetCraftStatusText() })
+					craftIngredientsPanel:Set({ Content = Automation:GetCraftIngredientsText() })
+					notify("Fast Craft", msg, if ok then COLOR_OK else COLOR_ERR, 2.5)
+				end,
+			},
+			{
+				Text = "TP to Workbench",
+				Color = COLOR_INFO,
+				Callback = function()
+					local ok, msg = Material:TeleportToWorkbench()
+					craftStatus:Set({ Content = Automation:GetCraftStatusText() })
+					notify("Workbench Teleport", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
+				end,
+			},
+		},
+	})
 end
 
-LabCraftTab:CreateButton({
-	Name = "Teleport & Fast Craft Now",
-	Description = "Auto-teleports to Garage Workbench if out of range & fast-crafts selected recipe immediately",
-	Callback = function()
-		local ok, msg = Automation:CraftOnce(nil, true)
-		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
-		Window:Notify({
-			Title = "Fast Craft",
-			Content = msg,
-			Duration = 2.5,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
+--====================================================
+-- TAB 4: CITADEL & BUILD (ECONOMY + SHOPS + BUILDING)
+--====================================================
+do
+	local Tab = Window:CreateTab("Citadel & Build")
 
-LabCraftTab:CreateButton({
-	Name = "Teleport to Workbench (Keep Menu Open)",
-	Description = "Warps directly beside your Garage Workbench without opening full-screen UI",
-	Callback = function()
-		local ok, msg = Material:TeleportToWorkbench()
-		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
-		Window:Notify({
-			Title = "Workbench Teleport",
-			Content = msg,
-			Duration = 2.5,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
-		})
-	end,
-})
+	Tab:CreateSection("1. Money ($), IQ & Stash Dupe")
 
-LabCraftTab:CreateButton({
-	Name = "Quick Open Rick's Workbench",
-	Description = "Move to your Garage Workbench & open it immediately in 1 click",
-	Callback = function()
-		triggerQuickStation("workbench")
-		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
-	end,
-})
+	economyStatus = Tab:CreateParagraph({
+		Title = "Economy & Dupe Info",
+		Content = Automation:GetEconomyStatusText(),
+		FixedHeight = 60,
+		AccentColor = COLOR_OK,
+	})
 
-LabCraftTab:CreateSection("Dupe, Money ($) & IQ Booster Suite")
-local economyStatus = LabCraftTab:CreateParagraph({
-	Title = "Economy & Dupe Info",
-	Content = Automation:GetEconomyStatusText(),
-	FixedHeight = 64,
-	AccentColor = Color3.fromRGB(52, 211, 153),
-})
+	tglAutoMoney = Tab:CreateToggle({
+		Name = "Auto Money ($) & Remote Pawn Farm",
+		Description = "Claims gifts/codes, unloads jobs & remote-sells surplus Bag items",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Automation:SetAutoMoneyFarm(enabled)
+			economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
+			notify("Auto Money", if enabled then "Enabled." else "Disabled.", if enabled then COLOR_OK else COLOR_ERR, 2)
+		end,
+	})
 
-local tglAutoMoney = LabCraftTab:CreateToggle({
-	Name = "Auto Money ($) & Reward Farm (Remote)",
-	Description = "Automatically claims Daily Gift, promo codes, job payouts & remote-sells surplus materials",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Automation:SetAutoMoneyFarm(enabled)
-		economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
-		Window:Notify({
-			Title = "Auto Money Farm",
-			Content = if enabled then "Auto Money ($) Farm ENABLED." else "Auto Money ($) Farm DISABLED.",
-			Duration = 2.5,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
+	tglAutoIQ = Tab:CreateToggle({
+		Name = "Auto IQ & ButterBot Booster",
+		Description = "Claims remote IQ sources & buys MegaSeeds IQ when affordable",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Automation:SetAutoIQBoost(enabled)
+			economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
+			notify("Auto IQ", if enabled then "Enabled." else "Disabled.", if enabled then COLOR_OK else COLOR_ERR, 2)
+		end,
+	})
 
-local tglAutoIQ = LabCraftTab:CreateToggle({
-	Name = "Auto IQ & ButterBot Passive Booster",
-	Description = "Continuously claims IQ sources, unloads ButterBot & buys Remote MegaSeeds IQ when affordable",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Automation:SetAutoIQBoost(enabled)
-		economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
-		Window:Notify({
-			Title = "Auto IQ Booster",
-			Content = if enabled then "Auto IQ & ButterBot Booster ENABLED." else "Auto IQ & ButterBot Booster DISABLED.",
-			Duration = 2.5,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
+	Tab:CreateButtonRow({
+		Buttons = {
+			{
+				Text = "Instant Money ($)",
+				Color = COLOR_OK,
+				Callback = function()
+					local ok, msg = Automation:BoostMoneyNow()
+					economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
+					notify("Money Boost", msg, if ok then COLOR_OK else COLOR_INFO, 3)
+				end,
+			},
+			{
+				Text = "Instant IQ Boost",
+				Color = COLOR_PURPLE,
+				Callback = function()
+					local ok, msg = Automation:BoostIQNow()
+					economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
+					researchStatus:Set({ Content = Automation:GetResearchStatusText() })
+					notify("IQ Boost", msg, if ok then COLOR_OK else COLOR_INFO, 3)
+				end,
+			},
+		},
+	})
 
-LabCraftTab:CreateButton({
-	Name = "Run Item Stash Dupe / Sync Burst",
-	Description = "Executes concurrent Stash put/take race threads & ButterBot unload on selected item",
-	Callback = function()
-		local ok, msg = Automation:RunStashDupeCycle(nil, 6)
-		economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
-		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
-		Window:Notify({
-			Title = "Item Dupe / Sync Burst",
-			Content = msg,
-			Duration = 3,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
-		})
-	end,
-})
+	Tab:CreateButtonRow({
+		Buttons = {
+			{
+				Text = "Stash Protect Bag",
+				Color = COLOR_INFO,
+				Callback = function()
+					local ok, msg = Automation:StashAllBagItems()
+					economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
+					craftStatus:Set({ Content = Automation:GetCraftStatusText() })
+					craftIngredientsPanel:Set({ Content = Automation:GetCraftIngredientsText() })
+					notify("Stash Protect", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
+				end,
+			},
+			{
+				Text = "Item Dupe / Sync",
+				Color = COLOR_WARN,
+				Callback = function()
+					local ok, msg = Automation:RunStashDupeCycle(nil, 6)
+					economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
+					craftStatus:Set({ Content = Automation:GetCraftStatusText() })
+					craftIngredientsPanel:Set({ Content = Automation:GetCraftIngredientsText() })
+					notify("Dupe / Sync", msg, if ok then COLOR_OK else COLOR_WARN, 3)
+				end,
+			},
+		},
+	})
 
-LabCraftTab:CreateButton({
-	Name = "Instant Money ($) Boost (Claim + Remote Sell)",
-	Description = "Claims gifts/codes & sells surplus materials to Citadel Pawn Shop remotely from anywhere",
-	Callback = function()
-		local ok, msg = Automation:BoostMoneyNow()
-		economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
-		Window:Notify({
-			Title = "Money ($) Booster",
-			Content = msg,
-			Duration = 3,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(56, 189, 248),
-		})
-	end,
-})
+	Tab:CreateSection("2. Citadel Remote Shops (Buy & Sell Anywhere)")
 
-LabCraftTab:CreateButton({
-	Name = "Instant IQ Boost (Remote MegaSeeds / Claim)",
-	Description = "Triggers all remote IQ sources & buys MegaSeeds IQ Pack ($7,500) remotely if affordable",
-	Callback = function()
-		local ok, msg = Automation:BoostIQNow()
-		economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
-		researchStatus:Set({ Content = Automation:GetResearchStatusText() })
-		Window:Notify({
-			Title = "IQ Booster",
-			Content = msg,
-			Duration = 3,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(56, 189, 248),
-		})
-	end,
-})
+	local marketOpts, marketMap = Automation:GetMarketOptions()
+	if marketOpts[1] and marketMap[marketOpts[1]] then
+		Automation:SetSelectedMarketItems({ marketMap[marketOpts[1]] })
+	end
 
-LabCraftTab:CreateButton({
-	Name = "Protect All Bag Materials -> Rick's Stash",
-	Description = "Instantly deposits all stackable materials from your Bag into Rick's Stash (0 loss on death)",
-	Callback = function()
-		local ok, msg = Automation:StashAllBagItems()
-		economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
-		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
-		Window:Notify({
-			Title = "Stash Protection",
-			Content = msg,
-			Duration = 2.5,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
-		})
-	end,
-})
+	Tab:CreateDropdown({
+		Name = "Select Remote Citadel Market Package (Multi-Select)",
+		Options = marketOpts,
+		CurrentOptions = { marketOpts[1] },
+		MultiSelect = true,
+		Callback = function(selectedList: { string })
+			Automation:SetSelectedMarketItems(mapDropdownIds(selectedList, marketMap, "FinishResearch"))
+		end,
+	})
 
-local marketOpts, marketMap = Automation:GetMarketOptions()
-if marketOpts[1] and marketMap[marketOpts[1]] then
-	Automation:SetSelectedMarketItems({ marketMap[marketOpts[1]] })
+	Tab:CreateButtonRow({
+		Buttons = {
+			{
+				Text = "Buy Selected Packs ($)",
+				Color = COLOR_OK,
+				Callback = function()
+					local ok, msg = Automation:BuySelectedMarketPackages()
+					economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
+					researchStatus:Set({ Content = Automation:GetResearchStatusText() })
+					notify("Remote Market", msg, if ok then COLOR_OK else COLOR_WARN, 3)
+				end,
+			},
+			{
+				Text = "Remote Sell Bag (Pawn)",
+				Color = COLOR_WARN,
+				Callback = function()
+					local ok, msg = Automation:SellAllBagMaterialsRemote(0)
+					economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
+					craftStatus:Set({ Content = Automation:GetCraftStatusText() })
+					craftIngredientsPanel:Set({ Content = Automation:GetCraftIngredientsText() })
+					notify("Remote Pawn Sell", msg, if ok then COLOR_OK else COLOR_WARN, 3)
+				end,
+			},
+		},
+	})
+
+	Tab:CreateButtonRow({
+		Buttons = {
+			{
+				Text = "Open Market",
+				Callback = function()
+					local ok, msg = Automation:OpenCitadelShop("market")
+					notify("Citadel Market", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
+				end,
+			},
+			{
+				Text = "Open Pawn Shop",
+				Callback = function()
+					local ok, msg = Automation:OpenCitadelShop("pawn")
+					notify("Citadel Pawn Shop", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
+				end,
+			},
+			{
+				Text = "Open Serum Lab",
+				Callback = function()
+					local ok, msg = Automation:OpenCitadelShop("serum")
+					notify("Citadel Serum Lab", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
+				end,
+			},
+		},
+	})
+
+	Tab:CreateButtonRow({
+		Buttons = {
+			{
+				Text = "Open Morty Shop",
+				Callback = function()
+					local ok, msg = Automation:OpenCitadelShop("morty")
+					notify("Morty Daycare", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
+				end,
+			},
+			{
+				Text = "Open Wallet & Gear",
+				Callback = function()
+					local ok, msg = Automation:OpenCitadelShop("wallet")
+					Automation:OpenCitadelShop("shop")
+					notify("Wallet & Gear Shop", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
+				end,
+			},
+		},
+	})
+
+	Tab:CreateSection("3. Auto Building (Base & Bunker)")
+
+	buildStatus = Tab:CreateParagraph({
+		Title = "Construction Status",
+		Content = Automation:GetBuildStatusText(),
+		FixedHeight = 64,
+		AccentColor = COLOR_INFO,
+	})
+
+	local buildOpts, buildMap = Automation:GetBuildingOptions()
+	if buildOpts[1] and buildMap[buildOpts[1]] then
+		Automation:SetSelectedBuildings({ buildMap[buildOpts[1]] })
+	end
+
+	Tab:CreateDropdown({
+		Name = "Select Building (Multi-Select)",
+		Options = buildOpts,
+		CurrentOptions = { buildOpts[1] },
+		MultiSelect = true,
+		Callback = function(selectedList: { string })
+			Automation:SetSelectedBuildings(mapDropdownIds(selectedList, buildMap, "ALL_READY"))
+			buildStatus:Set({ Content = Automation:GetBuildStatusText() })
+		end,
+	})
+
+	Tab:CreateDropdown({
+		Name = "Bunker PIN Code (Level -1)",
+		Options = { "1234", "0000", "2468", "1337", "9999" },
+		CurrentOption = "1234",
+		Callback = function(option: string)
+			Automation:SetBunkerPin(option)
+			buildStatus:Set({ Content = Automation:GetBuildStatusText() })
+		end,
+	})
+
+	tglAutoBuild = Tab:CreateToggle({
+		Name = "Auto Build Selected",
+		Description = "Starts blueprint & rapidly completes every piece for checked buildings",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Automation:SetAutoBuild(enabled)
+			buildStatus:Set({ Content = Automation:GetBuildStatusText() })
+			notify("Auto Build", if enabled then "Enabled." else "Disabled.", if enabled then COLOR_OK else COLOR_ERR, 2)
+		end,
+	})
+
+	tglBuildAutoPrereq = Tab:CreateToggle({
+		Name = "Auto Craft & Research Prerequisites",
+		Description = "Automatically researches or crafts missing build requirements",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Automation:SetBuildAutoPrerequisites(enabled)
+		end,
+	})
+
+	Tab:CreateSlider({
+		Name = "Piece Completion Delay",
+		Range = { 0.1, 3.0 },
+		Increment = 0.05,
+		Suffix = "s",
+		CurrentValue = 0.35,
+		Callback = function(value: number)
+			Automation:SetBuildStepDelay(value)
+		end,
+	})
+
+	Tab:CreateButtonRow({
+		Buttons = {
+			{
+				Text = "Build Selected Now",
+				Color = COLOR_OK,
+				Callback = function()
+					local ok, msg = Automation:BuildOnce(nil)
+					buildStatus:Set({ Content = Automation:GetBuildStatusText() })
+					notify("Auto Build", msg, if ok then COLOR_OK else COLOR_WARN, 3)
+				end,
+			},
+			{
+				Text = "TP Active Build Piece",
+				Color = COLOR_INFO,
+				Callback = function()
+					local ok, msg = Automation:TeleportToBuildSite()
+					buildStatus:Set({ Content = Automation:GetBuildStatusText() })
+					notify("Build Site", msg, if ok then COLOR_OK else COLOR_WARN, 2.5)
+				end,
+			},
+		},
+	})
 end
 
-LabCraftTab:CreateDropdown({
-	Name = "Select Remote Citadel Market Package (Multi-Select)",
-	Options = marketOpts,
-	CurrentOptions = { marketOpts[1] },
-	MultiSelect = true,
-	Callback = function(selectedList: { string })
-		Automation:SetSelectedMarketItems(mapDropdownIds(selectedList, marketMap, "FinishResearch"))
-	end,
-})
-
-LabCraftTab:CreateButton({
-	Name = "Buy Selected Market Package(s) Remotely",
-	Description = "Purchases all checked Schmeckle Market packages remotely from anywhere without traveling to Citadel",
-	Callback = function()
-		local ok, msg = Automation:BuySelectedMarketPackages()
-		economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
-		researchStatus:Set({ Content = Automation:GetResearchStatusText() })
-		Window:Notify({
-			Title = "Remote Market",
-			Content = msg,
-			Duration = 3,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
-		})
-	end,
-})
-
-LabCraftTab:CreateSection("Citadel Shops (Open Anywhere & Remote Sell)")
-
-LabCraftTab:CreateButton({
-	Name = "Open Citadel Schmeckle Market",
-	Description = "Opens Citadel Market window from anywhere",
-	Callback = function()
-		local ok, msg = Automation:OpenCitadelShop("market")
-		Window:Notify({
-			Title = "Citadel Market",
-			Content = msg,
-			Duration = 2.5,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
-		})
-	end,
-})
-
-LabCraftTab:CreateButton({
-	Name = "Open Citadel Pawn Shop (Sell UI)",
-	Description = "Opens Citadel Pawn Shop window from anywhere",
-	Callback = function()
-		local ok, msg = Automation:OpenCitadelShop("pawn")
-		Window:Notify({
-			Title = "Citadel Pawn Shop",
-			Content = msg,
-			Duration = 2.5,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
-		})
-	end,
-})
-
-LabCraftTab:CreateButton({
-	Name = "Open Citadel Serum Lab",
-	Description = "Opens Citadel Serum Lab window from anywhere",
-	Callback = function()
-		local ok, msg = Automation:OpenCitadelShop("serum")
-		Window:Notify({
-			Title = "Citadel Serum Lab",
-			Content = msg,
-			Duration = 2.5,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
-		})
-	end,
-})
-
-LabCraftTab:CreateButton({
-	Name = "Open Citadel Morty Daycare Shop",
-	Description = "Opens Citadel Central Dome Morty Shop from anywhere",
-	Callback = function()
-		local ok, msg = Automation:OpenCitadelShop("morty")
-		Window:Notify({
-			Title = "Morty Shop",
-			Content = msg,
-			Duration = 2.5,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
-		})
-	end,
-})
-
-LabCraftTab:CreateButton({
-	Name = "Open Citadel Wallet / Gear Shop",
-	Description = "Opens Schmeckle Wallet transfer & Gear Shop remotely",
-	Callback = function()
-		local ok, msg = Automation:OpenCitadelShop("wallet")
-		Automation:OpenCitadelShop("shop")
-		Window:Notify({
-			Title = "Citadel Wallet & Shop",
-			Content = msg,
-			Duration = 2.5,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
-		})
-	end,
-})
-
-LabCraftTab:CreateButton({
-	Name = "Remote Sell ALL Loose Bag Materials (Pawn Shop)",
-	Description = "Sells all un-stashed materials in Bag to Citadel Pawn Shop remotely from any planet",
-	Callback = function()
-		local ok, msg = Automation:SellAllBagMaterialsRemote(0)
-		economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
-		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
-		if craftIngredientsPanel then
-			craftIngredientsPanel:Set({ Content = Automation:GetCraftIngredientsText() })
-		end
-		Window:Notify({
-			Title = "Remote Pawn Sell",
-			Content = msg,
-			Duration = 3,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
-		})
-	end,
-})
-
 --====================================================
--- TAB 5: AUTO BUILDING
+-- TAB 5: WORLD & VISUAL (TRAVEL + STATIONS + ALL ESP)
 --====================================================
-local BuildTab = Window:CreateTab("Build")
+do
+	local Tab = Window:CreateTab("World & Visual")
 
-local buildStatus = BuildTab:CreateParagraph({
-	Title = "Construction Status",
-	Content = Automation:GetBuildStatusText(),
-	FixedHeight = 68,
-	AccentColor = Color3.fromRGB(56, 189, 248),
-})
+	homeStatus = Tab:CreateParagraph({
+		Title = "World & Garage Location",
+		Content = Material:GetHomeStatusText(),
+		FixedHeight = 60,
+		AccentColor = COLOR_INFO,
+	})
 
-BuildTab:CreateSection("Target Structure")
+	Tab:CreateSection("1. Emergency Home & Multiverse Travel")
 
-local buildOpts, buildMap = Automation:GetBuildingOptions()
-if buildOpts[1] and buildMap[buildOpts[1]] then
-	Automation:SetSelectedBuildings({ buildMap[buildOpts[1]] })
+	Tab:CreateButtonRow({
+		Buttons = {
+			{
+				Text = "FORCE HOME (Safe)",
+				Color = COLOR_OK,
+				Callback = function()
+					Material:ForceSendHomeNow()
+					homeStatus:Set({ Content = Material:GetHomeStatusText() })
+				end,
+			},
+			{
+				Text = "Server GoHome",
+				Callback = function()
+					Material:TeleportToHome(true)
+					homeStatus:Set({ Content = Material:GetHomeStatusText() })
+				end,
+			},
+			{
+				Text = "Return Last",
+				Callback = function()
+					local ok, msg = Material:ReturnToSavedSpot()
+					homeStatus:Set({ Content = Material:GetHomeStatusText() })
+					if not ok then
+						notify("Return", msg, COLOR_WARN, 2.5)
+					end
+				end,
+			},
+		},
+	})
+
+	local worldOpts, worldMap = Material:GetPlanetAndWorldOptions()
+	if worldOpts[1] and worldMap[worldOpts[1]] then
+		Material:SetSelectedWorlds({ worldMap[worldOpts[1]] })
+	end
+
+	Tab:CreateDropdown({
+		Name = "Select Destination Planet / World (Multi-Select)",
+		Options = worldOpts,
+		CurrentOptions = { worldOpts[1] },
+		MultiSelect = true,
+		Callback = function(selectedList: { string })
+			Material:SetSelectedWorlds(mapDropdownIds(selectedList, worldMap, "Moon"))
+		end,
+	})
+
+	Tab:CreateButtonRow({
+		Buttons = {
+			{
+				Text = "Instant Teleport",
+				Color = COLOR_OK,
+				Callback = function()
+					Material:FastTravelToSelectedWorld("Instant")
+					homeStatus:Set({ Content = Material:GetHomeStatusText() })
+				end,
+			},
+			{
+				Text = "Portal Walk",
+				Color = COLOR_INFO,
+				Callback = function()
+					Material:FastTravelToSelectedWorld("Portal")
+					homeStatus:Set({ Content = Material:GetHomeStatusText() })
+				end,
+			},
+			{
+				Text = "Fly Surface",
+				Color = COLOR_PURPLE,
+				Callback = function()
+					Material:FastTravelToSelectedWorld("Fly")
+					homeStatus:Set({ Content = Material:GetHomeStatusText() })
+				end,
+			},
+		},
+	})
+
+	Tab:CreateSection("2. Quick Garage Stations (From Anywhere)")
+
+	local function refreshHomeCard()
+		homeStatus:Set({ Content = Material:GetHomeStatusText() })
+	end
+
+	Tab:CreateButtonRow({
+		Buttons = {
+			{
+				Text = "Rick's Workbench",
+				Callback = function()
+					triggerQuickStation("workbench", refreshHomeCard)
+				end,
+			},
+			{
+				Text = "Refill Portal Fluid",
+				Callback = function()
+					triggerQuickStation("fluid", refreshHomeCard)
+				end,
+			},
+		},
+	})
+
+	Tab:CreateButtonRow({
+		Buttons = {
+			{
+				Text = "Dimension Scanner",
+				Callback = function()
+					triggerQuickStation("scanner", refreshHomeCard)
+				end,
+			},
+			{
+				Text = "Fridge (Fleeb Juice)",
+				Callback = function()
+					triggerQuickStation("fridge", refreshHomeCard)
+				end,
+			},
+		},
+	})
+
+	Tab:CreateSection("3. Radar & ESP (Materials, Mobs & Players)")
+
+	tglMatScanEsp = Tab:CreateToggle({
+		Name = "Material Scanner ESP",
+		Description = "Highlights checked material nodes with distance labels",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Material:SetScanEsp(enabled)
+		end,
+	})
+
+	tglMatBeam = Tab:CreateToggle({
+		Name = "Guide Beam to Nearest Material",
+		Description = "Draws beam toward closest checked Material or Wild Land biome",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Material:SetShowBeam(enabled)
+		end,
+	})
+
+	tglMobEsp = Tab:CreateToggle({
+		Name = "Hostile Mob ESP",
+		Description = "Highlights checked mobs with live HP & distance",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Combat:SetMobEsp(enabled)
+		end,
+	})
+
+	tglEspMaster = Tab:CreateToggle({
+		Name = "Player ESP Master",
+		Description = "Enables Player ESP (configure layers below)",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Esp:SetEnabled(enabled)
+			local msg = if enabled then "Player ESP ENABLED." else "Player ESP DISABLED."
+			if enabled and not (tglEspHighlight:Get() or tglEspNameDist:Get() or tglEspHealth:Get()) then
+				msg = "Player ESP ENABLED. Enable Highlight / Name / Health below."
+			end
+			notify("Player ESP", msg, if enabled then COLOR_OK else COLOR_ERR, 2)
+		end,
+	})
+
+	tglEspHighlight = Tab:CreateToggle({
+		Name = "Player Highlight (Through Walls)",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Esp:SetShowHighlight(enabled)
+		end,
+	})
+
+	tglEspNameDist = Tab:CreateToggle({
+		Name = "Player Name & Distance",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Esp:SetShowNameDistance(enabled)
+		end,
+	})
+
+	tglEspHealth = Tab:CreateToggle({
+		Name = "Player Health Bar (HP)",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Esp:SetShowHealth(enabled)
+		end,
+	})
+
+	tglEspTeamCheck = Tab:CreateToggle({
+		Name = "Team Check (Hide Teammates)",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Esp:SetTeamCheck(enabled)
+		end,
+	})
+
+	Tab:CreateDropdown({
+		Name = "Default Player ESP Color",
+		Options = { "Cyan", "Green", "Red", "Yellow", "Purple", "White" },
+		CurrentOption = "Cyan",
+		Callback = function(option: string)
+			local picked = ESP_COLORS[option]
+			if picked then
+				Esp:SetColor(picked)
+			end
+		end,
+	})
+
+	Tab:CreateSlider({
+		Name = "Player ESP Max Distance",
+		Range = { 100, 5000 },
+		Increment = 100,
+		Suffix = "m",
+		CurrentValue = 2000,
+		Callback = function(value: number)
+			Esp:SetMaxDistance(value)
+		end,
+	})
 end
 
-BuildTab:CreateDropdown({
-	Name = "Select Building (Multi-Select)",
-	Options = buildOpts,
-	CurrentOptions = { buildOpts[1] },
-	MultiSelect = true,
-	Callback = function(selectedList: { string })
-		Automation:SetSelectedBuildings(mapDropdownIds(selectedList, buildMap, "ALL_READY"))
-		buildStatus:Set({ Content = Automation:GetBuildStatusText() })
-	end,
-})
-
-local tglAutoBuild = BuildTab:CreateToggle({
-	Name = "Auto Build Selected Structure",
-	Description = "Starts blueprint at Home & rapidly completes every construction piece",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Automation:SetAutoBuild(enabled)
-		buildStatus:Set({ Content = Automation:GetBuildStatusText() })
-		Window:Notify({
-			Title = "Auto Building",
-			Content = if enabled then "Auto Building ENABLED." else "Auto Building DISABLED.",
-			Duration = 2.5,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
-
-local tglBuildAutoPrereq = BuildTab:CreateToggle({
-	Name = "Auto Craft & Research Prerequisites",
-	Description = "Automatically researches required tech or crafts missing build ingredients",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Automation:SetBuildAutoPrerequisites(enabled)
-	end,
-})
-
-BuildTab:CreateButton({
-	Name = "Build Selected Now (Complete Site)",
-	Description = "Starts the selected blueprint (or finishes active site) once immediately",
-	Callback = function()
-		local ok, msg = Automation:BuildOnce(nil)
-		buildStatus:Set({ Content = Automation:GetBuildStatusText() })
-		Window:Notify({
-			Title = "Auto Build",
-			Content = msg,
-			Duration = 3,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
-		})
-	end,
-})
-
-BuildTab:CreateSection("Speed & Settings")
-
-BuildTab:CreateSlider({
-	Name = "Piece Completion Delay",
-	Range = { 0.1, 3.0 },
-	Increment = 0.05,
-	Suffix = "s",
-	CurrentValue = 0.35,
-	Callback = function(value: number)
-		Automation:SetBuildStepDelay(value)
-	end,
-})
-
-BuildTab:CreateDropdown({
-	Name = "Bunker PIN Code (Level -1)",
-	Options = { "1234", "0000", "2468", "1337", "9999" },
-	CurrentOption = "1234",
-	Callback = function(option: string)
-		Automation:SetBunkerPin(option)
-		buildStatus:Set({ Content = Automation:GetBuildStatusText() })
-	end,
-})
-
-BuildTab:CreateButton({
-	Name = "Go to Active Build Piece",
-	Description = "Teleports right beside the current glowing blue construction piece",
-	Callback = function()
-		local ok, msg = Automation:TeleportToBuildSite()
-		buildStatus:Set({ Content = Automation:GetBuildStatusText() })
-		Window:Notify({
-			Title = "Build Site",
-			Content = msg,
-			Duration = 2.5,
-			Color = if ok then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(251, 191, 36),
-		})
-	end,
-})
-
 --====================================================
--- TAB 6: ESP & VISUALS
+-- TAB 6: SETTINGS (ANTI-AFK, FPS & SYSTEM)
 --====================================================
-local EspTab = Window:CreateTab("ESP")
-
-EspTab:CreateSection("Player ESP")
-
-local tglEspHighlight: any
-local tglEspNameDist: any
-local tglEspHealth: any
-local tglEspTeamCheck: any
-
-local tglEspMaster = EspTab:CreateToggle({
-	Name = "Enable Player ESP",
-	Description = "Show player locations, names, distances, and health bars",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Esp:SetEnabled(enabled)
-		local msg = if enabled then "Player ESP ENABLED." else "Player ESP DISABLED."
-		if enabled and not (tglEspHighlight:Get() or tglEspNameDist:Get() or tglEspHealth:Get()) then
-			msg = "Player ESP ENABLED. Turn on Highlight / Name / Health below."
-		end
-		Window:Notify({
-			Title = "ESP",
-			Content = msg,
-			Duration = 2.5,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(248, 113, 113),
-		})
-	end,
-})
-
-tglEspHighlight = EspTab:CreateToggle({
-	Name = "Highlight (Through Walls)",
-	Description = "Add a glowing outline around characters (AlwaysOnTop)",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Esp:SetShowHighlight(enabled)
-	end,
-})
-
-tglEspNameDist = EspTab:CreateToggle({
-	Name = "Show Name & Distance",
-	Description = "Display DisplayName and distance (m) overhead",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Esp:SetShowNameDistance(enabled)
-	end,
-})
-
-tglEspHealth = EspTab:CreateToggle({
-	Name = "Show Health Bar (HP)",
-	Description = "Display color-coded HP bar based on current health",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Esp:SetShowHealth(enabled)
-	end,
-})
-
-tglEspTeamCheck = EspTab:CreateToggle({
-	Name = "Team Check (Hide Teammates)",
-	Description = "Do not render ESP on players on your team",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Esp:SetTeamCheck(enabled)
-	end,
-})
-
-EspTab:CreateSection("Appearance & Distance")
-
-EspTab:CreateDropdown({
-	Name = "Default ESP Color",
-	Options = { "Cyan", "Green", "Red", "Yellow", "Purple", "White" },
-	CurrentOption = "Cyan",
-	Callback = function(option: string)
-		local picked = ESP_COLORS[option]
-		if picked then
-			Esp:SetColor(picked)
-		end
-	end,
-})
-
-EspTab:CreateSlider({
-	Name = "Max Distance",
-	Range = { 100, 5000 },
-	Increment = 100,
-	Suffix = "m",
-	CurrentValue = 2000,
-	Callback = function(value: number)
-		Esp:SetMaxDistance(value)
-	end,
-})
-
-EspTab:CreateSection("Mob ESP")
-
-local tglMobEsp = EspTab:CreateToggle({
-	Name = "Mob ESP Highlights",
-	Description = "Highlight hostile mobs with live HP & distance",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Combat:SetMobEsp(enabled)
-	end,
-})
-
---====================================================
--- TAB 6: HOME & QUICK STATIONS
---====================================================
-local HomeTab = Window:CreateTab("Home")
-
-local homeStatus = HomeTab:CreateParagraph({
-	Title = "Garage Location",
-	Content = Material:GetHomeStatusText(),
-	FixedHeight = 64,
-})
-
-HomeTab:CreateSection("Instant Return Home (Hotkey: Home)")
-
-HomeTab:CreateButton({
-	Name = "FORCE HOME NOW (Instant Garage)",
-	Description = "Instant safe Garage escape even during Combat or from distant Planets (Void-proof)",
-	Callback = function()
-		Material:ForceSendHomeNow()
-		homeStatus:Set({ Content = Material:GetHomeStatusText() })
-	end,
-})
-
-HomeTab:CreateButton({
-	Name = "Server Go Home (GoHome)",
-	Description = "Trigger PortalG's official GoHome + PlanetTravel(home) return sequence",
-	Callback = function()
-		Material:TeleportToHome(true)
-		homeStatus:Set({ Content = Material:GetHomeStatusText() })
-	end,
-})
-
-HomeTab:CreateButton({
-	Name = "Return to Last Location",
-	Description = "Return to where you were before using Quick Interact or Force Home",
-	Callback = function()
-		local ok, msg = Material:ReturnToSavedSpot()
-		homeStatus:Set({ Content = Material:GetHomeStatusText() })
-		if not ok then
-			Window:Notify({
-				Title = "Return",
-				Content = msg,
-				Duration = 2.5,
-				Color = Color3.fromRGB(251, 191, 36),
-			})
-		end
-	end,
-})
-
-HomeTab:CreateSection("Fast Planet & Dimension Teleport / Fly")
-
-local worldOpts, worldMap = Material:GetPlanetAndWorldOptions()
-if worldOpts[1] and worldMap[worldOpts[1]] then
-	Material:SetSelectedWorlds({ worldMap[worldOpts[1]] })
-end
-
-HomeTab:CreateDropdown({
-	Name = "Select Destination Planet / World (Multi-Select)",
-	Options = worldOpts,
-	CurrentOptions = { worldOpts[1] },
-	MultiSelect = true,
-	Callback = function(selectedList: { string })
-		Material:SetSelectedWorlds(mapDropdownIds(selectedList, worldMap, "Moon"))
-	end,
-})
-
-HomeTab:CreateButton({
-	Name = "Instant Teleport to Selected Planet / World",
-	Description = "Bypasses Space Cruiser flight & teleports directly onto the selected planet/world",
-	Callback = function()
-		Material:FastTravelToSelectedWorld("Instant")
-		homeStatus:Set({ Content = Material:GetHomeStatusText() })
-	end,
-})
-
-HomeTab:CreateButton({
-	Name = "Open Portal & Walk to Selected World",
-	Description = "Shoots an upright Portal Gun portal & automatically walks character through it",
-	Callback = function()
-		Material:FastTravelToSelectedWorld("Portal")
-		homeStatus:Set({ Content = Material:GetHomeStatusText() })
-	end,
-})
-
-HomeTab:CreateButton({
-	Name = "Fly Across Selected Planet Surface",
-	Description = "Travels to the selected planet & flies smoothly at high speed across its zone",
-	Callback = function()
-		Material:FastTravelToSelectedWorld("Fly")
-		homeStatus:Set({ Content = Material:GetHomeStatusText() })
-	end,
-})
-
-HomeTab:CreateSection("Quick Interact Stations (From Anywhere)")
-
-HomeTab:CreateButton({
-	Name = "Open Rick's Workbench",
-	Description = "Jump to Workbench from anywhere & trigger Craft UI immediately",
-	Callback = function()
-		triggerQuickStation("workbench")
-		homeStatus:Set({ Content = Material:GetHomeStatusText() })
-	end,
-})
-
-HomeTab:CreateButton({
-	Name = "Refill Portal Fluid",
-	Description = "Jump to Fluid Station & refill Portal Fluid",
-	Callback = function()
-		triggerQuickStation("fluid")
-		homeStatus:Set({ Content = Material:GetHomeStatusText() })
-	end,
-})
-
-HomeTab:CreateButton({
-	Name = "Open Dimension Scanner",
-	Description = "Jump to Dimension Scanner & open Multiverse Scanner",
-	Callback = function()
-		triggerQuickStation("scanner")
-		homeStatus:Set({ Content = Material:GetHomeStatusText() })
-	end,
-})
-
-HomeTab:CreateButton({
-	Name = "Grab Fleeb Juice (Fridge)",
-	Description = "Jump to Rick's Fridge & collect Fleeb Juice",
-	Callback = function()
-		triggerQuickStation("fridge")
-		homeStatus:Set({ Content = Material:GetHomeStatusText() })
-	end,
-})
-
---====================================================
--- TAB 7: SETTINGS & INTERFACE
---====================================================
-local SettingsTab = Window:CreateTab("Settings")
-
-SettingsTab:CreateSection("Interface & Stability")
-SettingsTab:CreateParagraph({
-	Title = "Controls & Stability",
-	Content = "• Press RightShift to toggle menu or tap 'RF Menu' when hidden.\n• Use Lock (top bar) to pin window in place cleanly.\n• Press Home anytime to Force-Send Home.",
-	FixedHeight = 76,
-})
-
-local tglLockWindow = SettingsTab:CreateToggle({
-	Name = "Lock Menu Position (Anti-Drag)",
-	Description = "Freezes window at current position so dragging cannot accidentally move it",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		Window:SetPinned(enabled)
-	end,
-})
-
-Window:OnPinChanged(function(pinned: boolean)
-	tglLockWindow:Set(pinned, true)
-end)
-
-SettingsTab:CreateButton({
-	Name = "Center Menu on Screen",
-	Description = "Snaps the menu cleanly back to the center of your viewport",
-	Callback = function()
-		Window:Center()
-		Window:Notify({
-			Title = "Menu Centered",
-			Content = "Menu position centered inside viewport.",
-			Duration = 2,
-		})
-	end,
-})
-
-SettingsTab:CreateSection("Performance & Weak Device")
-
-local monitorInterval = 0.65
+local monitorInterval = 0.85
 local savedGraphicsState: {
 	captured: boolean,
 	shadows: boolean?,
@@ -15523,7 +15422,7 @@ local function applyAllLowEndMode(enabled: boolean)
 	Material:SetLowEndMode(enabled)
 	Automation:SetLowEndMode(enabled)
 	Combat:SetLowEndMode(enabled)
-	monitorInterval = if enabled then 1.25 else 0.65
+	monitorInterval = if enabled then 1.45 else 0.85
 end
 
 local function isOwnEffect(inst: Instance): boolean
@@ -15537,93 +15436,135 @@ local function isOwnEffect(inst: Instance): boolean
 	return false
 end
 
-local tglLowEndMode = SettingsTab:CreateToggle({
-	Name = "Low-End Device Mode (Potato / Weak Exec)",
-	Description = "Disables UI Tweens, limits ESP Highlights to 4, relaxes scan intervals to maximize FPS",
-	CurrentValue = false,
-	Callback = function(enabled: boolean)
-		applyAllLowEndMode(enabled)
-		Window:Notify({
-			Title = "Performance Mode",
-			Content = if enabled then "Low-End Mode ON (Tweens off, Highlights <= 4, Throttled loops)." else "Low-End Mode OFF (Balanced defaults).",
-			Duration = 2.5,
-			Color = if enabled then Color3.fromRGB(52, 211, 153) else Color3.fromRGB(56, 189, 248),
-		})
-	end,
-})
+local fpsBusy = false
+local function applyFpsBooster(enabled: boolean, silent: boolean?)
+	if fpsBusy then
+		return
+	end
+	fpsBusy = true
+	task.spawn(function()
+		if enabled then
+			if not savedGraphicsState.captured then
+				savedGraphicsState.captured = true
+				pcall(function() savedGraphicsState.shadows = Lighting.GlobalShadows end)
+				pcall(function() savedGraphicsState.quality = settings().Rendering.QualityLevel end)
+			end
+			pcall(function() Lighting.GlobalShadows = false end)
+			pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
 
-SettingsTab:CreateButton({
-	Name = "One-Click FPS Booster (Reduce Game Lag)",
-	Description = "Safely lowers client shadows, quality & extra particles in chunked steps (Reversible)",
-	Callback = function()
-		if not savedGraphicsState.captured then
-			savedGraphicsState.captured = true
-			pcall(function() savedGraphicsState.shadows = Lighting.GlobalShadows end)
-			pcall(function() savedGraphicsState.quality = settings().Rendering.QualityLevel end)
-		end
-		pcall(function() Lighting.GlobalShadows = false end)
-		pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
-
-		local trimmed = 0
-		local descs = workspace:GetDescendants()
-		for i = 1, #descs do
-			local d = descs[i]
-			if d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Sparkles") or d:IsA("Fire") or d:IsA("Smoke") then
-				if d.Enabled and not isOwnEffect(d) then
-					table.insert(savedGraphicsState.fx, { inst = d, prop = "Enabled", val = true })
-					pcall(function() d.Enabled = false end)
-					trimmed += 1
+			local trimmed = 0
+			local descs = workspace:GetDescendants()
+			for i = 1, #descs do
+				local d = descs[i]
+				if d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Sparkles") or d:IsA("Fire") or d:IsA("Smoke") then
+					if d.Enabled and not isOwnEffect(d) then
+						table.insert(savedGraphicsState.fx, { inst = d, prop = "Enabled", val = true })
+						pcall(function() d.Enabled = false end)
+						trimmed += 1
+					end
+				end
+				if i % 450 == 0 then
+					task.wait()
 				end
 			end
-			if i % 450 == 0 then
-				task.wait()
+			if not silent then
+				notify("FPS Booster", ("Shadows OFF, Low Quality, %d FX disabled."):format(trimmed), COLOR_OK, 2.5)
+			end
+		elseif savedGraphicsState.captured then
+			if savedGraphicsState.shadows ~= nil then
+				pcall(function() Lighting.GlobalShadows = savedGraphicsState.shadows :: boolean end)
+			end
+			if savedGraphicsState.quality ~= nil then
+				pcall(function() settings().Rendering.QualityLevel = savedGraphicsState.quality end)
+			end
+			local restored = 0
+			for i, entry in ipairs(savedGraphicsState.fx) do
+				if entry.inst and entry.inst.Parent then
+					pcall(function() (entry.inst :: any)[entry.prop] = entry.val end)
+					restored += 1
+				end
+				if i % 450 == 0 then
+					task.wait()
+				end
+			end
+			table.clear(savedGraphicsState.fx)
+			if not silent then
+				notify("Graphics Restored", ("Restored %d FX & original client lighting."):format(restored), COLOR_INFO, 2.5)
 			end
 		end
+		fpsBusy = false
+	end)
+end
 
-		Window:Notify({
-			Title = "FPS Booster",
-			Content = ("Boost applied: Shadows OFF, Low Quality, %d FX disabled."):format(trimmed),
-			Duration = 3,
-			Color = Color3.fromRGB(52, 211, 153),
-		})
-	end,
-})
+local unloadAll: () -> ()
 
-SettingsTab:CreateButton({
-	Name = "Restore Game Graphics",
-	Description = "Restores client shadows, render quality & particles changed by FPS Booster",
-	Callback = function()
-		if savedGraphicsState.shadows ~= nil then
-			pcall(function() Lighting.GlobalShadows = savedGraphicsState.shadows :: boolean end)
-		end
-		if savedGraphicsState.quality ~= nil then
-			pcall(function() settings().Rendering.QualityLevel = savedGraphicsState.quality end)
-		end
-		local restored = 0
-		for i, entry in ipairs(savedGraphicsState.fx) do
-			if entry.inst and entry.inst.Parent then
-				pcall(function() (entry.inst :: any)[entry.prop] = entry.val end)
-				restored += 1
-			end
-			if i % 450 == 0 then
-				task.wait()
-			end
-		end
-		table.clear(savedGraphicsState.fx)
-		Window:Notify({
-			Title = "Graphics Restored",
-			Content = ("Restored %d effects & client lighting."):format(restored),
-			Duration = 2.5,
-		})
-	end,
-})
+do
+	local Tab = Window:CreateTab("Settings")
 
-SettingsTab:CreateSection("Reset & Cleanup")
+	Tab:CreateSection("1. Utility & Menu Controls")
 
-SettingsTab:CreateButton({
-	Name = "Disable All & Reset",
-	Description = "Turn off Material, ESP, Auto Research, Craft, Combat & Mission",
-	Callback = function()
+	Tab:CreateParagraph({
+		Title = "Hotkeys & Shortcuts",
+		Content = "• RightShift: Toggle Menu visibility (or tap 'RF Menu').\n• Home Key: Instant Emergency Force-Home to Garage.\n• Auto-Research hides cursor & Menu automatically during minigames.",
+		FixedHeight = 70,
+	})
+
+	tglAntiAfk = Tab:CreateToggle({
+		Name = "Anti-AFK (Prevent 20m Disconnect)",
+		Description = "Blocks Roblox 20-minute idle kick safely while farming",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Combat:SetAntiAfk(enabled)
+			notify("Anti-AFK", if enabled then "Enabled (Idle kick blocked)." else "Disabled.", if enabled then COLOR_OK else COLOR_ERR, 2)
+		end,
+	})
+
+	tglLockWindow = Tab:CreateToggle({
+		Name = "Lock Menu Position (Anti-Drag)",
+		Description = "Freezes window at current screen location",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			Window:SetPinned(enabled)
+		end,
+	})
+
+	Window:OnPinChanged(function(pinned: boolean)
+		tglLockWindow:Set(pinned, true)
+	end)
+
+	Tab:CreateButton({
+		Name = "Center Menu on Screen",
+		Description = "Snaps window back to the center of your viewport",
+		Callback = function()
+			Window:Center()
+			notify("Menu Centered", "Position centered cleanly.", COLOR_INFO, 2)
+		end,
+	})
+
+	Tab:CreateSection("2. Smooth Performance & Weak Device")
+
+	tglLowEndMode = Tab:CreateToggle({
+		Name = "Low-End Device Mode (Potato / Weak Exec)",
+		Description = "Disables UI Tweens, limits highlights & reduces scan frequency",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			applyAllLowEndMode(enabled)
+			notify("Performance Mode", if enabled then "Low-End Mode ON." else "Low-End Mode OFF.", if enabled then COLOR_OK else COLOR_INFO, 2)
+		end,
+	})
+
+	tglFpsBooster = Tab:CreateToggle({
+		Name = "FPS Booster (Low Shadows & Disable Extra FX)",
+		Description = "ON = Reduce shadows/quality/particles; OFF = Restore graphics",
+		CurrentValue = false,
+		Callback = function(enabled: boolean)
+			applyFpsBooster(enabled, false)
+		end,
+	})
+
+	Tab:CreateSection("3. Reset & Unload")
+
+	local function disableAllFeatures()
 		Material:SetScanEsp(false)
 		Material:SetShowBeam(false)
 		Material:SetAutoCrossPlanet(false)
@@ -15688,37 +15629,56 @@ SettingsTab:CreateButton({
 
 		applyAllLowEndMode(false)
 		tglLowEndMode:Set(false, true)
+		if tglFpsBooster:Get() then
+			tglFpsBooster:Set(false, true)
+			applyFpsBooster(false, true)
+		end
 
-		Window:Notify({
-			Title = "Reset",
-			Content = "Disabled all Material, ESP, Research, Craft, Combat & Mission features.",
-			Duration = 2.5,
-		})
-	end,
-})
+		notify("Reset", "All active features disabled & defaults restored.", COLOR_WARN, 2.5)
+	end
 
+	Tab:CreateButtonRow({
+		Buttons = {
+			{
+				Text = "Disable All & Reset",
+				Color = COLOR_WARN,
+				Callback = disableAllFeatures,
+			},
+			{
+				Text = "Unload Menu",
+				Color = COLOR_ERR,
+				Callback = function()
+					unloadAll()
+				end,
+			},
+		},
+	})
+end
+
+--====================================================
+-- EVENT-DRIVEN TAB STATUS REFRESH & CLEANUP
+--====================================================
 local monitorActive = true
 
 local function refreshActiveTabStatus(tabName: string)
 	if not monitorActive then
 		return
 	end
-	if tabName == "Material" then
+	if tabName == "Farm & Loot" then
 		materialStatus:Set({ Content = Material:GetStatusText() })
+		missionStatus:Set({ Content = Combat:GetMissionStatusText() })
 	elseif tabName == "Combat" then
 		combatStatus:Set({ Content = Combat:GetCombatStatusText() })
-	elseif tabName == "Mission" then
-		missionStatus:Set({ Content = Combat:GetMissionStatusText() })
 	elseif tabName == "Lab & Craft" then
 		researchStatus:Set({ Content = Automation:GetResearchStatusText() })
 		craftStatus:Set({ Content = Automation:GetCraftStatusText() })
 		if craftIngredientsPanel then
 			craftIngredientsPanel:Set({ Content = Automation:GetCraftIngredientsText() })
 		end
+	elseif tabName == "Citadel & Build" then
 		economyStatus:Set({ Content = Automation:GetEconomyStatusText() })
-	elseif tabName == "Build" then
 		buildStatus:Set({ Content = Automation:GetBuildStatusText() })
-	elseif tabName == "Home" then
+	elseif tabName == "World & Visual" then
 		homeStatus:Set({ Content = Material:GetHomeStatusText() })
 	end
 end
@@ -15747,7 +15707,7 @@ local homeKeyConn: RBXScriptConnection? = UserInputService.InputBegan:Connect(fu
 	end
 end)
 
-local function unloadAll()
+unloadAll = function()
 	monitorActive = false
 	if homeKeyConn then
 		homeKeyConn:Disconnect()
@@ -15776,13 +15736,6 @@ rawset(_G, "RayfieldMenu", {
 	Unload = unloadAll,
 })
 
-SettingsTab:CreateButton({
-	Name = "Unload Menu Completely",
-	Description = "Clean up all UI, Material, ESP, and Automation for this session",
-	Callback = unloadAll,
-})
-
--- Lightweight tab-aware background monitor (0% CPU when menu hidden/minimized or on static tabs)
 task.spawn(function()
 	while monitorActive do
 		task.wait(monitorInterval)
@@ -15794,8 +15747,4 @@ task.spawn(function()
 	end
 end)
 
-Window:Notify({
-	Title = "Rayfield Menu Ready",
-	Content = "Press RightShift to toggle the menu anytime.",
-	Duration = 4,
-})
+notify("Rayfield Pro Ready", "6 Clean Tabs • RightShift to toggle menu.", COLOR_INFO, 3.5)
